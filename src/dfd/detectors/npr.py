@@ -20,7 +20,6 @@ Full-module pickles must be explicitly enabled and logged as a warning.
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Sequence
@@ -33,6 +32,7 @@ import torch.nn as nn
 from ..quality import meets_floor
 from ..types import Modality, Observation, RawScore
 from .base import BELOW_FLOOR, NO_OBSERVATIONS, NO_QUALITY, OK, WEIGHTS_ABSENT, abstain
+from .loading import load_model
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +41,6 @@ DEFAULT_STRIDE = 2
 
 # Expected number of output classes (real/fake binary classifier).
 EXPECTED_NUM_CLASSES = 2
-
-# Module-level cache for loaded weights to keep the frozen dataclass immutable.
-# Keys are (resolved_path, mtime_ns, size) tuples to detect file replacement.
-# Values are loaded model objects.
-_MODEL_CACHE: dict[tuple[str, int, int], nn.Module] = {}
-_CACHE_LOCK = threading.Lock()
 
 
 def npr_feature(img: np.ndarray, stride: int = DEFAULT_STRIDE) -> np.ndarray:
@@ -186,9 +180,9 @@ class NPRDetector:
             logger.debug("no usable observations; abstaining: %s", reason)
             return abstain(self.name, self.version, reason)
 
-        # Load model (or retrieve from cache)
+        # Load model (or retrieve from cache) via the shared secure loader.
         try:
-            model = self._load_model(weights_path)
+            model = load_model(weights_path, self.model_factory, self.allow_unsafe_load)
         except Exception as e:
             logger.error(
                 "failed to load model from %s: %s",
@@ -250,144 +244,3 @@ class NPRDetector:
                 exc_info=True,
             )
             raise
-
-    def _load_model(self, path: Path) -> nn.Module:
-        """Load model from disk with staleness detection and thread safety.
-
-        Three paths, in order of preference:
-
-        1. **Secure path (recommended):** model_factory is provided.
-           Load state_dict via weights_only=True and instantiate model via
-           model_factory. No warnings. This is the secure-by-default path.
-
-        2. **Rejection path:** model_factory is None and file is a full module.
-           Reject with clear error message directing user to path 1 or 3.
-
-        3. **Unsafe path (last resort):** allow_unsafe_load=True.
-           Load full module via unpickle (code execution possible).
-           Logs a warning.
-
-        Uses a module-level cache keyed by (resolved_path, mtime_ns, size,
-        factory_id, allow_unsafe_load) to detect file replacement and distinguish
-        different load configurations. The same file loaded with different
-        factories or security modes can produce different models and must not
-        share a cache entry. Protected by a lock against concurrent first-load races.
-
-        Args:
-            path: path to weights file
-
-        Returns:
-            loaded model object as nn.Module
-
-        Raises:
-            RuntimeError: if path is full module and (model_factory is None
-                and allow_unsafe_load is False)
-            Exception: any other exception from torch.load propagates
-        """
-        resolved = path.resolve()
-        stat = resolved.stat()
-
-        # Compute stable identity for the factory
-        if self.model_factory is None:
-            factory_id = "none"
-        else:
-            factory_id = f"{self.model_factory.__module__}.{getattr(self.model_factory, '__qualname__', repr(self.model_factory))}"
-
-        # Cache key includes file metadata, factory identity, and load mode
-        # to ensure same file + different factories/modes don't collide
-        cache_key = (
-            str(resolved),
-            stat.st_mtime_ns,
-            stat.st_size,
-            factory_id,
-            self.allow_unsafe_load,
-        )
-
-        with _CACHE_LOCK:
-            if cache_key in _MODEL_CACHE:
-                logger.debug("using cached model from %s", resolved)
-                return _MODEL_CACHE[cache_key]
-
-            logger.debug("loading model from %s", resolved)
-
-            # CASE 1: Secure path — model_factory provided
-            if self.model_factory is not None:
-                try:
-                    sd = torch.load(
-                        str(resolved), map_location="cpu", weights_only=True
-                    )
-                    if not isinstance(sd, dict):
-                        raise ValueError(
-                            f"expected state_dict (dict) with model_factory, "
-                            f"got {type(sd).__name__}"
-                        )
-                    model = self.model_factory()
-                    model.load_state_dict(sd)
-                    model.eval()
-                    logger.debug("loaded state_dict securely with model_factory")
-                    _MODEL_CACHE[cache_key] = model
-                    return model
-                except Exception as e:
-                    # Provide a clear error if the file appears to be a full-module pickle
-                    if isinstance(e, Exception) and "Weights only load failed" in str(e):
-                        raise RuntimeError(
-                            f"the file {resolved} appears to be a full-module pickle, "
-                            f"not a state_dict. model_factory requires a state_dict. "
-                            f"These are mutually exclusive: either (1) provide a state_dict "
-                            f"file with model_factory, or (2) remove model_factory and use "
-                            f"allow_unsafe_load=True for full pickles."
-                        ) from e
-                    logger.error(
-                        "failed to load state_dict with model_factory: %s",
-                        type(e).__name__,
-                        exc_info=True,
-                    )
-                    raise
-
-            # CASE 2: Attempt weights_only=True (expecting state_dict or error)
-            try:
-                model = torch.load(
-                    str(resolved), map_location="cpu", weights_only=True
-                )
-                # weights_only succeeded but model_factory is None
-                if isinstance(model, dict):
-                    raise RuntimeError(
-                        f"loaded a state_dict but model_factory is None. "
-                        f"To securely load weights, provide model_factory as "
-                        f"a callable that returns an uninitialized model instance."
-                    )
-                if not isinstance(model, nn.Module):
-                    raise ValueError(
-                        f"expected torch.nn.Module, got {type(model).__name__}"
-                    )
-                model.eval()
-                logger.debug("loaded full module with weights_only=True")
-                _MODEL_CACHE[cache_key] = model
-                return model
-            except Exception as e:
-                # weights_only failed (likely a full module pickle)
-                if not self.allow_unsafe_load:
-                    raise RuntimeError(
-                        f"failed to load {resolved} with weights_only=True. "
-                        f"This is a supply-chain security measure (spec §3A). "
-                        f"To fix: (1) provide model_factory to load state_dict, or "
-                        f"(2) set allow_unsafe_load=True (logs warning). "
-                        f"Error: {type(e).__name__}"
-                    ) from e
-
-                # CASE 3: Unsafe path — operator has explicitly opted in
-                logger.warning(
-                    "loading %s with full unpickle (allow_unsafe_load=True); "
-                    "this permits arbitrary code execution from the weights file",
-                    resolved,
-                )
-                model = torch.load(str(resolved), map_location="cpu")
-                if not isinstance(model, nn.Module):
-                    raise ValueError(
-                        f"unsafe load: expected torch.nn.Module, "
-                        f"got {type(model).__name__}"
-                    )
-                model.eval()
-                logger.debug("loaded full module with unsafe unpickle")
-                _MODEL_CACHE[cache_key] = model
-                return model
