@@ -2445,58 +2445,114 @@ git commit -m "feat: six evaluation-hygiene guards that raise rather than warn"
 - Test: `tests/bench/test_protocol.py`
 
 **Interfaces:**
-- Consumes: `GuardViolation` (Task 12)
-- Produces: `Split`, `logo_splits(records) -> list[Split]`
+- Consumes: nothing (guards in `bench/guards.py` check the *result*; this module makes the result correct by construction)
+- Produces: `Split`, `logo_splits(records, seed) -> list[Split]`
 
 Spec §8.1. **This is the only number that predicts field performance**, because the field always brings an unseen generator.
+
+**Record schema.** Every record carries `sample_id`, `subject_id`, `source_id`, `generator`, `label`. `source_id` is the source video (an image is its own source, recorded explicitly — never aliased). `generator` is `None` for reals and a non-empty string for fakes.
+
+**Why subjects, not records, are partitioned.** Spec §8.1 asks for leave-one-generator-out; spec §8.2 guards 1 and 2 ask for identity-disjoint, video-level splits. Those are not independent: in every real forgery corpus one subject is faked by *several* generators, so assigning fakes to sides by generator alone puts subject `pA`'s faceswap video in train and their deepfacelive video in test. The split then teaches faces. Partitioning **subjects** and dropping the fakes whose generator wants one side while their subject sits on the other is the only assignment that satisfies both. The drops are real and are reported, not hidden: on a corpus where every subject is faked by every generator, half the fakes fall out of each fold. A reader who does not see that number will over-read the fold.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_protocol.py
 import pytest
+
 from bench.protocol import Split, logo_splits
 
 
-RECORDS = [
-    {"sample_id": "r1", "generator": None, "label": 0, "subject_id": "p1"},
-    {"sample_id": "r2", "generator": None, "label": 0, "subject_id": "p2"},
-    {"sample_id": "f1", "generator": "deepfacelive", "label": 1, "subject_id": "p3"},
-    {"sample_id": "f2", "generator": "faceswap", "label": 1, "subject_id": "p4"},
-    {"sample_id": "f3", "generator": "stylegan", "label": 1, "subject_id": "p5"},
+def rec(sample_id, subject_id, generator, label, source_id=None):
+    return {"sample_id": sample_id, "subject_id": subject_id,
+            "source_id": source_id or sample_id,
+            "generator": generator, "label": label}
+
+
+# Six real subjects, and five fake subjects each faked by two or three
+# generators. The repeated subjects are the point: a splitter that assigns
+# fakes by generator alone leaks all five.
+RECORDS = [rec(f"r{i}", f"p{i}", None, 0) for i in range(1, 7)] + [
+    rec("f1", "pA", "deepfacelive", 1), rec("f2", "pA", "faceswap", 1),
+    rec("f3", "pB", "deepfacelive", 1), rec("f4", "pB", "stylegan", 1),
+    rec("f5", "pC", "faceswap", 1), rec("f6", "pC", "stylegan", 1),
+    rec("f7", "pD", "deepfacelive", 1), rec("f8", "pD", "faceswap", 1),
+    rec("f9", "pD", "stylegan", 1),
+    rec("f10", "pE", "deepfacelive", 1), rec("f11", "pE", "faceswap", 1),
+    rec("f12", "pE", "stylegan", 1),
 ]
+
+SEEDS = [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 def test_one_split_per_generator():
     splits = logo_splits(RECORDS)
     assert {s.held_out_generator for s in splits} == {
         "deepfacelive", "faceswap", "stylegan"}
+    assert len(splits) == 3
 
 
-def test_held_out_generator_never_appears_in_train():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_held_out_generator_never_appears_in_train(seed):
+    for s in logo_splits(RECORDS, seed=seed):
         gens = {r["generator"] for r in s.train if r["label"] == 1}
         assert s.held_out_generator not in gens
 
 
-def test_held_out_generator_is_the_only_fake_generator_in_test():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_held_out_generator_is_the_only_fake_generator_in_test(seed):
+    for s in logo_splits(RECORDS, seed=seed):
         gens = {r["generator"] for r in s.test if r["label"] == 1}
         assert gens == {s.held_out_generator}
 
 
-def test_real_samples_appear_in_both_train_and_test():
-    """Without reals in test there is no FPR to measure."""
-    for s in logo_splits(RECORDS):
-        assert any(r["label"] == 0 for r in s.train)
-        assert any(r["label"] == 0 for r in s.test)
+@pytest.mark.parametrize("seed", SEEDS)
+def test_both_sides_carry_reals_and_fakes(seed):
+    """No test reals means no FPR; no test fakes means no TPR."""
+    for s in logo_splits(RECORDS, seed=seed):
+        for side in (s.train, s.test):
+            assert any(r["label"] == 0 for r in side)
+            assert any(r["label"] == 1 for r in side)
 
 
-def test_real_samples_are_identity_disjoint_across_the_split():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_subjects_are_disjoint_across_the_split_including_fake_subjects(seed):
+    """Spec §8.2 guard 1. RECORDS fakes each subject with several
+    generators, so a by-generator-only assignment fails this."""
+    for s in logo_splits(RECORDS, seed=seed):
         tr = {r["subject_id"] for r in s.train}
         te = {r["subject_id"] for r in s.test}
+        assert tr.isdisjoint(te), f"{s.held_out_generator}: leaked {tr & te}"
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_no_source_video_straddles_the_split(seed):
+    """Spec §8.2 guard 2: a source video belongs wholly to one side."""
+    for s in logo_splits(RECORDS, seed=seed):
+        tr = {r["source_id"] for r in s.train}
+        te = {r["source_id"] for r in s.test}
         assert tr.isdisjoint(te)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_every_record_is_placed_or_reported_dropped(seed):
+    """Nothing vanishes silently."""
+    for s in logo_splits(RECORDS, seed=seed):
+        placed = s.train_ids() + s.test_ids() + s.dropped_ids()
+        assert sorted(placed) == sorted(r["sample_id"] for r in RECORDS)
+        assert len(placed) == len(set(placed))
+
+
+def test_dropped_records_are_exactly_the_identity_conflicts():
+    """Each drop is a fake whose generator wants the side its subject is not
+    on. On this corpus that is a large fraction, which is why it is counted."""
+    for s in logo_splits(RECORDS, seed=0):
+        test_subjects = {r["subject_id"] for r in s.test}
+        for r in s.dropped_for_identity:
+            assert r["label"] == 1
+            wants_test = r["generator"] == s.held_out_generator
+            assert wants_test != (r["subject_id"] in test_subjects)
+        assert len(s.dropped_for_identity) > 0
 
 
 def test_split_is_deterministic_given_a_seed():
@@ -2505,9 +2561,53 @@ def test_split_is_deterministic_given_a_seed():
     assert [s.test_ids() for s in a] == [s.test_ids() for s in b]
 
 
-def test_records_without_a_generator_label_are_rejected():
-    bad = [{"sample_id": "x", "label": 1, "subject_id": "p"}]
-    with pytest.raises(KeyError):
+def test_seed_actually_changes_the_partition():
+    """Guards against an implementation that accepts `seed` and ignores it."""
+    by_seed = {tuple(tuple(s.test_ids()) for s in logo_splits(RECORDS, seed=k))
+               for k in SEEDS}
+    assert len(by_seed) > 1
+
+
+def test_records_without_a_generator_key_are_rejected():
+    bad = [{"sample_id": "x", "subject_id": "p", "source_id": "x", "label": 1}]
+    with pytest.raises(KeyError, match="missing required"):
+        logo_splits(bad)
+
+
+def test_records_without_a_source_id_are_rejected():
+    bad = [{"sample_id": "x", "subject_id": "p", "generator": "g", "label": 1}]
+    with pytest.raises(KeyError, match="missing required"):
+        logo_splits(bad)
+
+
+def test_a_fake_with_no_generator_is_rejected():
+    """An unattributed fake would silently join the training side of EVERY
+    split, which is the one place it can never be measured."""
+    bad = [rec("r1", "p1", None, 0), rec("f1", "pA", None, 1)]
+    with pytest.raises(ValueError, match="unattributed fake"):
+        logo_splits(bad)
+
+
+def test_a_corpus_with_one_subject_is_rejected():
+    """Better to refuse than to emit a split with nothing on one side."""
+    bad = [rec("r1", "pA", None, 0), rec("f1", "pA", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="needs at least 2"):
+        logo_splits(bad)
+
+
+def test_a_single_generator_corpus_is_rejected():
+    """Holding out the only generator leaves nothing to train on."""
+    bad = [rec("r1", "p1", None, 0), rec("r2", "p2", None, 0),
+           rec("f1", "pA", "deepfacelive", 1), rec("f2", "pB", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="train fakes"):
+        logo_splits(bad)
+
+
+def test_a_source_carrying_two_subjects_is_rejected():
+    bad = [rec("a", "p1", None, 0, source_id="v"),
+           rec("b", "p2", None, 0, source_id="v"),
+           rec("f", "pA", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="more than one subject/generator"):
         logo_splits(bad)
 ```
 
@@ -2525,19 +2625,29 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.protocol'`
 In-dataset AUC measures memorisation. LOGO measures what happens when a
 generator the model has never seen walks through the door — which, in the
 field, is every generator eventually.
+
+Two spec §8.2 guards are structural here rather than checked after the fact:
+identity disjointness (guard 1) and video-level integrity (guard 2). A split
+that leaks a subject or straddles a source video produces a number that cannot
+be repaired downstream, so this module refuses to emit one.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+REQUIRED_KEYS = ("sample_id", "subject_id", "source_id", "generator", "label")
 
 
 @dataclass(frozen=True)
 class Split:
+    """One fold: every fake in `test` comes from `held_out_generator`."""
+
     held_out_generator: str
     train: list[dict]
     test: list[dict]
+    dropped_for_identity: list[dict] = field(default_factory=list)
 
     def test_ids(self) -> list[str]:
         return [r["sample_id"] for r in self.test]
@@ -2545,42 +2655,111 @@ class Split:
     def train_ids(self) -> list[str]:
         return [r["sample_id"] for r in self.train]
 
+    def dropped_ids(self) -> list[str]:
+        return [r["sample_id"] for r in self.dropped_for_identity]
+
+
+def _validate(records: list[dict]) -> None:
+    for r in records:
+        missing = [k for k in REQUIRED_KEYS if k not in r]
+        if missing:
+            raise KeyError(
+                f"record {r.get('sample_id')!r} is missing required "
+                f"key(s) {missing}")
+        if r["label"] == 1 and not r["generator"]:
+            raise ValueError(
+                f"fake record {r['sample_id']!r} has no generator; an "
+                "unattributed fake would join the training side of every split")
+
+    by_source: dict[str, set] = {}
+    for r in records:
+        by_source.setdefault(r["source_id"], set()).add(
+            (r["subject_id"], r["generator"]))
+    for src, pairs in sorted(by_source.items()):
+        if len(pairs) > 1:
+            raise ValueError(
+                f"source {src!r} carries more than one subject/generator pair: "
+                f"{sorted(map(str, pairs))}. A source that straddles cannot be "
+                "assigned to one side of a split")
+
+
+def _require_measurable(
+    held_out: str, train: list[dict], test: list[dict]
+) -> None:
+    counts = {
+        "train reals": sum(1 for r in train if r["label"] == 0),
+        "test reals": sum(1 for r in test if r["label"] == 0),
+        "train fakes": sum(1 for r in train if r["label"] == 1),
+        "test fakes": sum(1 for r in test if r["label"] == 1),
+    }
+    empty = sorted(k for k, v in counts.items() if v == 0)
+    if empty:
+        raise ValueError(
+            f"split holding out {held_out!r} has no {' and no '.join(empty)} "
+            f"(counts={counts}); without test reals there is no FPR to measure "
+            "and without test fakes there is no TPR")
+
 
 def logo_splits(records: list[dict], seed: int = 0) -> list[Split]:
-    """One split per generator. Reals are partitioned identity-disjointly."""
-    for r in records:
-        if "generator" not in r:
-            raise KeyError(f"record {r.get('sample_id')!r} has no 'generator' key")
+    """One split per generator, identity-disjoint and video-whole.
 
-    fakes = [r for r in records if r["label"] == 1]
-    reals = [r for r in records if r["label"] == 0]
-    generators = sorted({r["generator"] for r in fakes if r["generator"]})
+    Subjects — not records — are partitioned, so a subject faked by several
+    generators cannot appear on both sides. Fakes whose generator wants one
+    side while their subject sits on the other are dropped and reported in
+    `Split.dropped_for_identity` rather than silently leaked.
+    """
+    _validate(records)
 
-    subjects = sorted({r["subject_id"] for r in reals})
+    subjects = sorted({r["subject_id"] for r in records})
+    if len(subjects) < 2:
+        raise ValueError(
+            f"corpus has {len(subjects)} distinct subject(s); an "
+            "identity-disjoint split needs at least 2")
+
     rng = np.random.default_rng(seed)
-    shuffled = list(rng.permutation(subjects))
+    shuffled = [subjects[i] for i in rng.permutation(len(subjects))]
     cut = max(1, len(shuffled) // 2)
     train_subjects = set(shuffled[:cut])
 
-    real_train = [r for r in reals if r["subject_id"] in train_subjects]
-    real_test = [r for r in reals if r["subject_id"] not in train_subjects]
+    generators = sorted({r["generator"] for r in records if r["label"] == 1})
 
     splits: list[Split] = []
     for g in generators:
-        splits.append(Split(
-            held_out_generator=g,
-            train=[r for r in fakes if r["generator"] != g] + real_train,
-            test=[r for r in fakes if r["generator"] == g] + real_test,
-        ))
+        train: list[dict] = []
+        test: list[dict] = []
+        dropped: list[dict] = []
+        for r in records:
+            subject_side_is_test = r["subject_id"] not in train_subjects
+            if r["label"] == 0:
+                (test if subject_side_is_test else train).append(r)
+                continue
+            belongs_in_test = r["generator"] == g
+            if belongs_in_test == subject_side_is_test:
+                (test if belongs_in_test else train).append(r)
+            else:
+                dropped.append(r)
+        _require_measurable(g, train, test)
+        splits.append(Split(g, train, test, dropped))
     return splits
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/bench/test_protocol.py -v`
-Expected: PASS, 7 tests
+Expected: PASS, 60 tests (the parametrised ones run once per seed)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the identity test can fail**
+
+The identity guard is the one that has historically shipped vacuous. Prove it fires: temporarily replace the fake-assignment branch in `logo_splits` with the unconditional form
+
+```python
+            belongs_in_test = r["generator"] == g
+            (test if belongs_in_test else train).append(r)
+```
+
+run `pytest tests/bench/test_protocol.py -k disjoint`, and confirm it FAILS reporting leaked subjects. Restore, confirm it passes. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/protocol.py tests/bench/test_protocol.py
@@ -3226,6 +3405,10 @@ def _records(n=40):
         out.append({
             "sample_id": f"s{i}",
             "subject_id": f"p{i}",
+            # Each image is its own source. Recorded explicitly, never aliased
+            # to sample_id: the moment video records arrive, several samples
+            # share one source_id and the video-level guard must still bite.
+            "source_id": f"src{i}",
             "generator": "deepfacelive" if fake else None,
             "label": 1 if fake else 0,
             "compression": ["c0", "c23", "c40"][i % 3],
@@ -3426,7 +3609,8 @@ def dataset_hash(records: list[dict]) -> str:
     """Content hash over identifying fields — stable, order-independent."""
     keys = sorted(
         json.dumps({k: r.get(k) for k in
-                    ("sample_id", "subject_id", "generator", "label", "compression")},
+                    ("sample_id", "subject_id", "source_id", "generator",
+                     "label", "compression")},
                    sort_keys=True)
         for r in records)
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
@@ -3438,7 +3622,7 @@ def _observation(record: dict) -> Observation:
     lm = np.array([[w * 0.35, h * 0.4], [w * 0.65, h * 0.4]])
     q = measure_quality(img, (0, 0, w, h), lm)
     return Observation(t=0.0, payload=img, roi=(0, 0, w, h), quality=q,
-                       source_id=record["sample_id"])
+                       source_id=record["source_id"])
 
 
 def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord:
@@ -3602,7 +3786,7 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 1. **Guard 1 (identity leakage) is implemented in Task 12 but not yet wired into `run_benchmark`.** `RunRecord.identity_report` is present and rendered but always `None`, because computing it needs a face-embedding model that is not part of P0's licence-clean set (spec §11 flags InsightFace). **Acceptance criterion 2 is therefore not met by this plan alone** — it needs a follow-up task once an embedding model is chosen. This is the single most important gap; do not close P0 without it.
 2. `adversarial_tpr_at_1pct` is computed by Task 15 but wired as `None` in the runner, because it needs a differentiable model and the P0 detectors abstain without weights. Wire it when real weights land.
 3. Calibration is fitted per detector but the runner scores raw detector output rather than fused LLRs. End-to-end fusion scoring belongs in P1.
-4. `check_video_level` is called with `sample_ids` as both arguments in the runner, which is correct for image records (one sample per group) but must be revisited when video records arrive.
+4. **Resolved, not deferred.** `check_video_level` reads a real `source_id` field; records must populate it. For image corpora each image is its own source, recorded explicitly. Aliasing `source_id` to `sample_id` at the call site makes the guard vacuous — its only failure condition is `groups[i] != sample_ids[i]` — so the alias is forbidden rather than tolerated.
 
 **Placeholder scan.** No TBDs. Every step carries runnable code. Threshold constants in `quality.py` are marked as starting values with a stated plan (Task 18 follow-up) rather than left as magic numbers.
 
