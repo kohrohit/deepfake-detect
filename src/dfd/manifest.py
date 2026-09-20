@@ -42,13 +42,24 @@ def load_manifest(path: str | Path) -> dict[str, AssetRecord]:
 
 
 def assert_release_clean(manifest: dict[str, AssetRecord], asset_ids: list[str]) -> None:
-    """Raise if any asset is unregistered or not cleared for commercial use."""
-    bad: list[str] = []
-    for aid in asset_ids:
-        rec = manifest.get(aid)
-        if rec is None or not rec.commercial_use:
-            bad.append(aid)
-    if bad:
-        raise NonCommercialAsset(
-            "assets not cleared for commercial release: " + ", ".join(sorted(bad))
-        )
+    """Raise if any asset is unregistered or not cleared for commercial use.
+
+    The two causes are reported distinctly: an asset absent from the
+    manifest has never been evaluated at all, which is a different fault
+    from one that was evaluated and found non-commercial. Collapsing them
+    into one message tells a reader debugging a red gate a licensing story
+    about a file that may simply be missing a manifest entry.
+    """
+    unregistered = [a for a in asset_ids if manifest.get(a) is None]
+    non_commercial = [a for a in asset_ids
+                      if manifest.get(a) is not None
+                      and not manifest[a].commercial_use]
+    if unregistered or non_commercial:
+        parts = []
+        if unregistered:
+            parts.append("unregistered assets (absent from the manifest): "
+                         + ", ".join(sorted(unregistered)))
+        if non_commercial:
+            parts.append("assets not cleared for commercial release: "
+                         + ", ".join(sorted(non_commercial)))
+        raise NonCommercialAsset("; ".join(parts))
