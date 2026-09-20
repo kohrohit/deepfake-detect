@@ -105,7 +105,8 @@ def check_video_level(
         ValueError: If groups and sample_ids are element-wise identical,
                    indicating the guard would be a no-op.
     """
-    # Check that groups are not identical to sample_ids (FIX 2)
+    # Reject identical sequences: the guard's only failure condition is
+    # groups[i] != sample_ids[i], so identical lists are structurally unable to fire.
     if list(sample_ids) == list(groups):
         raise ValueError(
             "check_video_level guard is vacuous: groups are identical to "
@@ -214,8 +215,10 @@ def check_demographic_parity(
         values = [v for v in fpr.values()]
         lo = min(values)
         hi = max(values)
-        # FIX 1: Only apply infinity at literal zero, else compute true ratio.
-        # For lo=0.0002, hi=0.0008, true ratio is 4.0x, not 0.8.
+        # Infinity only at a literal zero denominator. Flooring a nonzero
+        # denominator pulls the ratio BELOW the true value and silently hides
+        # real disparity; for lo=0.0002, hi=0.0016, true ratio is 8.0x but
+        # floor would compute 1.6x, swallowing a 4x genuine difference.
         if lo == 0.0:
             ratio = float("inf") if hi > 0.0 else 1.0
         else:
@@ -226,8 +229,11 @@ def check_demographic_parity(
     if ratio > max_fpr_ratio:
         worst = max(fpr, key=fpr.get)
         best = min(fpr, key=fpr.get)
+        # Format infinity as "inf" (unbounded) for legibility
+        ratio_str = "inf (one stratum has zero false positives)" if np.isinf(ratio) else "%.1fx" % ratio
+        ceiling_str = "%.1fx" % max_fpr_ratio
         raise GuardViolation(
-            f"demographic FPR disparity %.1fx exceeds ceiling %.1fx: "
+            f"demographic FPR disparity %s exceeds ceiling %s: "
             f"%s=%.4f vs %s=%.4f" % (
-                ratio, max_fpr_ratio, worst, fpr[worst], best, fpr[best]))
+                ratio_str, ceiling_str, worst, fpr[worst], best, fpr[best]))
     return report
