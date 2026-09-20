@@ -1,5 +1,6 @@
 import numpy as np
 from dfd.quality import measure_quality, meets_floor
+from dfd.types import QUALITY_BANDS
 
 
 def _sharp(h=256, w=256) -> np.ndarray:
@@ -32,13 +33,25 @@ def test_small_face_is_banded_reject():
     assert q.band == "reject"
 
 
-def test_flat_image_is_not_banded_high():
+def test_flat_image_is_banded_reject_for_insufficient_detail():
+    """Zero Laplacian variance means no measurable detail: reject, not a guess."""
     q = measure_quality(_flat(), (0, 0, 256, 256), LM_WIDE)
-    assert q.band != "high"
+    assert q.band == "reject"
 
 
 def test_meets_floor_uses_band_ordering():
     assert meets_floor("high", "medium") is True
     assert meets_floor("low", "medium") is False
     assert meets_floor("medium", "medium") is True
+    assert meets_floor("reject", "low") is False
+
+
+def test_meets_floor_is_reflexive_for_every_band():
+    """'At least as good as' includes equality — reject satisfies a reject floor.
+
+    Documented deliberately: no detector declares min_quality_band="reject",
+    and the detector config (Task 6) will forbid it at the type level.
+    """
+    for band in QUALITY_BANDS:
+        assert meets_floor(band, band) is True
     assert meets_floor("reject", "low") is False
