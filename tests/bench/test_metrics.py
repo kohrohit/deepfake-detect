@@ -289,50 +289,74 @@ def test_ece_probability_on_bin_edge():
 # FIX 1: Test degenerate bootstrap draws with sparse-minority fixture
 # ============================================================================
 
-def test_bootstrap_degenerate_draws_warning(caplog):
-    """Bootstrap warns when degenerate resamples exceed threshold.
+def test_bootstrap_reports_degenerate_drop_rate_in_sparse_minority(caplog):
+    """3 positive groups of 100: ~4.7% of draws contain no positive group.
 
-    Sparse-minority fixture: 3 fraud videos out of 100.
-    Produces ~4.7% degenerate resamples (exceeds 5% threshold).
-    Verifies that the drop rate is logged.
+    That rate biases the interval optimistically and must be visible. The
+    old 5% threshold sat above this natural rate, so the regime that
+    motivated the check produced no message at all.
+
+    This test runs with multiple seeds to verify INFO logging fires reliably
+    (not just on lucky seeds above an arbitrary threshold).
     """
     import logging
-    caplog.set_level(logging.WARNING)
+    import re
 
-    # Create a sparse-minority case: 3 positive groups out of 100
-    rng = np.random.default_rng(123)
-    n_pos_groups = 3
-    n_neg_groups = 97
-    n_frames_per_group = 10
+    caplog.set_level(logging.INFO)
 
-    # Positive groups: clear signals
-    pos_scores = rng.normal(0.8, 0.1, n_pos_groups * n_frames_per_group)
-    pos_labels = np.ones(n_pos_groups * n_frames_per_group, dtype=int)
-    pos_groups = np.repeat(np.arange(n_pos_groups), n_frames_per_group)
+    observed_rates = []
 
-    # Negative groups: weak signals
-    neg_scores = rng.normal(0.2, 0.1, n_neg_groups * n_frames_per_group)
-    neg_labels = np.zeros(n_neg_groups * n_frames_per_group, dtype=int)
-    neg_groups = np.repeat(
-        np.arange(n_pos_groups, n_pos_groups + n_neg_groups),
-        n_frames_per_group
-    )
+    # Test with multiple seeds to ensure INFO logs consistently
+    for seed_val in [123, 456, 789]:
+        caplog.clear()
 
-    # Combine
-    s = np.concatenate([pos_scores, neg_scores])
-    y = np.concatenate([pos_labels, neg_labels])
-    g = np.concatenate([pos_groups, neg_groups])
+        # Create sparse-minority case: 3 positive groups out of 100
+        rng = np.random.default_rng(seed_val)
+        n_pos_groups = 3
+        n_neg_groups = 97
+        n_frames_per_group = 100
 
-    # Run bootstrap with 1000 resamples; expect ~4.7% degenerate
-    lo, hi = bootstrap_ci_by_group(
-        s, y, g, auc, n=1000, seed=456
-    )
+        # Positive groups: clear signals
+        pos_scores = rng.normal(0.8, 0.1, n_pos_groups * n_frames_per_group)
+        pos_labels = np.ones(n_pos_groups * n_frames_per_group, dtype=int)
+        pos_groups = np.repeat(np.arange(n_pos_groups), n_frames_per_group)
 
-    # Check that a warning was logged about degenerate resamples
-    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
-    degenerate_warnings = [m for m in warning_messages if "dropped" in str(m).lower()]
+        # Negative groups: weak signals
+        neg_scores = rng.normal(0.2, 0.1, n_neg_groups * n_frames_per_group)
+        neg_labels = np.zeros(n_neg_groups * n_frames_per_group, dtype=int)
+        neg_groups = np.repeat(
+            np.arange(n_pos_groups, n_pos_groups + n_neg_groups),
+            n_frames_per_group
+        )
 
-    assert len(degenerate_warnings) > 0, "Expected warning about dropped resamples"
-    # Extract the drop rate from the warning message
-    msg = str(degenerate_warnings[0])
-    assert "dropped" in msg.lower() and "%" in msg, f"Warning message malformed: {msg}"
+        # Combine
+        s = np.concatenate([pos_scores, neg_scores])
+        y = np.concatenate([pos_labels, neg_labels])
+        g = np.concatenate([pos_groups, neg_groups])
+
+        # Run bootstrap with 1000 resamples; expect ~4.7% degenerate naturally
+        lo, hi = bootstrap_ci_by_group(
+            s, y, g, auc, n=1000, seed=seed_val
+        )
+
+        # Check that INFO message was logged about degenerate resamples
+        info_messages = [r.message for r in caplog.records if r.levelname == "INFO"]
+        degenerate_info = [m for m in info_messages if "dropped" in str(m).lower()]
+
+        assert len(degenerate_info) > 0, f"Seed {seed_val}: Expected INFO about dropped resamples"
+
+        msg = str(degenerate_info[0])
+        assert "dropped" in msg.lower() and "%" in msg, f"Seed {seed_val}: Message malformed: {msg}"
+
+        # Extract rate from message (e.g., "dropped 47/1000 resamples (4.7%)")
+        match = re.search(r'(\d+)/(\d+).*\(([0-9.]+)%\)', msg)
+        if match:
+            count, total, rate_pct = int(match.group(1)), int(match.group(2)), float(match.group(3))
+            observed_rates.append(rate_pct)
+            assert count > 0, f"Seed {seed_val}: Expected non-zero degenerate count"
+            assert total == 1000, f"Seed {seed_val}: Expected 1000 total resamples"
+
+    # Verify rates are in expected range (~4.7% natural degenerate rate)
+    assert len(observed_rates) == 3, "Should have logged 3 seeds"
+    for rate in observed_rates:
+        assert rate > 0, "Rate should be > 0"

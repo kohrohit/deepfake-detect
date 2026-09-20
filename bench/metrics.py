@@ -13,10 +13,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Threshold for warning when bootstrap drops degenerate draws.
-# Above ~5% drop rate, the CI is conditioned on well-behaved draws and reads optimistic.
+# Threshold for WARNING when bootstrap drops degenerate draws.
+# A drop rate of ~1% already shifts a percentile interval materially.
+# INFO is logged at ANY drops; WARNING fires when drop rate exceeds this threshold.
 # This matters most in low-fraud regimes where positive groups are sparse and fragile.
-MAX_DEGENERATE_FRACTION = 0.05
+# Note: natural degenerate rate at 3-of-100 groups is ~4.7%, so the threshold is
+# intentionally placed low to catch drops in the motivating regime.
+MAX_DEGENERATE_FRACTION = 0.01
 
 
 def auc(scores: np.ndarray, labels: np.ndarray) -> float:
@@ -194,10 +197,12 @@ def bootstrap_ci_by_group(
     Resampling rows instead of videos fabricates precision: 10,000 frames from
     100 videos carry 100 videos' worth of information, not 10,000.
 
-    WARNING: Degenerate resamples (those returning NaN or inf from stat_fn) are
-    silently dropped. If >5% of resamples degenerate, the CI is conditioned on
-    well-behaved draws only and reads optimistically. This matters most in low-fraud
-    regimes where positive groups are scarce.
+    NOTE: Degenerate resamples (those returning NaN or inf from stat_fn) are dropped.
+    The drop count, total, and rate are logged at INFO level. A WARNING is issued if
+    the drop rate exceeds ~1%, indicating the CI is conditioned on well-behaved draws
+    only and reads optimistically. Even below the warning threshold, dropped draws
+    matter in low-fraud regimes where positive groups are scarce — check the INFO
+    message to see the actual rate.
 
     Args:
         scores: Predicted scores (same length as labels and groups).
@@ -253,11 +258,19 @@ def bootstrap_ci_by_group(
             degenerate_count += 1
 
     degenerate_fraction = degenerate_count / n if n > 0 else 0.0
+
+    # Always log INFO when any draws are dropped; WARNING when rate exceeds threshold.
+    if degenerate_count > 0:
+        logger.info(
+            "Bootstrap dropped %d/%d resamples (%.1f%%) due to degenerate stat_fn returns.",
+            degenerate_count, n, degenerate_fraction * 100
+        )
+
     if degenerate_fraction > MAX_DEGENERATE_FRACTION:
         logger.warning(
-            "Bootstrap dropped %d/%d resamples (%.1f%%) due to degenerate stat_fn returns. "
-            "CI may read optimistically.",
-            degenerate_count, n, degenerate_fraction * 100
+            "Degenerate rate %.1f%% exceeds threshold (%.0f%%). "
+            "CI is conditioned on well-behaved draws and may read optimistically.",
+            degenerate_fraction * 100, MAX_DEGENERATE_FRACTION * 100
         )
 
     if not stats:
