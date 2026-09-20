@@ -3443,8 +3443,14 @@ def _observation(record: dict) -> Observation:
 
 def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord:
     if config.enforce_guards:
+        # `groups` MUST identify the SOURCE VIDEO, never the sample id.
+        # Passing sample_ids for both arguments makes this guard vacuous: its
+        # only failure condition is groups[i] != sample_ids[i], so identical
+        # lists can never raise. Records must carry a source-video field; for
+        # image records each image is its own source, which must be recorded
+        # explicitly rather than aliased to sample_id.
         check_video_level([r["sample_id"] for r in records],
-                          [r["sample_id"] for r in records])
+                          [r["source_id"] for r in records])
         check_compression_coverage(records)
         check_uniform_preprocessing(records)
         check_threshold_provenance(config.threshold_source)
