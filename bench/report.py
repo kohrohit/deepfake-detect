@@ -85,6 +85,23 @@ def render_markdown(record: RunRecord) -> str:
             f"{d.abstention_rate:.1%} | {d.p95_latency_ms:.1f} | {d.n_samples} |")
     lines.append("")
 
+    any_rob = any(d.tpr_by_perturbation for d in record.detector_results.values())
+    if any_rob:
+        names = sorted({p for d in record.detector_results.values()
+                        for p in d.tpr_by_perturbation})
+        lines.append("## Robustness — TPR@FPR=1% under perturbation\n")
+        lines.append("| detector | " + " | ".join(names) + " |")
+        lines.append("|---" * (len(names) + 1) + "|")
+        for name in sorted(record.detector_results):
+            d = record.detector_results[name]
+            row = " | ".join(_f(d.tpr_by_perturbation.get(p)) for p in names)
+            lines.append(f"| {d.detector} | {row} |")
+        lines.append("")
+        lines.append("`screenshot_recapture` and `print_recapture` are the two "
+                     "cheapest laundering steps available to an adversary; a "
+                     "detector that collapses under them is not deployable "
+                     "against the threat model in spec §3A.\n")
+
     demoted = [d for d in record.detector_results.values()
                if d.adversarial_tpr_at_1pct is not None
                and d.adversarial_tpr_at_1pct < ADVERSARIAL_FLOOR]

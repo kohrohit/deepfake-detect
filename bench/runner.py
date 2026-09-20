@@ -23,6 +23,7 @@ from .guards import (
 )
 from .metrics import auc, bootstrap_ci_by_group, ece, tpr_at_fpr
 from .protocol import logo_splits
+from .robustness import robustness_sweep
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ class RunConfig:
     fpr_targets: tuple[float, ...] = (0.01, 0.001)
     bootstrap_n: int = 200
     threshold_source: str = "validation"
+    #: Spec §8.3 / acceptance criterion 9. Off by default because the sweep
+    #: re-scores every record once per perturbation variant and is not free.
+    robustness: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,13 @@ class DetectorResult:
     abstention_rate: float
     p95_latency_ms: float
     n_samples: int
+    #: Spec §8.3 / acceptance criterion 9: TPR@FPR=1% per perturbation
+    #: variant emitted by `robustness_sweep` (clean, the JPEG quality curve,
+    #: and the other perturbations including the two physical recapture
+    #: paths). Empty when `RunConfig.robustness` is False, or on a LOGO
+    #: fold — the sweep is never re-run per fold (see `_logo_results`), so
+    #: an empty dict here means "not measured", never "measured as zero".
+    tpr_by_perturbation: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -148,8 +159,30 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
 
         s = np.array(scores, dtype=float)
         scores_by_detector[name] = s
+
+        tpr_by_perturbation: dict[str, float] = {}
+        if config.robustness:
+            variants: dict[str, list[float]] = {}
+            for rec_in, obs in zip(records, observations):
+                for pname, pimg in robustness_sweep(rec_in["image"]).items():
+                    pobs = Observation(t=obs.t, payload=pimg, roi=obs.roi,
+                                       quality=obs.quality,
+                                       source_id=obs.source_id)
+                    praw = det.score([pobs])
+                    variants.setdefault(pname, []).append(
+                        float(praw.score) if not praw.abstained
+                        and praw.score is not None else np.nan)
+            for pname, pscores in variants.items():
+                ps = np.array(pscores, dtype=float)
+                pv = np.isfinite(ps)
+                tpr_by_perturbation[pname] = (
+                    tpr_at_fpr(ps[pv], labels[pv], 0.01)
+                    if pv.sum() and len(np.unique(labels[pv])) > 1
+                    else float("nan"))
+
         results[name] = _detector_result(
-            name, s, labels, groups, latencies, abstentions, config)
+            name, s, labels, groups, latencies, abstentions, config,
+            tpr_by_perturbation=tpr_by_perturbation)
 
     logo_results, logo_dropped = _logo_results(
         records, registry, scores_by_detector, labels, groups, config)
@@ -162,11 +195,17 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
 
 
 def _detector_result(name, s, labels, groups, latencies, abstentions,
-                     config) -> DetectorResult:
+                     config, tpr_by_perturbation=None) -> DetectorResult:
     """Metrics for one detector over one set of rows.
 
     Split out so a LOGO fold can reuse it verbatim: the fold differs only in
     which rows it passes, never in how the numbers are computed.
+
+    `tpr_by_perturbation` defaults to empty: a LOGO fold calls this without
+    it, because the robustness sweep is never re-run per fold (see
+    `_logo_results`) and an empty dict there means "not measured", the same
+    posture the fold already takes for `p95_latency_ms` (reported as NaN
+    rather than a false zero).
     """
     n = len(s)
     valid = np.isfinite(s)
@@ -176,6 +215,7 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
         abstention_rate=abstentions / max(1, n),
         p95_latency_ms=float(np.percentile(latencies, 95)) if latencies else 0.0,
         n_samples=n,
+        tpr_by_perturbation=dict(tpr_by_perturbation or {}),
     )
     if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
         nan = float("nan")
