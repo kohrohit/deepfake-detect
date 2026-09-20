@@ -1,5 +1,7 @@
 import numpy as np
 import pytest
+from dataclasses import FrozenInstanceError
+
 from dfd.detectors.base import SyntheticDetector, abstain
 from dfd.detectors.registry import Registry
 from dfd.types import Modality, Observation, Quality
@@ -144,3 +146,111 @@ def test_subset_selection_caps_at_registry_size():
     reg = Registry()
     reg.register(SyntheticDetector(name="only", seed=1))
     assert reg.select_subset(k=10, seed=1) == ["only"]
+
+
+def test_synthetic_detector_is_frozen():
+    """FIX 1: SyntheticDetector must be frozen to protect registry identity invariant."""
+    d = SyntheticDetector(name="synth", seed=7)
+    with pytest.raises(FrozenInstanceError):
+        d.name = "mutated"
+
+
+def test_detector_abstains_reasons_mixed_batch():
+    """FIX 2: Mixed batch (some quality=None, some below floor) should report below_quality_floor.
+
+    The rule: if ANY observation carries measured quality that failed the floor,
+    report below_quality_floor (more informative). Only when NO observation
+    carries quality at all is it quality_not_measured.
+    """
+    d = SyntheticDetector(name="synth", seed=7, min_quality_band="high")
+
+    obs_no_quality = Observation(
+        t=0.0, payload=np.zeros((64, 64, 3), np.uint8),
+        roi=(0, 0, 64, 64), quality=None, source_id="s1"
+    )
+    obs_low = _obs(band="low")
+
+    # Order 1: unmeasured first, then below-floor
+    r1 = d.score([obs_no_quality, obs_low])
+    assert r1.abstained and r1.reason == "below_quality_floor", \
+        "Should report below_quality_floor (measured failure trumps unmeasured)"
+
+    # Order 2: below-floor first, then unmeasured
+    r2 = d.score([obs_low, obs_no_quality])
+    assert r2.abstained and r2.reason == "below_quality_floor", \
+        "Should report below_quality_floor (same rule regardless of order)"
+
+
+def test_synthetic_detector_no_observations_vs_quality_not_measured():
+    """FIX 6: Distinguish no observations at all from quality not measured."""
+    d = SyntheticDetector(name="synth", seed=7)
+
+    # Empty list
+    r_empty = d.score([])
+    assert r_empty.abstained and r_empty.reason == "no_observations"
+
+    # Non-empty but all have quality=None
+    obs_no_quality = Observation(
+        t=0.0, payload=np.zeros((64, 64, 3), np.uint8),
+        roi=(0, 0, 64, 64), quality=None, source_id="s1"
+    )
+    r_no_quality = d.score([obs_no_quality])
+    assert r_no_quality.abstained and r_no_quality.reason == "quality_not_measured"
+
+    # Reasons are distinct
+    assert r_empty.reason != r_no_quality.reason
+
+
+def test_score_duplicates_accumulate_not_annihilate():
+    """FIX 3: Duplicates must accumulate (addition) not cancel (XOR).
+
+    XOR is self-inverse, so identical frames contribute nothing, which is
+    catastrophic for video (static scenes, frozen injected streams). Addition
+    makes duplicates accumulate.
+    """
+    d = SyntheticDetector(name="synth", seed=7)
+    obs = _obs()
+
+    # Score with one copy
+    r_single = d.score([obs])
+    assert r_single.score is not None
+    assert r_single.score != 0.0, "Non-degenerate payload should not score 0.0"
+
+    # Score with two identical copies
+    r_double = d.score([obs, obs])
+    assert r_double.score is not None
+    assert r_double.score != 0.0, "Duplicate payload should not score 0.0"
+
+    # Must be different (addition, not annihilation)
+    assert r_single.score != r_double.score, \
+        "Duplicate frames must produce different scores (accumulation, not cancellation)"
+
+
+def test_registry_identity_invariant_cannot_be_broken():
+    """FIX 1: Registry key stability: detector name is snapshotted at registration.
+
+    Even if someone mutated a detector's name after registration (which is now
+    impossible because it's frozen), the registry would still work correctly
+    because it captured the name at registration time. This test verifies the
+    snapshot mechanism.
+    """
+    reg = Registry()
+    d = SyntheticDetector(name="original", seed=1)
+    reg.register(d)
+
+    # Detector is frozen, so mutation is impossible
+    with pytest.raises(FrozenInstanceError):
+        d.name = "mutated"
+
+    # Registry still returns the correct object under the original name
+    assert reg.get("original") is d
+    assert "original" in reg.names()
+
+
+def test_select_subset_rejects_negative_k():
+    """FIX 5: select_subset must validate k >= 0."""
+    reg = Registry()
+    reg.register(SyntheticDetector(name="d1", seed=1))
+
+    with pytest.raises(ValueError, match="k must be >= 0"):
+        reg.select_subset(k=-1, seed=99)

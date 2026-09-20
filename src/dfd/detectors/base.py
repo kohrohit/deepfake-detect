@@ -15,8 +15,17 @@ logger = logging.getLogger(__name__)
 
 BELOW_FLOOR = "below_quality_floor"
 NO_QUALITY = "quality_not_measured"
+NO_OBSERVATIONS = "no_observations"
 WEIGHTS_ABSENT = "weights_absent"
 OK = "ok"
+
+# Bytes taken from each SHA-256 digest. 8 gives a 64-bit accumulator, ample
+# for a deterministic test double; this value has no statistical significance.
+DIGEST_BYTES = 8
+
+# Score quantisation. 10_000 yields 4 decimal places, enough to distinguish
+# payloads without implying precision this stand-in does not have.
+SCORE_BUCKETS = 10_000
 
 
 def abstain(detector: str, version: str, reason: str) -> RawScore:
@@ -39,11 +48,30 @@ class Detector(Protocol):
 
     Detectors are hot-swappable and expected to decay in 3-6 months.
     They must implement the Detector protocol to be registered in the harness.
+
+    Identity attributes (name, version, modalities, min_quality_band) are
+    declared as read-only properties to prevent mutation after registration,
+    which would break the registry's identity invariant.
     """
-    name: str
-    version: str
-    modalities: set[Modality]
-    min_quality_band: Literal["low", "medium", "high"]
+    @property
+    def name(self) -> str:
+        """Unique detector identifier. Read-only after registration."""
+        ...
+
+    @property
+    def version(self) -> str:
+        """Detector version for comparison across updates. Read-only."""
+        ...
+
+    @property
+    def modalities(self) -> frozenset[Modality]:
+        """Which modalities this detector can process. Read-only."""
+        ...
+
+    @property
+    def min_quality_band(self) -> Literal["low", "medium", "high"]:
+        """Quality floor declaration. Read-only after registration."""
+        ...
 
     def score(self, obs: Sequence[Observation]) -> RawScore:
         """Score one or more observations.
@@ -57,7 +85,7 @@ class Detector(Protocol):
         ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class SyntheticDetector:
     """A deterministic stand-in used to test the harness without model weights.
 
@@ -68,12 +96,15 @@ class SyntheticDetector:
 
     Determinism guarantee: same observation payload plus same seed always
     yields the same score. This makes it suitable for repeatable testing.
+
+    Frozen to prevent mutation after registration, which would break the
+    registry's identity invariant.
     """
     name: str
     seed: int = 0
     version: str = "synthetic-1"
-    modalities: set[Modality] = field(
-        default_factory=lambda: {Modality.IMAGE, Modality.VIDEO})
+    modalities: frozenset[Modality] = field(
+        default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO}))
     min_quality_band: Literal["low", "medium", "high"] = "low"
 
     def score(self, obs: Sequence[Observation]) -> RawScore:
@@ -92,9 +123,11 @@ class SyntheticDetector:
         """
         if not obs:
             logger.debug("score called with empty observation sequence; abstaining")
-            return abstain(self.name, self.version, NO_QUALITY)
+            return abstain(self.name, self.version, NO_OBSERVATIONS)
 
         usable = []
+        has_measured_below_floor = False
+
         for o in obs:
             if o.quality is None:
                 logger.debug("observation has quality=None; skipping")
@@ -105,20 +138,25 @@ class SyntheticDetector:
                 logger.debug(
                     "observation band %s below floor %s; skipping",
                     o.quality.band, self.min_quality_band)
+                has_measured_below_floor = True
 
         if not usable:
-            reason = NO_QUALITY if obs[0].quality is None else BELOW_FLOOR
+            # Prioritize measured-but-failed over unmeasured: if ANY observation
+            # carried a measured quality that failed the floor, report that.
+            # Only when NO observation carried quality at all is it unmeasured.
+            reason = BELOW_FLOOR if has_measured_below_floor else NO_QUALITY
             logger.debug("no usable observations; abstaining: %s", reason)
             return abstain(self.name, self.version, reason)
 
-        # Hash the payload deterministically using seed
+        # Hash the payload deterministically using seed.
+        # Use addition (not XOR) so duplicates accumulate rather than annihilate.
         acc = 0
         for o in usable:
             h = hashlib.sha256(np.ascontiguousarray(o.payload).tobytes())
             h.update(str(self.seed).encode())
-            acc ^= int.from_bytes(h.digest()[:8], "big")
+            acc = (acc + int.from_bytes(h.digest()[:DIGEST_BYTES], "big")) % (2 ** 64)
 
-        score = (acc % 10_000) / 10_000.0
+        score = (acc % SCORE_BUCKETS) / SCORE_BUCKETS
         logger.debug("score computed: %f", score)
         return RawScore(detector=self.name, version=self.version,
                         score=score,
@@ -139,17 +177,25 @@ class Registry:
     def register(self, detector: Detector) -> None:
         """Register a detector in the registry.
 
+        The detector's name is snapshotted at registration time to prevent
+        later mutation from breaking the identity invariant (registry maps
+        name -> detector, so if a detector rebinds its name, the key becomes
+        stale and registry.get(old_name) returns an object calling itself
+        by a different name).
+
         Args:
             detector: detector instance to register
 
         Raises:
             ValueError: if a detector with the same name is already registered
         """
-        if detector.name in self._d:
-            logger.error("detector already registered: %s", detector.name)
-            raise ValueError(f"detector already registered: {detector.name}")
-        self._d[detector.name] = detector
-        logger.debug("registered detector: %s", detector.name)
+        # Snapshot the name at registration time, never re-read from detector
+        name = detector.name
+        if name in self._d:
+            logger.error("detector already registered: %s", name)
+            raise ValueError(f"detector already registered: {name}")
+        self._d[name] = detector
+        logger.debug("registered detector: %s", name)
 
     def get(self, name: str) -> Detector:
         """Retrieve a registered detector by name.
@@ -177,12 +223,18 @@ class Registry:
         """Select a random subset of k detector names using a seeded RNG.
 
         Args:
-            k: number of detectors to select
+            k: number of detectors to select. Must be >= 0; negative values raise ValueError.
             seed: random seed for reproducibility
 
         Returns:
             sorted list of k detector names (or fewer if registry has fewer)
+
+        Raises:
+            ValueError: if k < 0
         """
+        if k < 0:
+            raise ValueError(f"k must be >= 0, got {k}")
+
         names = self.names()
         k = min(k, len(names))
         rng = np.random.default_rng(seed)
