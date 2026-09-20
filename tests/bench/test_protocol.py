@@ -74,6 +74,35 @@ def test_no_source_video_straddles_the_split(seed):
         assert tr.isdisjoint(te)
 
 
+# rec()'s source_id defaults to sample_id, so every record in RECORDS is
+# already its own source: no two of them ever share one to straddle. That
+# makes test_no_source_video_straddles_the_split above pass even against a
+# splitter that assigns per record instead of per subject -- there is
+# nothing in RECORDS for such a bug to straddle. This fixture gives one
+# subject three frames of a single source video, so guard 2's actual
+# dimension (several samples, one video) is exercised.
+VIDEO_RECORDS = RECORDS + [
+    rec("v1", "pF", "deepfacelive", 1, source_id="videoF"),
+    rec("v2", "pF", "deepfacelive", 1, source_id="videoF"),
+    rec("v3", "pF", "deepfacelive", 1, source_id="videoF"),
+]
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_multi_frame_source_video_lands_wholly_on_one_side(seed):
+    """Guard 2, exercised for real: three frames of ONE video, not three
+    single-frame videos each of which is its own source."""
+    for s in logo_splits(VIDEO_RECORDS, seed=seed):
+        train_frames = {r["sample_id"] for r in s.train
+                         if r["source_id"] == "videoF"}
+        test_frames = {r["sample_id"] for r in s.test
+                        if r["source_id"] == "videoF"}
+        assert not (train_frames and test_frames), (
+            f"{s.held_out_generator}: video 'videoF' straddled "
+            f"train={train_frames} test={test_frames}")
+        assert train_frames | test_frames == {"v1", "v2", "v3"}
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_every_record_is_placed_or_reported_dropped(seed):
     """Nothing vanishes silently."""
@@ -136,10 +165,17 @@ def test_a_corpus_with_one_subject_is_rejected():
 
 
 def test_a_single_generator_corpus_is_rejected():
-    """Holding out the only generator leaves nothing to train on."""
+    """Holding out the only generator leaves nothing to train on.
+
+    `match` names the "has no train fakes" phrase specifically, not the
+    bare substring "train fakes": `_require_measurable`'s message always
+    embeds the full counts dict, and "train fakes" is one of that dict's
+    keys regardless of which count is actually zero, so the bare substring
+    would match any failure of this function, not just this one.
+    """
     bad = [rec("r1", "p1", None, 0), rec("r2", "p2", None, 0),
            rec("f1", "pA", "deepfacelive", 1), rec("f2", "pB", "deepfacelive", 1)]
-    with pytest.raises(ValueError, match="train fakes"):
+    with pytest.raises(ValueError, match="has no train fakes"):
         logo_splits(bad)
 
 
@@ -149,3 +185,66 @@ def test_a_source_carrying_two_subjects_is_rejected():
            rec("f", "pA", "deepfacelive", 1)]
     with pytest.raises(ValueError, match="more than one subject/generator"):
         logo_splits(bad)
+
+
+def test_a_label_outside_zero_or_one_is_rejected():
+    bad = [rec("r1", "p1", None, 0),
+           {"sample_id": "x", "subject_id": "pA", "source_id": "x",
+            "generator": "deepfacelive", "label": 2}]
+    with pytest.raises(ValueError, match="label"):
+        logo_splits(bad)
+
+
+def test_a_real_record_carrying_a_generator_is_rejected():
+    """The schema says generator=None for reals. Without this check a real
+    with a generator string passes validation and then contributes a
+    distinct (subject, generator) pair, which can trigger a confusing
+    'more than one subject/generator pair' rejection for an unrelated
+    reason."""
+    bad = [rec("r1", "p1", "deepfacelive", 0), rec("r2", "p2", None, 0)]
+    with pytest.raises(ValueError, match="generator"):
+        logo_splits(bad)
+
+
+# Minimal corpus with a valid, zero-drop, identity-disjoint split for BOTH
+# folds: g1: train {p1, pB} / test {p2, pA}; g2: train {p1, pA} / test
+# {p2, pB}. pA and pB are real-less, single-generator subjects -- each is
+# exactly the case the two vanishing-subject moves in logo_splits exist for.
+REVIEWER_CORPUS = [
+    rec("r1", "p1", None, 0), rec("r2", "p2", None, 0),
+    rec("fA", "pA", "g1", 1), rec("fB", "pB", "g2", 1),
+]
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_reviewer_corpus_splits_at_every_seed_with_zero_drops(seed):
+    """Before the symmetric move (Finding 1), this corpus raised ValueError
+    ('no test fakes') at every seed 0-7: the one-directional fix could push
+    a real-less subject off test but had no mirror move able to push one
+    onto it, so no seed's random partition could ever produce a fold with
+    both a train fake and a test fake."""
+    for s in logo_splits(REVIEWER_CORPUS, seed=seed):
+        assert s.dropped_for_identity == []
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_subject_with_no_matching_generator_is_kept_on_train(seed):
+    """Move 1: a real-less subject whose fakes never match the held-out
+    generator would drop everything if left on test, so it is moved to (or
+    kept on) train regardless of where the random partition first put it."""
+    for s in logo_splits(REVIEWER_CORPUS, seed=seed):
+        no_match = "pB" if s.held_out_generator == "g1" else "pA"
+        assert no_match in s.train_subjects
+        assert no_match not in s.test_subjects
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_a_subject_whose_only_generator_is_held_out_is_moved_to_test(seed):
+    """Move 2, the mirror of the above: a real-less subject whose entire
+    generator set is exactly the held-out generator would drop everything
+    if left on train, so it is moved to (or kept on) test regardless of
+    where the random partition first put it."""
+    for s in logo_splits(REVIEWER_CORPUS, seed=seed):
+        only_match = "pA" if s.held_out_generator == "g1" else "pB"
+        assert only_match in s.test_subjects
+        assert only_match not in s.train_subjects

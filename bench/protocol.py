@@ -21,11 +21,22 @@ REQUIRED_KEYS = ("sample_id", "subject_id", "source_id", "generator", "label")
 
 @dataclass(frozen=True)
 class Split:
-    """One fold: every fake in `test` comes from `held_out_generator`."""
+    """One fold: every fake in `test` comes from `held_out_generator`.
+
+    `train_subjects`/`test_subjects` are the partition actually used to
+    build this fold (after both vanishing-subject moves below), not merely
+    subjects observed in `train`/`test` — the two coincide for every
+    subject, but making the partition itself a field means a caller (or a
+    test) can ask "which side is this subject on" without re-deriving it
+    from placed records, which is exactly the derivation that went wrong
+    once already.
+    """
 
     held_out_generator: str
     train: list[dict[str, Any]]
     test: list[dict[str, Any]]
+    train_subjects: frozenset[str]
+    test_subjects: frozenset[str]
     dropped_for_identity: list[dict[str, Any]] = field(default_factory=list)
 
     def test_ids(self) -> list[str]:
@@ -45,10 +56,20 @@ def _validate(records: list[dict[str, Any]]) -> None:
             raise KeyError(
                 f"record {r.get('sample_id')!r} is missing required "
                 f"key(s) {missing}")
+        if r["label"] not in (0, 1):
+            raise ValueError(
+                f"record {r['sample_id']!r} has label {r['label']!r}; only "
+                "0 (real) and 1 (fake) are valid")
         if r["label"] == 1 and not r["generator"]:
             raise ValueError(
                 f"fake record {r['sample_id']!r} has no generator; an "
                 "unattributed fake would join the training side of every split")
+        if r["label"] == 0 and r["generator"] is not None:
+            raise ValueError(
+                f"real record {r['sample_id']!r} carries generator "
+                f"{r['generator']!r}; reals must have generator=None, or "
+                "they contribute a phantom (subject, generator) pair that "
+                "can trigger an unrelated source-straddle rejection")
 
     by_source: dict[str, set[tuple[Any, Any]]] = {}
     for r in records:
@@ -108,22 +129,54 @@ def logo_splits(records: list[dict[str, Any]], seed: int = 0) -> list[Split]:
         else:
             fake_generators[r["subject_id"]].add(r["generator"])
 
+    # Reals never move for generator reasons (no fold-specific logic below
+    # touches them), so if the random partition happens to put every real
+    # subject on one side, every fold built from it has no reals on the
+    # other and _require_measurable rejects every fold identically and
+    # needlessly. With at least 2 real subjects a real-carrying split
+    # always exists; deterministically move the alphabetically-first real
+    # subject on the over-represented side to balance it.
+    real_subjects = sorted(s for s in subjects if has_real[s])
+    if len(real_subjects) >= 2:
+        train_reals = [s for s in real_subjects if s in train_subjects]
+        test_reals = [s for s in real_subjects if s not in train_subjects]
+        if not train_reals:
+            train_subjects.add(test_reals[0])
+        elif not test_reals:
+            train_subjects.discard(train_reals[0])
+
     generators = sorted({r["generator"] for r in records if r["label"] == 1})
 
     splits: list[Split] = []
     for g in generators:
-        # A test-side subject with no real record and no fake attributed to
-        # g cannot place anything on test: every one of its fakes wants
-        # train (none match g), so all would be dropped and the subject
-        # would vanish from the fold instead of registering as the identity
-        # conflict it is. Keep such a subject on train, where its fakes
-        # place cleanly, rather than dropping it into invisibility.
+        # A subject with no real record has no anchor: it is visible in a
+        # fold only through fakes that place there. Two mirror-image moves
+        # keep every such subject visible instead of letting it vanish:
+        #
+        #  - test-slated, but none of its fakes are attributed to g: every
+        #    fake wants train (none match g), so all would be dropped and
+        #    the subject would disappear from test rather than register as
+        #    the identity conflict it is. Move it to train, where its fakes
+        #    place cleanly.
+        #  - train-slated, but its entire generator set is exactly {g}:
+        #    every fake wants test (all match g), so all would be dropped
+        #    and the subject would disappear from train. Move it to test,
+        #    where its fakes place cleanly.
+        #
+        # Both moves are Pareto-improving: they add zero drops on the side
+        # a subject moves to (its fakes agree unanimously with that side)
+        # and remove nothing that was placeable on the side it leaves.
         train_subjects_g = set(train_subjects)
         for subj in subjects:
-            if (subj not in train_subjects_g
-                    and not has_real[subj]
-                    and g not in fake_generators[subj]):
+            if has_real[subj]:
+                continue
+            gens = fake_generators[subj]
+            if subj not in train_subjects and g not in gens:
                 train_subjects_g.add(subj)
+            elif subj in train_subjects and gens == {g}:
+                train_subjects_g.discard(subj)
+
+        test_subjects_g = frozenset(subjects) - train_subjects_g
 
         train: list[dict[str, Any]] = []
         test: list[dict[str, Any]] = []
@@ -139,5 +192,7 @@ def logo_splits(records: list[dict[str, Any]], seed: int = 0) -> list[Split]:
             else:
                 dropped.append(r)
         _require_measurable(g, train, test)
-        splits.append(Split(g, train, test, dropped))
+        splits.append(Split(
+            g, train, test, frozenset(train_subjects_g), test_subjects_g,
+            dropped))
     return splits
