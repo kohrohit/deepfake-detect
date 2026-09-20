@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_LLR = 20.0
 
 # LLR threshold to emit FAKE verdict. Spec §7.1.
+# 1.0 nat ≈ 73% posterior (logit(1.0) = 0.731). Conservative threshold to require
+# multi-detector agreement or strong single evidence before claiming FAKE.
 FAKE_THRESHOLD = 1.0
 
 # LLR threshold to emit REAL verdict. Spec §7.1.
+# -1.0 nat ≈ 27% posterior (logit(-1.0) = 0.269). Symmetric with FAKE_THRESHOLD.
 REAL_THRESHOLD = -1.0
 
 # Evidence pulling hard in both directions means off-distribution, not 'average them'.
@@ -58,39 +61,49 @@ class FusedResult:
     reasons: dict = field(default_factory=dict)
 
 
-def effective_sample_size(series) -> float:
+def effective_sample_size(series: np.ndarray | list[float]) -> float:
     """ESS from lag-1 autocorrelation: n * (1 - rho) / (1 + rho).
 
     Perfectly correlated frames (rho ≈ 1) → ESS ≈ 1.
     Independent frames (rho ≈ 0) → ESS ≈ n.
 
+    ESS is clamped to [1.0, n]. Anti-correlated data (rho → -1) would give
+    ESS > n, which contradicts the model: ESS is the number of *independent*
+    observations equivalent to these n dependent ones. It cannot exceed n.
+
+    For n < 3, reliable autocorrelation estimation is impossible. At n=2, any
+    two distinct values give rho = -0.5 by construction, making ESS always 6.0
+    (three times the sample size) regardless of the data. Return n directly.
+
     Raises:
-        No exceptions; returns 1.0 for invalid input.
+        No exceptions; returns float(n) for insufficient input.
     """
     x = np.asarray(series, dtype=float)
     n = len(x)
-    if n < 2:
+    if n < 3:
         return float(n)
     if np.std(x) < 1e-12:
         return 1.0
     xc = x - x.mean()
     rho = float(np.dot(xc[:-1], xc[1:]) / np.dot(xc, xc))
     rho = max(-0.999, min(0.999, rho))
-    return max(1.0, n * (1.0 - rho) / (1.0 + rho))
+    ess = n * (1.0 - rho) / (1.0 + rho)
+    return float(min(float(n), max(1.0, ess)))
 
 
 def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) -> FusedResult:
     """Combine Evidence into a single verdict.
 
     Abstentions are filtered out before aggregation. LLRs are summed, then
-    discounted by √(ESS / n_frames) to account for frame-to-frame correlation.
+    discounted by (ESS / n_frames) to account for frame-to-frame correlation.
     The total is capped at ±MAX_TOTAL_LLR. Disagreement (min of positive and
     negative evidence streams) triggers OUT_OF_DISTRIBUTION if ≥ DISAGREEMENT_OOD.
 
     Args:
         evidence: Detectors' calibrated log-likelihood ratios.
         n_frames: Number of frames in the sample (>1 triggers ESS discount).
-        ess: Effective sample size. If None and n_frames > 1, defaults to 1.0.
+        ess: Effective sample size. If None and n_frames > 1, defaults to 1.0
+             (max discount; conservative for missing correlation data).
 
     Returns:
         FusedResult with verdict, aggregate LLR, posterior, disagreement, counts.
@@ -111,12 +124,14 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
     total = float(llrs.sum())
 
     # Discount for temporal correlation: evidence scales with independent
-    # observations, not with frame count. √(ESS/n) accounts for the fact that
-    # frame-to-frame detector errors are strongly correlated (same pipeline,
-    # identity, lighting). Spec §9.5.
+    # observations, not with frame count. LLRs are additive; if n correlated
+    # observations are worth ESS independent ones, total = naive_sum × (ESS/n).
+    # Linear scaling (not square-root) preserves additive semantics. Spec §9.5.
     if n_frames > 1:
         eff = ess if ess is not None else 1.0
-        total *= math.sqrt(max(1.0, eff) / float(n_frames))
+        if ess is None:
+            logger.warning("Fusion ran with n_frames=%d and no ESS data; max-discounting to 1.0", n_frames)
+        total *= max(1.0, eff) / float(n_frames)
 
     # Cap to prevent runaway confidence. Spec §9.3.
     total = max(-MAX_TOTAL_LLR, min(MAX_TOTAL_LLR, total))
