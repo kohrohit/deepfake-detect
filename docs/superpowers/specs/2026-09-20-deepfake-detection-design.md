@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-20
 **Status:** Design approved in principle; P0 scope pending review
-**Author:** rohit.kohli@scoreme.in with Claude
+**Author:** kohrohit@gmail.com with Claude
 
 ---
 
