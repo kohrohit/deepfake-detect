@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ..limits import DEFAULT_LIMITS, Limits, check_file_size
 from ..types import Context, Modality, Observation, Sample
 
 logger = logging.getLogger(__name__)
@@ -31,26 +32,37 @@ def sample_indices(total: int, k: int, seed: int) -> list[int]:
 
 
 def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX_FRAMES,
-               seed: int = 0) -> Sample:
+               seed: int = 0, limits: Limits = DEFAULT_LIMITS) -> Sample:
     """Load video frames into a Sample.
 
     Decodes a video file and extracts a deterministic subset of frames using
     stratified sampling. If frame-count metadata is unavailable or unreliable,
     falls back to sequential read of the first max_frames.
 
+    The file size is gated against `limits` before the container is opened
+    (spec §3A, §10), and the requested frame count is clamped to
+    `limits.max_frames` regardless of what the caller asked for, so a caller
+    cannot reintroduce unbounded frame extraction by passing a large
+    `max_frames`.
+
     Args:
         path: Path to video file.
         context: Metadata context.
         max_frames: Maximum number of frames to extract.
         seed: Random seed for deterministic frame selection (when total > 0).
+        limits: Resource limits to enforce before and during decoding.
 
     Returns:
         Sample with Observation per extracted frame, ordered by timestamp.
 
     Raises:
+        InvalidInput: If the path is unreadable.
+        ResourceLimitExceeded: If the file exceeds `limits.max_file_bytes`.
         ValueError: If video cannot be opened or decoding yields zero frames.
     """
     path = Path(path)
+    check_file_size(path, limits)
+    max_frames = min(max_frames, limits.max_frames)
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise ValueError(f"could not open video: {path}")
