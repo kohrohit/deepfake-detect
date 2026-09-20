@@ -23,6 +23,12 @@ class AssetRecord:
     evidence_url: str
     date_checked: str
     checked_by: str
+    # Repo-relative paths this id covers. A filename is not a reliable proxy
+    # for a logical asset id (vendor-named files collide — "model.safetensors"
+    # says nothing about which model), so the manifest declares the mapping
+    # explicitly instead of it being inferred. Defaults to empty so entries
+    # written before this field existed keep loading.
+    files: tuple[str, ...] = ()
 
 
 def load_manifest(path: str | Path) -> dict[str, AssetRecord]:
@@ -37,6 +43,7 @@ def load_manifest(path: str | Path) -> dict[str, AssetRecord]:
             evidence_url=rec["evidence_url"],
             date_checked=rec["date_checked"],
             checked_by=rec["checked_by"],
+            files=tuple(rec.get("files") or ()),
         )
     return out
 
