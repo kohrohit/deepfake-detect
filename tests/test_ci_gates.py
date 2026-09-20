@@ -19,7 +19,19 @@ def test_ci_runs_every_gate():
 
 
 def test_ci_enforces_the_asset_registration_gate():
-    """Spec criterion 6 is only real if CI fails on an unregistered weight file."""
+    """Confirms the CI step exists and calls the right function — nothing more.
+
+    This gate cannot fail in CI today: `.github/workflows/ci.yml` calls
+    `assert_all_assets_registered(..., allow_empty=True)`, and CI's weight
+    files are gitignored, so the scan finds nothing to register and
+    `allow_empty=True` lets that pass deliberately (see `asset_scan.py`).
+    That design is correct — CI has no weights to check — but it means
+    spec criterion 6 is enforced only where this function runs against a
+    tree that actually has assets (e.g. locally, or in an environment with
+    weights present), never by this CI job. Do not read this test, or a
+    green CI run, as evidence that an unregistered weight file would be
+    caught in CI — it would not.
+    """
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "assert_all_assets_registered" in ci or "asset_scan" in ci
 

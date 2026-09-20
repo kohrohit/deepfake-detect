@@ -20,6 +20,20 @@ def test_identity_disjoint_raises_on_the_same_person_in_both_splits():
         check_identity_disjoint(["a"], ["a_dup"], emb, threshold=0.9)
 
 
+def test_identity_disjoint_raises_rather_than_skips_when_embeddings_are_missing():
+    """An empty embeddings dict must not certify disjointness over zero
+    actually-compared pairs; the same ids on both sides must never come back
+    clean just because nothing was looked up."""
+    with pytest.raises(GuardViolation, match=r"no embedding"):
+        check_identity_disjoint(["a", "b", "c"], ["a", "b", "c"], {}, threshold=0.6)
+
+
+def test_identity_disjoint_raises_naming_the_missing_id_for_a_partial_dict():
+    emb = {"a": np.array([1.0, 0.0])}
+    with pytest.raises(GuardViolation, match=r"no embedding.*\['b'\]"):
+        check_identity_disjoint(["a"], ["b"], emb, threshold=0.9)
+
+
 def test_identity_report_carries_a_number_not_an_assertion():
     """Spec acceptance criterion 2: report the measurement, do not claim it."""
     emb = {"a": np.array([1.0, 0.0]), "b": np.array([0.0, 1.0])}

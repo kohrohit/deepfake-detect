@@ -194,6 +194,33 @@ def test_a_single_generator_corpus_reports_no_logo_rather_than_failing(caplog):
     assert rec.detector_results["synth_a"].n_samples == 40
 
 
+def test_a_malformed_corpus_raises_out_of_run_benchmark_rather_than_warning():
+    """A straddling source_id, a label=2 record, an unattributed fake, or a
+    real carrying a generator are corpus DEFECTS (bench/protocol.py raises
+    plain ValueError for these), not a legitimately unsplittable corpus. They
+    must propagate out of run_benchmark, not be downgraded to the same
+    'LOGO unavailable' warning an unsplittable-but-valid corpus gets — those
+    two situations must stay distinguishable to a caller."""
+    records = _records()
+    records[0]["label"] = 2
+    with pytest.raises(ValueError, match="label"):
+        run_benchmark(records, _registry(), RunConfig(seed=7, enforce_guards=False))
+
+
+def test_an_unsplittable_corpus_still_warns_and_returns_empty_logo_results(caplog):
+    """The single-subject case: well-formed, just too small to split. This
+    must still degrade-and-warn, not raise, distinguishing it from the
+    malformed-corpus case above."""
+    records = _records()
+    for r in records:
+        r["subject_id"] = "only_subject"
+    with caplog.at_level(logging.WARNING):
+        rec = run_benchmark(records, _registry(),
+                            RunConfig(seed=7, enforce_guards=False))
+    assert rec.logo_results == {}
+    assert "LOGO unavailable" in caplog.text
+
+
 def test_run_is_reproducible_given_a_seed():
     a = run_benchmark(_records(), _registry(), RunConfig(seed=7))
     b = run_benchmark(_records(), _registry(), RunConfig(seed=7))
@@ -222,6 +249,19 @@ def test_bootstrap_ci_is_computed_over_source_groups_not_rows():
     records = _records()
     for i, r in enumerate(records):
         r["source_id"] = f"grp{i // 2}"          # 20 groups of 2 samples
+    # A source may carry only one (subject_id, generator) pair (bench/
+    # protocol.py's straddle check, now enforced even when guards are off —
+    # that check guards corpus validity, not evaluation hygiene). The stock
+    # fixture alternates fake/real by index, so naive pairing straddles.
+    # Align each pair's subject_id/generator/label onto one of its two
+    # records, alternating which record wins so the corpus keeps its
+    # overall 20 fake / 20 real balance.
+    for g in range(len(records) // 2):
+        i, j = 2 * g, 2 * g + 1
+        src, dst = (records[i], records[j]) if g % 2 == 0 else (records[j], records[i])
+        dst["subject_id"] = src["subject_id"]
+        dst["generator"] = src["generator"]
+        dst["label"] = src["label"]
 
     reg = _registry()
     rec = run_benchmark(records, reg, RunConfig(seed=7, enforce_guards=False))

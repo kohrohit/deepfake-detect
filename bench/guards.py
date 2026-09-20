@@ -22,6 +22,11 @@ class IdentityReport:
 
     Note: max_similarity=0.0 and violations=0 when train or test ids are empty
     does not confirm low risk, only that zero pairs were compared.
+
+    A missing embedding is not represented here at all: `check_identity_disjoint`
+    raises `GuardViolation` before constructing this report if any train or
+    test id has no embedding, rather than silently skipping that id and
+    returning a report over the pairs that happened to be measurable.
     """
     n_train: int
     n_test: int
@@ -63,14 +68,21 @@ def check_identity_disjoint(
     not an assertion that it was checked.
 
     Raises:
-        GuardViolation: If any train/test pair has cosine similarity >= threshold.
+        GuardViolation: If any train/test pair has cosine similarity >= threshold,
+            or if any train or test id has no embedding. A missing embedding
+            means the comparison for that id was never made; treating it as
+            "no similarity found" would certify disjointness that was never
+            checked, which is worse than refusing to answer.
     """
+    missing = sorted({i for i in (*train_ids, *test_ids) if i not in embeddings})
+    if missing:
+        raise GuardViolation(
+            f"identity guard cannot certify disjointness: no embedding for "
+            f"{len(missing)} id(s): {missing}")
     max_sim = 0.0
     violations = 0
     for a in train_ids:
         for b in test_ids:
-            if a not in embeddings or b not in embeddings:
-                continue
             sim = _cosine(embeddings[a], embeddings[b])
             max_sim = max(max_sim, sim)
             if sim >= threshold:

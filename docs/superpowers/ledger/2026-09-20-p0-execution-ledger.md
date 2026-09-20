@@ -1826,3 +1826,497 @@ twice and omits another with no error; and no report test asserts the seed's
 VALUE, so a renderer emitting seed 0 ships green against criterion 10's own
 artifact.
 Task 17: fix round 1/5 dispatched — FIX_BASE 8c339f9.
+Task 17: fix round 1/5 (7 addressed, 0 open; commits 8c339f9..99feddd)
+Task 17: complete (commits 7a32698..99feddd, review clean, 39 runner/report
+tests, 378 total green)
+
+The re-review did the thing that matters most: it separated "evidence offered"
+from "test can actually fail". Findings 1, 5 and part of 4 carried genuine
+revert-and-rerun RED output; findings 2, 3, 4-runner and 6 were backed only by
+write-then-implement, which is weaker for a fix to EXISTING wrong behaviour. So
+it checked each remaining assertion analytically against the pre-fix `-` lines
+in the diff and established each is unsatisfiable against the old code — the
+pre-fix key tuple omitted the mutated field, pre-fix `_detector_result(..., [], 0)`
+yields 0.0, pre-fix RunRecord had no logo_dropped attribute at all, pre-fix
+there was no raise to catch. Every test can fail, even where the offered
+evidence did not itself show it.
+
+It also independently reproduced Finding 1's numbers rather than trusting them:
+source-grouped CI (0.22, 0.5801875) width 0.360 vs row-grouped
+(0.20697727272727273, 0.5342249855407751) width 0.327, with the runner's
+reported CI equal to the source value. And it verified the new test is
+self-proving — asserting BOTH `== expected_by_source` and `!= expected_by_row`,
+so it cannot pass on a fixture where the two coincide. That is the guard I had
+left untestable, now testable and proven.
+
+Task 17: minors DEFERRED to final review — report.py renders "dropped 0" via
+`logo_dropped.get(g, 0)` for hand-built records (same fabricated-zero species
+as finding 3, unreachable from run_benchmark, which always populates both);
+the duplicate-sample_id check sits inside _logo_results so a duplicated corpus
+pays for all detector scoring before raising; the Finding-1 paired-source
+fixture makes logo_splits refuse the corpus, so the paired-source path has no
+LOGO coverage; plus the seven deferred from round 1 (renderer-side demotion
+floor, worst_logo_auc on an unmeasurable fold, latency magnitude bound, ece
+range abort, unexercised identity_report branch, one-directional
+guards_enforced assertion, "**0.510**" pinning).
+Task 18: dispatched (sonnet). BASE 1868322.
+Task 18: implemented d213299 (6 new tests, 384 total green).
+
+Implementer raised a real concern: the sweep reuses the CLEAN observation's
+`quality` object rather than re-measuring quality on the perturbed pixels, so a
+perturbation that degraded quality below a detector's floor would not produce
+the abstention it should. I measured the effect before ruling, across 11 sweep
+variants at three fixture sizes:
+
+  128x160 structured   every variant bands "low", same as clean
+  240x320 sharp        every variant bands "high", same as clean
+  360x480 sharp        every variant bands "high", same as clean
+
+So the current behaviour is exactly equivalent — no fix round needed, and the
+reuse should be documented as deliberate with the condition under which it would
+start to matter.
+
+But the measurement surfaces something larger, and it is NOT Task 18's to fix:
+QUALITY BANDING IS BLIND TO EVERY PERTURBATION IN THE ROBUSTNESS SURFACE.
+Blur halves high-frequency energy (0.13x, measured in Task 14) and bands
+identically. Screenshot re-capture destroys ~64% of it and bands identically.
+Print re-capture likewise. So the quality floor offers NO protection against the
+two cheapest laundering steps in the threat model, and the abstention mechanism
+will never route a recaptured sample to manual review on quality grounds.
+
+That is a finding about src/dfd/quality.py (Task 3, long complete), not about
+the task in flight. It matters because spec 3A's posture assumes low-quality or
+degraded input is caught and routed, and here it simply is not. Recorded for the
+final review and the handoff rather than acted on mid-task — changing the
+quality thresholds now would invalidate every abstention-related test across
+eight completed tasks.
+Task 18: review found 0 Critical, 2 Important — both untested wiring, both
+consequences of a brief (mine) that asked only for runner tests.
+
+The reviewer confirmed the wiring itself is right before finding the gaps: ROI
+reuse is valid because every perturbation returns an array of the same (h,w) as
+its input (it checked _resize downscales then upscales back), Observation reuse
+replaces only the payload across all five fields, LOGO folds correctly default
+to {} rather than fabricating an empty-as-measured surface, and the source_id
+bootstrap contract added last round is undisturbed.
+
+Ruling: finding 1 enters the fix round. LOGO folds correctly receive {} — and
+NOTHING ASSERTS IT. That is the identical pattern to Task 17's finding 1 one
+round earlier: a value wired correctly with no test able to detect it
+regressing. Having just paid a fix round for exactly this in the same file, it
+would be absurd to park it. One line.
+
+Ruling: finding 2 enters. The report's robustness table — the any_rob gate,
+pooled column names, per-cell lookup — ships with zero automated coverage, and
+the implementer's manual render is not a regression guard. The rendered report
+is the artifact acceptance criterion 9 is actually about; "the brief only asked
+for runner tests" is a defect in my brief, not a defence.
+
+Promoted from Minor: the clean-quality reuse gets a comment at the call site. I
+measured it as behaviourally equivalent across 11 variants at three sizes, but
+that context lives in a report nobody will read again, and a future reader
+cannot tell a considered simplification from an oversight.
+
+Task 18: minors DEFERRED — robustness_sweep is recomputed once per detector
+though perturbed images are detector-independent, O(detectors) redundant work
+(plan-mandated by my reference implementation; worth optimising once the
+registry grows); and test_the_whole_jpeg_quality_curve_is_measured is subsumed
+by the exact-set check two tests earlier, harmless duplication with no
+independent failure mode.
+Task 18: fix round 1/5 dispatched — FIX_BASE d213299.
+Task 18: fix round 1/5 (3 addressed, 0 open; commits d213299..dbf0057)
+Task 18: complete (commits 1868322..dbf0057, review clean, 387 total green)
+
+Re-review checked the two things most likely to be wrong in a fix of this shape.
+The closed-gate test asserts ABSENCE, which is only meaningful if the string it
+keys on is unique to the thing being gated — it verified "Robustness" appears
+exactly once in render_markdown and "screenshot_recapture" only inside the gated
+block, so absence is a genuine proxy rather than a coincidental miss. And the
+LOGO assertion asserts rec.logo_results is truthy BEFORE looping, so it cannot
+pass vacuously over an empty dict — the failure mode that has now appeared three
+times in this plan. It also confirmed the populated-case test slices the report
+from the "## Robustness" heading before matching table rows, avoiding the
+in-dataset table's identical-looking header.
+Task 19: dispatched (sonnet). BASE dbf0057.
+Task 19: implemented 0d158ac (9 tests, 396 total green).
+Task 19: review found 1 CRITICAL, 1 Important. The Critical is mine, and running
+it against the real repo showed it is worse than the reviewer could see from the
+diff alone.
+
+Reviewer's finding: discover_assets returns filename STEMS via a set, so
+model.onnx and model.pt collapse to one id — if the survivor is registered and
+cleared, the other file ships invisible to the gate.
+
+What I found running it against this repo's actual assets:
+
+  discover_assets('.')  -> ['face_detection_yunet_2023mar', 'model']
+  manifest ids          -> ['ffpp_effnetb4_weights', 'npr_weights',
+                            'sbi_effnetb4_weights', 'yunet_face_detector']
+  the gate              -> NonCommercialAsset: unregistered assets (absent from
+                           the manifest): face_detection_yunet_2023mar, model
+
+THE STEMS DO NOT MATCH THE MANIFEST IDS AT ALL. The YuNet detector IS registered
+— as `yunet_face_detector` — and the gate calls it unregistered, because the id
+is derived from the filename. And the dima806 ViT ships as `model.safetensors`,
+whose stem is `model`: the reviewer's collision case, already present in the
+repo, on the most collision-prone name there is.
+
+So the gate does not merely have a bypass. It does not work on this repository's
+real assets in either direction: it fails a registered asset and would pass an
+unregistered one that shared a stem with a cleared file.
+
+Ruling: the manifest must declare WHICH FILES each id covers, and the scan must
+match by PATH, not by stem. AssetRecord gains `files: tuple[str, ...]` of
+repo-relative paths; discover_assets returns repo-relative paths;
+assert_all_assets_registered requires every discovered path to be claimed by some
+manifest entry, and that entry's commercial_use decides clearance. This is the
+only design in which "a manifest covering every weight file in use" (spec 12.1
+criterion 6) is a checkable statement rather than a naming coincidence — and
+vendor-named files like `model.safetensors` make the coincidence impossible to
+rely on. — Cost if wrong: Task 2's manifest schema gains a field and
+assets/manifest.yaml must name real paths, which is work someone has to do once
+and which is itself the criterion being claimed.
+
+Ruling: the Important (rglob follows symlinks, admitting mislabeled ids or a
+cycle hang) enters too. Cheap, and this module's whole posture is fail-closed.
+
+Resolved the reviewer's warning myself: Task 22's CI step calls
+`assert_all_assets_registered('.', 'assets/manifest.yaml')` and nothing calls
+`assert_release_clean(manifest, discover_assets(root))` directly, so the
+original vacuity is not reachable from CI. Confirmed in the Task 22 brief.
+Task 19: fix round 1/5 dispatched — FIX_BASE 0d158ac.
+
+CROSS-TASK ITEM to settle after Task 20 lands: Task 19 now has TWO bare exceptions — `AssetScanEmpty` and `DuplicateAssetClaim`. Original note follows.
+CROSS-TASK ITEM to settle after Task 20 lands: Task 19's `AssetScanEmpty` is
+currently a bare `Exception` with a docstring saying it joins the `DfdError`
+hierarchy once Task 20 introduces it. Task 20 creates src/dfd/errors.py with
+DfdError / InvalidInput / ResourceLimitExceeded. So after Task 20 is complete,
+AssetScanEmpty must be rebased onto DfdError — otherwise the plan ships one
+exception that sits outside the "one catchable root for everything this package
+raises" guarantee that errors.py exists to provide, and a caller doing
+`except DfdError` misses it. Task 21 already consumes errors.py, so the ordering
+works; this is the one loose thread. I will carry it into Task 20's dispatch
+rather than leaving it to the final review.
+Task 19: fix round 1/5 (2 addressed, 1 NEW CRITICAL in the fix diff; commits
+0d158ac..fbd5c88)
+
+The re-review answered exactly the question I sent it to answer. I had verified
+the POSITIVE path myself (both real assets discovered, claimed, cleared, gate
+passes) and told it not to re-derive that, because for a gate the negative path
+is the half that matters. It found the negative path broken in a new way.
+
+Ruling: the new Critical enters fix round 2. `_resolve_ids` builds its
+path->asset_id map by iterating manifest entries and overwriting, so a path
+claimed by TWO entries resolves to whichever was declared LAST in the YAML.
+Verified on the shipped code with a file claimed by both a research-only entry
+and a cleared one:
+
+  uncleared declared FIRST, cleared second  -> GATE PASSES
+  cleared declared FIRST, uncleared second  -> NonCommercialAsset
+
+So the gate's verdict on a research-only weight file depends on the order two
+entries happen to appear in a YAML file. That is precisely the
+"passes when it should fail" licensing exposure this task exists to prevent, and
+it is NEW — the old stem-based scheme had no notion of claims to collide, so the
+design change introduced it. No test covered two entries claiming one path.
+
+Decision: a path claimed by more than one entry is a MANIFEST ERROR and must
+raise, naming the path and the competing ids — not resolved by picking the most
+restrictive entry. Ambiguous provenance is not something to silently reconcile:
+if two entries claim one file, a human recorded the licence twice and at least
+one record is wrong, and that is worth knowing before a release rather than
+after. — Cost if wrong: a manifest with a deliberate duplicate claim must be
+deduplicated before the gate will run.
+Task 19: fix round 2/5 dispatched — FIX_BASE fbd5c88.
+Task 19: fix round 2/5 (1 addressed, 0 open; commits fbd5c88..05a25ac)
+Task 19: complete (commits dbf0057..05a25ac, review clean, 17 asset_scan tests,
+404 total green)
+
+Re-review settled the identical-clearance question STRUCTURALLY rather than by
+test: there is no commercial_use comparison anywhere in _build_claims, so the
+unconditional len(ids) > 1 check cannot depend on whether the two entries agree.
+It also confirmed the new regression test goes through the public
+assert_all_assets_registered rather than reimplementing _build_claims — a test
+that reimplements the logic it guards agrees with a buggy implementation.
+
+Task 19: minors DEFERRED — the AssetScanEmpty check runs BEFORE the manifest is
+loaded, so a manifest with duplicate claims AND an empty scan reports only the
+emptiness. Both refuse, so it is not a licensing hole, but the message would not
+reveal that the manifest is also malformed, and a reader would fix the wrong
+thing first. Pre-existing ordering from round 1, not introduced by round 2. Also
+DuplicateAssetClaim lacks the docstring note about joining DfdError that
+AssetScanEmpty carries.
+Task 20: dispatched (sonnet). BASE 05a25ac. Carries the DfdError rebase for BOTH
+of Task 19's bare exceptions, so the plan does not ship exceptions outside the
+"one catchable root" guarantee errors.py exists to provide.
+Task 20: first dispatch died on an API rate limit, not a code failure. Verified
+the working tree was clean, HEAD still at 05a25ac, and none of errors.py,
+audit.py, tests/test_audit.py or the report file existed — the agent stopped
+before writing anything. Nothing to recover or unwind. Re-dispatched unchanged.
+Task 20: implemented b5b87d9 (25 audit tests + 2 hierarchy tests, 431 total).
+Task 20: review found 0 Critical, 4 Important, 11 Minor. Every Important was
+verified live by the reviewer rather than argued.
+
+Ruling: finding 1 enters. The evidence rows' freezing is UNTESTED — the
+reviewer built a one-token mutant (`tuple(dict({...}))` instead of
+MappingProxyType) and ran the file's own 25 tests against it: 25 passed. Under
+that mutant `record.evidence[0]["llr"] = 9.9` raises nothing and changes the
+digest. That is brief defect #1 verbatim — "a record can be altered after the
+fact and re-digested to match" — guarded for model_versions and left unguarded
+for the per-detector LLRs, which are the rows a regulator would most want
+tamper-evident.
+
+Ruling: finding 2 enters, and it is MY error. I instructed the rebase for the
+two exceptions in asset_scan.py and never checked whether others existed.
+NonCommercialAsset in manifest.py is raised out of the SAME call —
+assert_all_assets_registered — and is still a bare Exception. Verified:
+
+  AssetScanEmpty         DfdError subclass: True
+  DuplicateAssetClaim    DfdError subclass: True
+  NonCommercialAsset     DfdError subclass: False
+
+So `except DfdError` around the asset gate catches the two housekeeping
+failures and misses the one that fires on an actual licensing violation. The
+new hierarchy test parametrises over exactly the two classes I named, so my
+own instruction defined the blind spot the test then inherited.
+
+Ruling: finding 3 enters. `_freeze` is applied to ONE of thirteen fields, so
+immutability rests on the others happening to hold scalars. Reviewer verified
+live: `quality_band=["high"]` then `.append("TAMPERED")` succeeds and changes
+the digest; `sample_id` only has to be truthy, which a list is. Plan-mandated —
+my implementation is identical.
+
+Ruling: finding 4 enters. `json.dumps` defaults to `allow_nan=True`, so a NaN
+llr_total or infinite posterior is silently emitted as `NaN` / `Infinity` —
+tokens no conforming JSON parser accepts, in an artifact whose whole purpose is
+to be re-read by someone else's tooling. Same failure DIRECTION the brief
+rejects for `default=str`, and NaN metrics are a documented occurrence in this
+codebase (every abstaining detector produces them).
+
+Promoted from Minor: (5) the PII refusal is deferred to serialisation, so
+`build_audit_record` CONSTRUCTS SUCCESSFULLY holding 4008 raw image bytes and
+only refuses at to_json — a record object carrying PII exists, and anything
+that logs or reprs it before serialising leaks it. That is the wrong boundary
+for a DPDP-Act-relevant discipline. (6) `created_at` gets no format validation
+at all while `input_sha256` gets a regex, and `created_at=""` silently becomes
+now() — the field the brief itself calls "among the most attack-relevant there
+is".
+
+Ruling on the reviewer's warning: 19 bare `raise ValueError`/`RuntimeError`
+sites remain across fusion, calibration, detectors and ingest, so
+"one catchable root for every error this package raises" is FALSE TODAY
+regardless of the three exception classes. Migrating them touches eight
+completed tasks and risks their tests for what is, today, a documentation
+claim. Decision: make the errors.py docstring accurate now rather than ship a
+false guarantee, and record the migration as a P0-closing gap — the same
+posture taken with the quality.py banding finding. — Cost if wrong: a caller
+must catch ValueError alongside DfdError until the migration lands, and the
+docstring will say so.
+Task 20: fix round 1/5 dispatched — FIX_BASE b5b87d9.
+Task 20: fix round 1/5 (6 addressed, 1 partial; commits b5b87d9..9d8254b)
+
+Six of seven closed cleanly and the happy path was verified unharmed — the
+re-reviewer confirmed raw_score=None, zero and negative numeric values all
+still build, so the new validation does not over-reject. Finding 4 was checked
+specifically for silent substitution and is a genuine refusal, not a coercion
+to null or 0.0.
+
+Ruling: finding 5 is PARTIAL and enters round 2. `_validate_serialisable` is
+called on `model_versions` and never on `evidence`. Reproduced myself on the
+shipped code, via the field the fix did not touch:
+
+  Evidence(..., reason=b"\x89PNG" + 4000 nulls)
+  build_audit_record(...)  -> SUCCEEDS, record holds 4004 raw bytes
+  r.to_json()              -> TypeError, only now
+
+That is the identical build-succeeds/serialise-fails defect the finding was
+written against, relocated one field sideways. `Evidence` is a plain dataclass
+with no runtime type enforcement, and the row-building loop copies `detector`,
+`detector_version` and `reason` straight into the row unvalidated.
+
+Worth naming as a pattern, because it is the third time this session: a fix
+that is correct on the case it was SHOWN and blind to the same defect one level
+down. Task 16's except-narrowing fixed parsing and left construction; Task 19's
+path-matching fixed stems and introduced duplicate claims; now a leaf-value
+check fixed one field and skipped its sibling. I have started asking reviewers
+about partial fixes explicitly, which is what caught this one.
+Task 20: fix round 2/5 dispatched — FIX_BASE 9d8254b.
+Task 20: fix round 2/5 (1 addressed, 0 open; commits 9d8254b..0dd8bcf)
+Task 20: complete (commits 05a25ac..0dd8bcf, review clean, 27 audit tests,
+442 total green)
+
+Re-review checked the over-rejection risk specifically, which is the failure
+mode of a round that adds validation: confirmed raw_score=None is exempted,
+that `uncertainty` and `artifacts` are read by neither the validator nor the
+row builder so a value there cannot reject an otherwise-valid Evidence, and
+that the only production construction site (calibration.py) always passes types
+matching RawScore's own fields — so no legitimate evidence row can trip it. It
+also spot-checked the implementer's sweep rather than accepting the summary.
+
+`abstained` is deliberately left unvalidated and the reviewer accepted the
+reasoning: `bool(e.abstained)` never raises and never preserves original
+content, the same shape as `verdict`'s `str(...)` coercion. That is a real
+distinction — coercion that cannot carry a payload through needs no guard.
+
+Task 20: minor DEFERRED — build_audit_record now iterates `evidence` twice
+(validation pass, then row building), so a single-use iterator would validate
+clean and yield no rows. Not a live risk: the parameter is typed
+Sequence[Evidence], which contractually requires re-iterability, and there are
+no non-test call sites yet. Worth a note if that ever loosens.
+Task 21: dispatched (sonnet). BASE 0dd8bcf.
+Task 21: implemented 784535e (25 tests, 467 total green).
+Task 21: review found 0 Critical, 4 Important. The image path is sound — I
+verified a real 12000x12000 bomb (161,331 bytes on disk, 0.40 GB decoded) is
+refused in 9ms with cv2.imread never called. The VIDEO path is where it falls
+down, which is exactly why I sent the reviewer at the paths I had not
+exercised.
+
+Ruling: finding 1 enters. The video decode loop has NO dimension gate at all,
+and the report justified the omission by claiming OpenCV cannot expose frame
+dimensions without decoding. That claim is FALSE and both the reviewer and I
+tested it:
+
+  cap = cv2.VideoCapture(path)   # no read() yet
+  CAP_PROP_FRAME_WIDTH  = 320.0
+  CAP_PROP_FRAME_HEIGHT = 240.0
+
+They come from the container header at open time, exactly like
+CAP_PROP_FRAME_COUNT which this same function already trusts on the next line.
+So the header-before-decode discipline the whole task rests on IS available for
+video and was skipped on a false premise. A container declaring 20000x20000
+frames commits ~1.2 GB per cap.read() with nothing checking.
+
+Ruling: finding 2 enters. Neither video guard has a test — deleting both
+check_file_size and the max_frames clamp from load_video leaves the entire
+suite green. The Step 5 wiring proof was performed for load_image only. This is
+verbatim "a guard wired correctly that no test could detect regressing", which
+the brief names as this task's specific hazard.
+
+Ruling: finding 3 enters. Nothing can detect probe_image_dims regressing into
+an actual decode: the no-decode test monkeypatches cv2.imread, but
+probe_image_dims uses PILLOW. An implementation calling im.load() inside the
+with-block would pass every test while allocating 144 MB on the bomb fixture —
+too small to trip a timeout, too invisible to fail anything. That is the
+load-bearing property of the module, unguarded.
+
+Ruling: finding 4 enters, and it is the one with a false claim attached.
+`max_duration_s` is pinned by a test and read by NO code path — verified, it
+appears once in src/, at its own definition. Worse, the decode loop is
+`while True: cap.read()` with no break on max_frames, so the clamp bounds
+RETAINED OBSERVATIONS, not decodes. The added docstring says the clamp means
+"a caller cannot reintroduce unbounded frame extraction". It cannot do that.
+256 MB of well-compressed H.264 is hours of footage and millions of decodes.
+A security control's documentation asserting a bound the code does not provide
+is worse than silence.
+Task 21: fix round 1/5 dispatched — FIX_BASE 784535e.
+Task 21: fix round 1 verified by me before re-review — dimension gate refuses
+(ResourceLimitExceeded, 320x240 vs cap 1000), duration gate refuses
+("declares 6.0s, exceeds limit 1.0s"), loop bounded, normal video still loads.
+475 passing.
+
+NUANCE worth carrying: for max_frames=3 on a 60-frame video the loop made 56
+cap.read() calls, not 3. Deterministic spread sampling cannot reach frame 55
+without decoding to it, so the early break only helps when wanted frames
+cluster early. On a long video the DURATION GATE is what actually bounds decode
+work — it is load-bearing, not belt-and-braces. Correct behaviour, but it means
+raising max_duration_s without re-examining the loop would reopen the exposure.
+Task 21: fix round 1/5 (4 addressed, 1 NEW Important in the fix; 784535e..8970f95)
+
+Ruling: the new finding enters round 2. `fps = cap.get(CAP_PROP_FPS) or DEFAULT_FPS`
+substitutes only when fps is exactly 0.0. Negative and NaN fps are both TRUTHY,
+so both survive the `or` — negative gives a negative duration and NaN gives NaN,
+and `negative > limit` and `nan > limit` are both False, so the gate is silently
+SKIPPED rather than raised or crashed. fps is adversary-controlled container
+header metadata, the same class of value this whole task treats as untrusted.
+Every duration test uses fps=30.0, so nothing covers it. Not a full regression —
+the dimension, file-size and max_frames gates still hold — but it is a live
+bypass of the specific control finding 4 asked for.
+
+Re-review also confirmed the "collateral mock fix" was legitimate: a codec that
+fails to report frame count while still reporting real dimensions is the case
+the test's own docstring describes, and its actual assertions are unchanged.
+Task 21: fix round 2/5 dispatched — FIX_BASE 8970f95.
+Task 21: fix round 2/5 (0 addressed, 1 still open; commits 8970f95..aeb29fa)
+
+Ruling: the fps domain check is INCOMPLETE and goes to round 3. The fix reduced
+"finite and greater than zero" to just "greater than zero". `float('inf') > 0`
+is True, so an infinite fps survives the guard, `total / inf` collapses to 0.0,
+and the gate is silently skipped — the same failure mode as the negative and NaN
+cases it just closed, reached through a third adversary-controlled value.
+
+Negative and NaN ARE fixed and the mutation proof for them is sound. But the
+report's justification never mentions infinity, which tells me the gap was not
+considered rather than considered and accepted. Tests cover 100.0, -30.0 and
+nan; neither inf nor a tiny positive like 1e-9 is pinned. (1e-9 is handled
+correctly by the current code — finite, positive, duration blows up, gate fires
+— so infinity is the only broken edge.)
+
+Worth recording as the lesson rather than just the bug: I asked for "finite and
+greater than zero" and got half of it, and the half that was dropped is the half
+that only matters against an adversary. This is the fourth partial fix in this
+plan, and the third where the missing half was the security-relevant one.
+Task 21: fix round 3/5 dispatched — FIX_BASE aeb29fa.
+Task 21: fix round 3/5 (1 addressed, 0 open; commits aeb29fa..59a4029)
+Task 21: complete (commits 0dd8bcf..59a4029, review clean, 480 total green)
+
+Verified all seven fps cases myself: -30.0, nan, inf, -inf and 0.0 all fall back
+to DEFAULT_FPS (2.4s), 1e-9 yields 6e10s, and an honest 10.0 yields its true
+6.0s — so the fallback is pinned as not-always-taken. Re-review confirmed the
+test parametrisation pins the same set, and that reverting to bare
+`raw_fps > 0` fails ONLY the inf case, which is the correct isolation signature.
+
+Task 21: minor DEFERRED, found by spot-checking the implementer's sweep claim:
+`int(cap.get(...))` on CAP_PROP_FRAME_WIDTH/HEIGHT/FRAME_COUNT would raise
+untyped ValueError/OverflowError if OpenCV ever reported nan/inf for those
+props, rather than a typed DfdError. Pre-existing since round 1, not touched by
+any fix. "Immune by construction" is right about the failure MODE — no silent
+wrong answer is possible there — but it trades silent corruption for an untyped
+crash out of a fail-closed control, which is not the same as immune.
+Task 22: dispatched (sonnet). BASE 59a4029. LAST TASK.
+Task 22: implemented 549055a. Verified independently: ruff clean on
+src/bench/corpora, `mypy --strict` clean on 21 source files, 491 passed,
+coverage 93% against an 85% threshold. Both gates cleared AND enabled.
+
+Ruling on deviation 3, which is the significant one: the CI asset-scan step
+passes `allow_empty=True`. The implementer verified against a real fresh
+checkout that the brief's literal snippet raises AssetScanEmpty on EVERY CI
+push, because weight files are gitignored. That is exactly the decision my
+Task 19 ruling said someone would have to make deliberately, and it is made
+visibly, in a commented CI step, rather than by silence.
+
+But the honest consequence must be recorded and NOT left for a green badge to
+imply: with allow_empty=True, THE ASSET GATE PROVIDES NO PROTECTION IN CI. It
+protects only where it runs with assets present — a local release check, or a
+CI job that first fetches weights. So spec 12.1 criterion 6 is enforced by
+whoever runs the gate in an environment that has the assets, not by the
+pipeline. A passing CI run is not evidence that criterion 6 holds. That
+limitation belongs in the handoff, because the whole point of Task 19 was to
+stop this gate from certifying something it never examined — and the remaining
+gap is now visible and named rather than silent.
+
+Deviations 1 and 2 accepted: ruff ignores N818/N812 (naming-style rules with a
+125-call-site blast radius and no safety content), and the CI lint step is
+scoped to `src bench corpora` rather than `.` (tests/ carries 38 findings that
+were never in this task's baseline). Both are documented in the report.
+Task 22: complete (commits 59a4029..549055a, review APPROVED, 0 Critical,
+0 Important, 491 total green). ALL 22 TASKS COMPLETE.
+
+Reviewer walked EVERY non-annotation edit in the 58KB diff as a table and
+confirmed none can change a computed result — no cast(), no inserted asarray,
+no coercion added where a value previously passed through, no default changed
+from None. Verified by EXECUTION that the deliberate torch.load FutureWarning
+still fires at loading.py:187. Zero `# type: ignore` tree-wide: both stale ones
+removed, none added, so the annotations were made true rather than silenced.
+Also confirmed the gate tests fail rather than pass when their tool is absent —
+closing the missing-tool costume of the vacuity class.
+
+Task 22: minors DEFERRED to final review — effnet.py:79 and quality.py:44 cast
+only in one branch, so a float payload would diverge between branches (latent,
+off-contract); npr.py:76,79 add two full-array copies per frame (~1.2MB) in the
+hot path the benchmark measures p95 latency on, fixable with copy=False;
+guards.py:117 zip(strict=True) widens check_video_level's contract to ValueError
+without a Raises: note; guards.py:79 threshold now renders 0.8 not 0.800000 in
+an operator-facing message; loading.py:191 `from None` drops the chained reason
+the safe load failed, in the supply-chain path; THE COVERAGE GATE IS THE ONE
+GATE WITH NO GATE TEST (impractical to self-invoke without recursion, so
+red-in-CI-only); and tests/test_ci_gates.py:5 imports pytest unused.

@@ -19,6 +19,21 @@ import numpy as np
 REQUIRED_KEYS = ("sample_id", "subject_id", "source_id", "generator", "label")
 
 
+class UnsplittableCorpusError(ValueError):
+    """Raised when a well-formed corpus cannot support a LOGO split.
+
+    A corpus can be internally consistent — every record valid, every source
+    unstraddled, every fake attributed — and still have too few subjects or
+    generators, or too little of one label, to build even one identity-disjoint
+    fold. That is a legitimate degrade-and-warn condition, not a defect, and
+    is kept as its own subclass of ValueError specifically so a caller can
+    catch it without also catching the plain ValueError that `_validate`
+    raises for a malformed corpus (a straddling source, a label outside
+    {0, 1}, an unattributed fake, or a real carrying a generator) — those
+    must propagate, not degrade.
+    """
+
+
 @dataclass(frozen=True)
 class Split:
     """One fold: every fake in `test` comes from `held_out_generator`.
@@ -94,7 +109,7 @@ def _require_measurable(
     }
     empty = sorted(k for k, v in counts.items() if v == 0)
     if empty:
-        raise ValueError(
+        raise UnsplittableCorpusError(
             f"split holding out {held_out!r} has no {' and no '.join(empty)} "
             f"(counts={counts}); without test reals there is no FPR to measure "
             "and without test fakes there is no TPR")
@@ -112,7 +127,7 @@ def logo_splits(records: list[dict[str, Any]], seed: int = 0) -> list[Split]:
 
     subjects = sorted({r["subject_id"] for r in records})
     if len(subjects) < 2:
-        raise ValueError(
+        raise UnsplittableCorpusError(
             f"corpus has {len(subjects)} distinct subject(s); an "
             "identity-disjoint split needs at least 2")
 

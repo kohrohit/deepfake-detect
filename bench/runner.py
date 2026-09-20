@@ -25,7 +25,7 @@ from .guards import (
     check_video_level,
 )
 from .metrics import auc, bootstrap_ci_by_group, ece, tpr_at_fpr
-from .protocol import logo_splits
+from .protocol import UnsplittableCorpusError, logo_splits
 from .robustness import robustness_sweep
 
 logger = logging.getLogger(__name__)
@@ -287,9 +287,12 @@ def _logo_results(records, registry, scores_by_detector, labels, groups,
 
     try:
         splits = logo_splits(records, seed=config.seed)
-    except ValueError as exc:
+    except UnsplittableCorpusError as exc:
         # A corpus with one generator, one subject, or no measurable fold.
         # Recorded rather than raised: the in-dataset numbers are still valid.
+        # A malformed corpus (bad label, straddling source, unattributed
+        # fake, ...) raises plain ValueError from `_validate` and is
+        # deliberately NOT caught here — it must propagate, not degrade.
         logger.warning("LOGO unavailable for this corpus: %s", exc)
         return {}, {}
 
