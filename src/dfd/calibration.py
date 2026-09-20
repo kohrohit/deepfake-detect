@@ -163,7 +163,11 @@ class Calibrator:
                 artifacts=dict(raw.artifacts)
             )
 
-        # Posterior log-odds minus prior log-odds gives likelihood ratio
+        # Posterior log-odds minus prior log-odds gives a LIKELIHOOD RATIO.
+        # Subtracting the prior removes the training set's base rate, so it does
+        # not ride into production where the fraud rate is orders of magnitude
+        # different. Without this subtraction, the quantity is a posterior, not
+        # a ratio, and the training set's assumptions contaminate every decision.
         post_logodds = float(model.decision_function([[raw.score]])[0])
         prior = self._priors[band]
 
@@ -188,29 +192,3 @@ class Calibrator:
             reason="ok",
             artifacts=dict(raw.artifacts)
         )
-
-
-# CORRECTION (Task 9 Round 2)
-# ===========================
-# False claims corrected:
-#
-# 1. "Complete type hints on all public callables" — CORRECTED. The fit()
-#    method's parameters were untyped in the initial submission. Now annotated
-#    with npt.NDArray | Sequence[...] types.
-#
-# 2. Prior-subtraction test (test_prior_is_subtracted_so_the_output_is_a_likelihood_ratio)
-#    could not fail for the right reason in initial test suite. All six tests
-#    used balanced bands (prior = 0.5), so prior_logodds was always 0.0 and
-#    the subtraction was a no-op. If the implementation had been changed to
-#    `llr = post_logodds`, all six original tests would still pass. The new
-#    test uses deliberately imbalanced data (prior = 0.10) and asserts the
-#    exact relationship: `got == post_logodds - log(prior/(1-prior))`. This
-#    test FAILS if prior subtraction is removed.
-#
-# 3. Clip test (test_llr_is_clipped_to_the_configured_bound) could not fail
-#    for the right reason. LogisticRegression.decision_function is
-#    mathematically incapable of returning inf/NaN on finite [0,1] inputs.
-#    The original test only asserted math.isfinite(), which is true whether
-#    the clip exists or not. The new test uses a deliberately tiny bound
-#    (0.5 nats) and asserts the value is PINNED at that bound, not merely
-#    under it. This test FAILS if the clip line is removed.
