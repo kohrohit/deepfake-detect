@@ -153,29 +153,45 @@ def test_effective_sample_size_n_less_than_3():
 def test_ess_clamped_to_n_frames(caplog):
     """ESS > n_frames amplifies instead of discounting; must be clamped.
 
-    With ess=5000, n_frames=900, per-frame llr=1.0:
-    naive sum = 900
-    unclamped discount: 900 * (5000/900) ≈ 5000 (AMPLIFIES, wrong)
-    clamped to n_frames: 900 * (900/900) = 900 -> capped to MAX_TOTAL_LLR=20.0
+    Fixture chosen so BOTH the clamped and unclamped results sit strictly
+    below MAX_TOTAL_LLR (20.0) -- a saturated expectation cannot distinguish
+    "clamp applied" from "clamp deleted" (both would read 20.0). This is the
+    second time this exact trap has appeared in this file: round 2 wrote
+    test_per_frame_evidence_with_ess_discount with ess=20, n_frames=900,
+    which also saturated regardless of the formula used.
 
-    Compare with smaller ess: ess=4, n_frames=900, per-frame llr=1.0:
-    naive sum = 900, discounted = 900 * (4/900) = 4.0
+    per_frame = 10 entries of llr=0.1 each -> naive sum = 1.0.
+
+    clamped   : ess=50 clamped to n_frames=10 -> 1.0 * (10/10) = 1.0
+    unclamped : 1.0 * (50/10) = 5.0   (what the buggy, un-clamped code would give)
+
+    Both 1.0 and 5.0 are far below the 20.0 cap, so deleting the clamp changes
+    the numeric result, not just a log line.
     """
-    per_frame = [_ev(1.0, f"f{i}") for i in range(900)]
+    per_frame = [_ev(0.1, f"f{i}") for i in range(10)]
     with caplog.at_level(logging.WARNING):
-        r_clamped = fuse(per_frame, n_frames=900, ess=5000.0)
+        r_clamped = fuse(per_frame, n_frames=10, ess=50.0)
 
-    # With ESS clamped to n_frames, discount = 900/900 = 1.0 (no discount)
-    # naive sum = 900, capped to MAX_TOTAL_LLR = 20.0
-    assert r_clamped.llr_total == pytest.approx(_MAX_TOTAL)
+    expected_clamped = 1.0
+    assert expected_clamped < _MAX_TOTAL, (
+        "expected value must not saturate the cap, or this test cannot detect "
+        "a deleted or broken clamp"
+    )
+    assert r_clamped.llr_total == pytest.approx(expected_clamped)
+
+    # Document the magnitude the clamp is preventing: without it, ess=50 would
+    # amplify the naive sum to 5.0 instead of discounting it to 1.0.
+    unclamped_would_be = 1.0 * (50.0 / 10.0)
+    assert unclamped_would_be == pytest.approx(5.0)
+    assert unclamped_would_be != pytest.approx(expected_clamped)
 
     # Warning should have been logged for the clamp
     assert "exceeds n_frames" in caplog.text
     assert "clamping" in caplog.text
 
     # Verify that smaller ess gives smaller result (discount applies normally)
-    r_normal = fuse(per_frame, n_frames=900, ess=4.0)
-    assert r_normal.llr_total == pytest.approx(4.0, rel=1e-2)
+    r_normal = fuse(per_frame, n_frames=10, ess=5.0)
+    assert r_normal.llr_total == pytest.approx(0.5, rel=1e-2)
     assert r_normal.llr_total < r_clamped.llr_total
 
 
