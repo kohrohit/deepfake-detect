@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Tasks:** 18 (Task 18 added by pre-flight ruling on CONFLICT 4).
+**Tasks:** 19 (Task 18 from pre-flight ruling on CONFLICT 4; Task 19 from the Task 2 review).
 
 **Goal:** Build the modality-agnostic evidence core (Sample → Detector → Evidence → Fusion) and a leave-one-generator-out benchmark harness rigorous enough to prove — or disprove — that this system beats Reality Defender.
 
@@ -3723,4 +3723,136 @@ Expected: PASS — 4 new tests, and Tasks 17's 14 tests still green
 ```bash
 git add bench/runner.py bench/report.py tests/bench/test_runner_robustness.py
 git commit -m "feat: measure the robustness surface in the benchmark runner"
+```
+
+---
+
+### Task 19: Asset enumeration — make the release gate non-vacuous
+
+**Files:**
+- Create: `src/dfd/asset_scan.py`
+- Test: `tests/test_asset_scan.py`
+
+**Interfaces:**
+- Consumes: `load_manifest`, `assert_release_clean`, `NonCommercialAsset` (Task 2)
+- Produces: `discover_assets(root) -> list[str]`, `assert_all_assets_registered(root, manifest_path)`
+
+**Why this task exists:** Task 2's `assert_release_clean(manifest, asset_ids)` can only judge assets it is *handed*. Passing it an empty list returns cleanly — a vacuous pass. Nothing in the repo enumerates what assets are actually in use, so the gate currently guarantees nothing about a real release: forget to list a weight file and it ships unchecked, which is precisely the false confidence Task 2 exists to prevent. Spec §12.1 criterion 6 ("asset manifest covering every dataset and weight file in use") is unverifiable without this.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_asset_scan.py
+import pytest
+from dfd.asset_scan import (
+    ASSET_SUFFIXES, assert_all_assets_registered, discover_assets,
+)
+from dfd.manifest import NonCommercialAsset
+
+MANIFEST = """
+assets:
+  good_weights:
+    source: "s"
+    license: "MIT"
+    commercial_use: true
+    evidence_url: "u"
+    date_checked: "2026-09-20"
+    checked_by: "k"
+"""
+
+
+def _tree(tmp_path, *names):
+    (tmp_path / "assets" / "models").mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (tmp_path / "assets" / "models" / n).write_bytes(b"x")
+    return tmp_path
+
+
+def test_discovers_weight_files_by_suffix(tmp_path):
+    _tree(tmp_path, "good_weights.onnx", "notes.txt")
+    found = discover_assets(tmp_path)
+    assert "good_weights" in found
+    assert "notes" not in found
+
+
+def test_every_declared_suffix_is_discovered(tmp_path):
+    names = [f"a{i}{s}" for i, s in enumerate(sorted(ASSET_SUFFIXES))]
+    _tree(tmp_path, *names)
+    found = set(discover_assets(tmp_path))
+    assert len(found) == len(ASSET_SUFFIXES)
+
+
+def test_passes_when_every_discovered_asset_is_registered(tmp_path):
+    _tree(tmp_path, "good_weights.onnx")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    assert assert_all_assets_registered(tmp_path, mp) is None
+
+
+def test_raises_on_an_asset_present_on_disk_but_absent_from_the_manifest(tmp_path):
+    """The whole point: a weight file nobody registered must fail the build."""
+    _tree(tmp_path, "good_weights.onnx", "sneaky_weights.pt")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(NonCommercialAsset) as exc:
+        assert_all_assets_registered(tmp_path, mp)
+    assert "sneaky_weights" in str(exc.value)
+
+
+def test_empty_tree_is_not_treated_as_success_by_accident(tmp_path):
+    """An empty scan must be visibly empty, not a silent pass."""
+    (tmp_path / "assets").mkdir()
+    assert discover_assets(tmp_path) == []
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_asset_scan.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.asset_scan'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/asset_scan.py
+"""Enumerate assets on disk so the release gate cannot pass vacuously.
+
+`assert_release_clean` judges only the ids it is handed, so handing it nothing
+returns cleanly. That is a gate guaranteeing nothing. This module supplies the
+list from the filesystem instead of from a human's memory.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from .manifest import assert_release_clean, load_manifest
+
+# Extensions that carry model weights or dataset payloads.
+ASSET_SUFFIXES = (".onnx", ".pt", ".pth", ".safetensors", ".tflite", ".bin", ".npz")
+
+
+def discover_assets(root: str | Path) -> list[str]:
+    """Asset ids (filename stems) for every weight-like file under `root`."""
+    found: set[str] = set()
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.suffix.lower() in ASSET_SUFFIXES:
+            found.add(path.stem)
+    return sorted(found)
+
+
+def assert_all_assets_registered(root: str | Path,
+                                 manifest_path: str | Path) -> None:
+    """Raise unless every asset on disk is registered and commercially clear."""
+    assert_release_clean(load_manifest(manifest_path), discover_assets(root))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_asset_scan.py tests/test_manifest.py -v`
+Expected: PASS — 5 new tests, Task 2's 4 still green
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/dfd/asset_scan.py tests/test_asset_scan.py
+git commit -m "feat: enumerate assets from disk so the release gate cannot pass vacuously"
 ```
