@@ -18,8 +18,11 @@ from dfd.quality import measure_quality
 from dfd.types import Observation
 
 from .guards import (
-    IdentityReport, check_compression_coverage, check_threshold_provenance,
-    check_uniform_preprocessing, check_video_level,
+    IdentityReport,
+    check_compression_coverage,
+    check_threshold_provenance,
+    check_uniform_preprocessing,
+    check_video_level,
 )
 from .metrics import auc, bootstrap_ci_by_group, ece, tpr_at_fpr
 from .protocol import logo_splits
@@ -163,7 +166,7 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
         tpr_by_perturbation: dict[str, float] = {}
         if config.robustness:
             variants: dict[str, list[float]] = {}
-            for rec_in, obs in zip(records, observations):
+            for rec_in, obs in zip(records, observations, strict=True):
                 for pname, pimg in robustness_sweep(rec_in["image"]).items():
                     # Deliberately reuses the CLEAN observation's `quality`
                     # rather than re-measuring it on the perturbed pixels.
@@ -222,14 +225,14 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
     """
     n = len(s)
     valid = np.isfinite(s)
-    base = dict(
-        detector=name,
-        adversarial_tpr_at_1pct=None,
-        abstention_rate=abstentions / max(1, n),
-        p95_latency_ms=float(np.percentile(latencies, 95)) if latencies else 0.0,
-        n_samples=n,
-        tpr_by_perturbation=dict(tpr_by_perturbation or {}),
-    )
+    base = {
+        "detector": name,
+        "adversarial_tpr_at_1pct": None,
+        "abstention_rate": abstentions / max(1, n),
+        "p95_latency_ms": float(np.percentile(latencies, 95)) if latencies else 0.0,
+        "n_samples": n,
+        "tpr_by_perturbation": dict(tpr_by_perturbation or {}),
+    }
     if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
         nan = float("nan")
         return DetectorResult(auc=nan, auc_ci=(nan, nan), tpr_at_1pct=nan,
@@ -314,7 +317,7 @@ def _logo_results(records, registry, scores_by_detector, labels, groups,
     return out, dropped
 
 
-def worst_logo_auc(record: "RunRecord", detector: str) -> float:
+def worst_logo_auc(record: RunRecord, detector: str) -> float:
     """The weakest held-out generator for one detector.
 
     Reported in preference to the mean, for the same reason spec 8.2 guard 3

@@ -121,7 +121,7 @@ def logo_splits(records: list[dict[str, Any]], seed: int = 0) -> list[Split]:
     cut = max(1, len(shuffled) // 2)
     train_subjects = set(shuffled[:cut])
 
-    has_real: dict[str, bool] = {s: False for s in subjects}
+    has_real: dict[str, bool] = dict.fromkeys(subjects, False)
     fake_generators: dict[str, set[str]] = {s: set() for s in subjects}
     for r in records:
         if r["label"] == 0:

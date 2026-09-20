@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -155,9 +155,9 @@ def load_model(
             # weights_only succeeded but model_factory is None
             if isinstance(model, dict):
                 raise RuntimeError(
-                    f"loaded a state_dict but model_factory is None. "
-                    f"To securely load weights, provide model_factory as "
-                    f"a callable that returns an uninitialized model instance."
+                    "loaded a state_dict but model_factory is None. "
+                    "To securely load weights, provide model_factory as "
+                    "a callable that returns an uninitialized model instance."
                 )
             if not isinstance(model, nn.Module):
                 raise ValueError(
@@ -189,7 +189,7 @@ def load_model(
                 raise ValueError(
                     f"unsafe load: expected torch.nn.Module, "
                     f"got {type(model).__name__}"
-                )
+                ) from None
             model.eval()
             logger.debug("loaded full module with unsafe unpickle")
             _MODEL_CACHE[cache_key] = model

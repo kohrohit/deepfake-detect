@@ -7,7 +7,7 @@ operationally tolerable FPR is the number that decides whether this ships.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 

@@ -54,9 +54,9 @@ class Calibrator:
 
     def fit(
         self,
-        scores: npt.NDArray | Sequence[float],
-        labels: npt.NDArray | Sequence[int],
-        bands: npt.NDArray | Sequence[str],
+        scores: npt.NDArray[np.float64] | Sequence[float],
+        labels: npt.NDArray[np.int64] | Sequence[int],
+        bands: npt.NDArray[np.str_] | Sequence[str],
     ) -> Calibrator:
         """Fit logistic calibration curves per quality band.
 
@@ -172,10 +172,7 @@ class Calibrator:
         prior = self._priors[band]
 
         # Avoid log(0) or log(∞) at boundaries
-        if 0 < prior < 1:
-            prior_logodds = math.log(prior / (1.0 - prior))
-        else:
-            prior_logodds = 0.0
+        prior_logodds = math.log(prior / (1.0 - prior)) if 0 < prior < 1 else 0.0
 
         llr = post_logodds - prior_logodds
 

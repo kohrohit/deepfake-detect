@@ -10,7 +10,8 @@ noise take an explicit seed with a fixed default, so a sweep is reproducible.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import cv2
 import numpy as np

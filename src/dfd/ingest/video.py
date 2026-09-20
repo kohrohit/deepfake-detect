@@ -30,7 +30,7 @@ def sample_indices(total: int, k: int, seed: int) -> list[int]:
     edges = np.linspace(0, total, k + 1).astype(int)
     idx = [int(rng.integers(edges[i], max(edges[i] + 1, edges[i + 1])))
            for i in range(k)]
-    return sorted(set(min(i, total - 1) for i in idx))
+    return sorted({min(i, total - 1) for i in idx})
 
 
 def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX_FRAMES,
@@ -109,7 +109,9 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
 
         # Determine which frames to extract.
         if total <= 0:
-            logger.warning("frame-count metadata unusable for %s; falling back to sequential read", path)
+            logger.warning(
+                "frame-count metadata unusable for %s; falling back to sequential read",
+                path)
             wanted = None  # Will read sequentially and keep first max_frames
         else:
             duration_s = total / fps
@@ -128,9 +130,12 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
             if not ok:
                 break
             # If metadata was unusable, keep first max_frames; else keep wanted indices.
-            should_keep = (wanted is None and i < max_frames) or (wanted is not None and i in wanted)
+            should_keep = (
+                (wanted is None and i < max_frames)
+                or (wanted is not None and i in wanted)
+            )
             if should_keep:
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.uint8)
                 obs.append(Observation(t=i / fps, payload=rgb, roi=None,
                                        quality=None, source_id=sample_id))
             i += 1

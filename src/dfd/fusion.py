@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
+import numpy.typing as npt
 
 from .types import Evidence, Verdict
 
@@ -58,10 +59,10 @@ class FusedResult:
     disagreement: float
     n_contributing: int
     ess: float
-    reasons: dict = field(default_factory=dict)
+    reasons: dict[str, str] = field(default_factory=dict)
 
 
-def effective_sample_size(series: np.ndarray | list[float]) -> float:
+def effective_sample_size(series: npt.NDArray[np.float64] | list[float]) -> float:
     """ESS from lag-1 autocorrelation: n * (1 - rho) / (1 + rho).
 
     Perfectly correlated frames (rho ≈ 1) → ESS ≈ 1.
@@ -156,7 +157,8 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
         if len(contributing) != n_frames:
             logger.warning(
                 "ESS discount: n_frames=%d but %d evidence entries provided. "
-                "Discount assumes one entry per frame. If evidence is aggregated (not per-frame), use n_frames=1.",
+                "Discount assumes one entry per frame. If evidence is aggregated "
+                "(not per-frame), use n_frames=1.",
                 n_frames, len(contributing))
 
         # Clamp ESS to n_frames: ESS > n_frames would amplify evidence, not discount it.
@@ -169,7 +171,9 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
             eff = float(n_frames)
 
         if ess is None:
-            logger.warning("Fusion ran with n_frames=%d and no ESS data; max-discounting to 1.0", n_frames)
+            logger.warning(
+                "Fusion ran with n_frames=%d and no ESS data; max-discounting to 1.0",
+                n_frames)
         total *= max(1.0, eff) / float(n_frames)
 
     # Cap to prevent runaway confidence. Spec §9.3.

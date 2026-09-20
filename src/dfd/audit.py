@@ -15,10 +15,11 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .errors import InvalidInput
 from .types import Evidence, Verdict
@@ -113,7 +114,7 @@ class AuditRecord:
     verdict: str
     llr_total: float
     posterior: float
-    evidence: tuple
+    evidence: tuple[Mapping[str, Any], ...]
     quality_band: str
     ood_score: float
     policy_version: str

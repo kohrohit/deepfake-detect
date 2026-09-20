@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 
 class Modality(str, Enum):
@@ -38,7 +40,7 @@ class Quality:
 @dataclass(frozen=True)
 class Observation:
     t: float
-    payload: np.ndarray
+    payload: npt.NDArray[np.uint8]
     roi: tuple[int, int, int, int] | None
     quality: Quality | None
     source_id: str
@@ -50,7 +52,7 @@ class Context:
     generator: str | None = None
     compression: str | None = None
     label: int | None = None
-    meta: dict = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ class RawScore:
     score: float | None
     abstained: bool
     reason: str
-    artifacts: dict = field(default_factory=dict)
+    artifacts: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,4 +84,4 @@ class Evidence:
     uncertainty: float
     abstained: bool
     reason: str
-    artifacts: dict = field(default_factory=dict)
+    artifacts: dict[str, Any] = field(default_factory=dict)

@@ -20,12 +20,14 @@ pickle loads when allow_unsafe_load is explicitly set (spec §3A).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Literal
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 import torch
 import torch.nn as nn
 
@@ -50,7 +52,9 @@ EXPECTED_NUM_CLASSES = 2
 DEFAULT_INPUT_SIZE = 224
 
 
-def preprocess(images: Sequence[np.ndarray], size: int = DEFAULT_INPUT_SIZE) -> np.ndarray:
+def preprocess(
+    images: Sequence[npt.NDArray[np.uint8]], size: int = DEFAULT_INPUT_SIZE
+) -> npt.NDArray[np.float32]:
     """Convert a sequence of RGB uint8 HWC images to a float32 NCHW batch in [0, 1].
 
     Non-square or mismatched-size inputs are resized to (size, size) with
@@ -72,7 +76,7 @@ def preprocess(images: Sequence[np.ndarray], size: int = DEFAULT_INPUT_SIZE) -> 
     out = []
     for img in images:
         if img.shape[0] != size or img.shape[1] != size:
-            img = cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+            img = cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA).astype(np.uint8)
         out.append(img.astype(np.float32) / 255.0)
     arr = np.stack(out)
     return np.ascontiguousarray(arr.transpose(0, 3, 1, 2))
@@ -182,7 +186,7 @@ class EffNetDetector:
             t = torch.from_numpy(batch)
 
             with torch.no_grad():
-                logits = model(t)  # type: ignore[operator]
+                logits = model(t)
 
             if logits.shape[1] != EXPECTED_NUM_CLASSES:
                 raise ValueError(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 
 from .types import QUALITY_BANDS, Quality
 
@@ -23,14 +24,14 @@ MAX_YAW_HIGH = 30.0
 EXPOSURE_OK = (0.15, 0.90)
 
 
-def _laplacian_var(gray: np.ndarray) -> float:
+def _laplacian_var(gray: npt.NDArray[np.uint8]) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
 def measure_quality(
-    frame: np.ndarray,
+    frame: npt.NDArray[np.uint8],
     roi: tuple[int, int, int, int],
-    landmarks: np.ndarray,
+    landmarks: npt.NDArray[np.float64],
     yaw_deg: float = 0.0,
     pitch_deg: float = 0.0,
 ) -> Quality:
@@ -40,7 +41,7 @@ def measure_quality(
     """
     x, y, w, h = roi
     crop = frame[y : y + h, x : x + w]
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.ndim == 3 else crop
+    gray = (cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY) if crop.ndim == 3 else crop).astype(np.uint8)
 
     iod = float(np.linalg.norm(landmarks[0] - landmarks[1]))
     blur = _laplacian_var(gray)

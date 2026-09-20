@@ -77,8 +77,8 @@ def check_identity_disjoint(
                 violations += 1
     if violations:
         raise GuardViolation(
-            f"identity leakage: %d train/test pairs at cosine >= %f "
-            f"(max %.4f)" % (violations, threshold, max_sim))
+            f"identity leakage: {violations} train/test pairs at cosine >= {threshold} "
+            f"(max {max_sim:.4f})")
     return IdentityReport(n_train=len(train_ids), n_test=len(test_ids),
                           max_similarity=max_sim, violations=0,
                           threshold=threshold)
@@ -113,12 +113,12 @@ def check_video_level(
             "sample_ids. Pass the SOURCE VIDEO identifier as groups, not "
             "sample_ids; one sample_id per video.")
 
-    seen: dict = {}
-    for sid, g in zip(sample_ids, groups):
+    seen: dict[str, str] = {}
+    for sid, g in zip(sample_ids, groups, strict=True):
         if g in seen and seen[g] != sid:
             raise GuardViolation(
-                f"group %r appears in multiple samples (%r, %r); "
-                "aggregate to video level before scoring" % (g, seen[g], sid))
+                f"group {g!r} appears in multiple samples ({seen[g]!r}, {sid!r}); "
+                "aggregate to video level before scoring")
         seen[g] = sid
 
 
@@ -135,8 +135,7 @@ def check_compression_coverage(
     missing = [c for c in required if c not in present]
     if missing:
         raise GuardViolation(
-            f"compression levels missing from evaluation: %s" % (
-                ', '.join(missing)))
+            f"compression levels missing from evaluation: {', '.join(missing)}")
 
 
 def check_uniform_preprocessing(
@@ -157,8 +156,7 @@ def check_uniform_preprocessing(
             all_values.add(r.get(key))
         if len(all_values) > 1:
             raise GuardViolation(
-                f"non-uniform preprocessing: %s takes values %s" % (
-                    key, sorted(map(str, all_values))))
+                f"non-uniform preprocessing: {key} takes values {sorted(map(str, all_values))}")
 
 
 def check_threshold_provenance(source: str) -> None:
@@ -169,7 +167,7 @@ def check_threshold_provenance(source: str) -> None:
     """
     if source != "validation":
         raise GuardViolation(
-            f"threshold source must be 'validation', got %r" % source)
+            f"threshold source must be 'validation', got {source!r}")
 
 
 def check_demographic_parity(
@@ -212,17 +210,14 @@ def check_demographic_parity(
 
     ratio = 1.0
     if len(fpr) >= 2:
-        values = [v for v in fpr.values()]
+        values = list(fpr.values())
         lo = min(values)
         hi = max(values)
         # Infinity only at a literal zero denominator. Flooring a nonzero
         # denominator pulls the ratio BELOW the true value and silently hides
         # real disparity; for lo=0.0002, hi=0.0016, true ratio is 8.0x but
         # floor would compute 1.6x, swallowing a 4x genuine difference.
-        if lo == 0.0:
-            ratio = float("inf") if hi > 0.0 else 1.0
-        else:
-            ratio = hi / lo
+        ratio = (float("inf") if hi > 0.0 else 1.0) if lo == 0.0 else hi / lo
 
     report = ParityReport(fpr_by_stratum=fpr, tpr_by_stratum=tpr,
                           max_fpr_ratio=float(ratio), ceiling=max_fpr_ratio)
@@ -230,10 +225,10 @@ def check_demographic_parity(
         worst = max(fpr, key=fpr.get)
         best = min(fpr, key=fpr.get)
         # Format infinity as "inf" (unbounded) for legibility
-        ratio_str = "inf (one stratum has zero false positives)" if np.isinf(ratio) else "%.1fx" % ratio
-        ceiling_str = "%.1fx" % max_fpr_ratio
+        ratio_str = ("inf (one stratum has zero false positives)" if np.isinf(ratio)
+                     else f"{ratio:.1f}x")
+        ceiling_str = f"{max_fpr_ratio:.1f}x"
         raise GuardViolation(
-            f"demographic FPR disparity %s exceeds ceiling %s: "
-            f"%s=%.4f vs %s=%.4f" % (
-                ratio_str, ceiling_str, worst, fpr[worst], best, fpr[best]))
+            f"demographic FPR disparity {ratio_str} exceeds ceiling {ceiling_str}: "
+            f"{worst}={fpr[worst]:.4f} vs {best}={fpr[best]:.4f}")
     return report

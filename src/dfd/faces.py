@@ -16,6 +16,7 @@ from typing import Literal, overload
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,13 @@ class FaceBox:
     y: int
     w: int
     h: int
-    landmarks: np.ndarray  # (5, 2) landmark points. YuNet's documented order is believed to be
+    # (5, 2) landmark points. YuNet's documented order is believed to be
     # right eye, left eye, nose, right mouth corner, left mouth corner — but this
     # has NOT been verified against real model output in this repo (no weights on
     # disk). Only inter-ocular DISTANCE is consumed today, which is symmetric and
     # therefore insensitive to the order. Verify before any consumer needs eye
     # identity (roll correction, gaze).
+    landmarks: npt.NDArray[np.float64]
     score: float
 
     def __post_init__(self) -> None:
@@ -55,7 +57,7 @@ class FaceBox:
 
 @overload
 def detect_faces(
-    frame: np.ndarray,
+    frame: npt.NDArray[np.uint8],
     model_path: str | Path = DEFAULT_MODEL,
     score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     with_reason: Literal[False] = False,
@@ -64,7 +66,7 @@ def detect_faces(
 
 @overload
 def detect_faces(
-    frame: np.ndarray,
+    frame: npt.NDArray[np.uint8],
     model_path: str | Path = DEFAULT_MODEL,
     score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     with_reason: Literal[True] = ...,
@@ -72,7 +74,7 @@ def detect_faces(
 
 
 def detect_faces(
-    frame: np.ndarray,
+    frame: npt.NDArray[np.uint8],
     model_path: str | Path = DEFAULT_MODEL,
     score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     with_reason: bool = False,
@@ -101,7 +103,7 @@ def detect_faces(
     return (out, OK) if with_reason else out
 
 
-def align(frame: np.ndarray, box: FaceBox, size: int = 224) -> np.ndarray:
+def align(frame: npt.NDArray[np.uint8], box: FaceBox, size: int = 224) -> npt.NDArray[np.uint8]:
     """Crop the face box, clamped to frame bounds, resized to (size, size)."""
     h, w = frame.shape[:2]
     x0 = max(0, box.x)
@@ -111,4 +113,4 @@ def align(frame: np.ndarray, box: FaceBox, size: int = 224) -> np.ndarray:
     if x1 <= x0 or y1 <= y0:
         return np.zeros((size, size, 3), dtype=np.uint8)
     crop = frame[y0:y1, x0:x1]
-    return cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
+    return cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA).astype(np.uint8)

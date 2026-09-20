@@ -20,12 +20,13 @@ Full-module pickles must be explicitly enabled and logged as a warning.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Literal
 
 import numpy as np
-
+import numpy.typing as npt
 import torch
 import torch.nn as nn
 
@@ -48,7 +49,9 @@ DEFAULT_STRIDE = 2
 EXPECTED_NUM_CLASSES = 2
 
 
-def npr_feature(img: np.ndarray, stride: int = DEFAULT_STRIDE) -> np.ndarray:
+def npr_feature(
+    img: npt.NDArray[np.uint8], stride: int = DEFAULT_STRIDE
+) -> npt.NDArray[np.float32]:
     """Compute NPR (Neural-generated Periodic Residual) feature.
 
     The feature is the residual between the input image and its own
@@ -66,12 +69,15 @@ def npr_feature(img: np.ndarray, stride: int = DEFAULT_STRIDE) -> np.ndarray:
     Raises:
         No exceptions raised; input is always valid numpy arrays.
     """
-    x = img.astype(np.float32) / 255.0
+    x: npt.NDArray[np.float32] = img.astype(np.float32) / 255.0
     down = x[::stride, ::stride]
-    up = np.repeat(np.repeat(down, stride, axis=0), stride, axis=1)
+    up: npt.NDArray[np.float32] = np.repeat(
+        np.repeat(down, stride, axis=0), stride, axis=1
+    ).astype(np.float32)
     # Trim to match input shape (in case height or width not divisible by stride)
     up = up[: x.shape[0], : x.shape[1]]
-    return x - up
+    residual: npt.NDArray[np.float32] = (x - up).astype(np.float32)
+    return residual
 
 
 @dataclass(frozen=True)
@@ -185,7 +191,7 @@ class NPRDetector:
             t = torch.from_numpy(feats).permute(0, 3, 1, 2).float()
 
             with torch.no_grad():
-                logits = model(t)  # type: ignore
+                logits = model(t)
 
             # Validate output shape (must be 2-class binary classifier)
             if logits.shape[1] != EXPECTED_NUM_CLASSES:
