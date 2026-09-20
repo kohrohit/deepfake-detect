@@ -2,7 +2,14 @@ import numpy as np
 import pytest
 from dataclasses import FrozenInstanceError
 
-from dfd.detectors.base import SyntheticDetector, abstain
+from dfd.detectors.base import (
+    BELOW_FLOOR,
+    NO_OBSERVATIONS,
+    NO_QUALITY,
+    SyntheticDetector,
+    abstain,
+    filter_by_quality_floor,
+)
 from dfd.detectors.registry import Registry
 from dfd.types import Modality, Observation, Quality
 
@@ -245,6 +252,43 @@ def test_registry_identity_invariant_cannot_be_broken():
     # Registry still returns the correct object under the original name
     assert reg.get("original") is d
     assert "original" in reg.names()
+
+
+def test_filter_by_quality_floor_covers_all_four_shapes():
+    """The shared quality filter (dfd.detectors.base.filter_by_quality_floor)
+    now backs SyntheticDetector, NPRDetector, and EffNetDetector. Exercise
+    all four outcome shapes directly, plus both orderings of the mixed case,
+    to pin the order-independence guarantee at the source instead of only
+    through each detector that happens to call it.
+    """
+    # Shape 1: empty list -> NO_OBSERVATIONS
+    usable, reason = filter_by_quality_floor([], "high")
+    assert usable == [] and reason == NO_OBSERVATIONS
+
+    obs_low = _obs(band="low")
+    obs_none = Observation(
+        t=0.0, payload=np.zeros((64, 64, 3), np.uint8),
+        roi=(0, 0, 64, 64), quality=None, source_id="s1",
+    )
+
+    # Shape 2: all quality None -> NO_QUALITY
+    usable, reason = filter_by_quality_floor([obs_none, obs_none], "high")
+    assert usable == [] and reason == NO_QUALITY
+
+    # Shape 3: all measured-below-floor -> BELOW_FLOOR
+    usable, reason = filter_by_quality_floor([obs_low, obs_low], "high")
+    assert usable == [] and reason == BELOW_FLOOR
+
+    # Shape 4: mixed (some None, some below floor) -> BELOW_FLOOR,
+    # in BOTH orderings (the order-dependent bug class this exists to kill).
+    usable, reason = filter_by_quality_floor([obs_none, obs_low], "high")
+    assert usable == [] and reason == BELOW_FLOOR, (
+        f"[none, low] gave {reason}, expected {BELOW_FLOOR}"
+    )
+    usable, reason = filter_by_quality_floor([obs_low, obs_none], "high")
+    assert usable == [] and reason == BELOW_FLOOR, (
+        f"[low, none] gave {reason}, expected {BELOW_FLOOR}"
+    )
 
 
 def test_select_subset_rejects_negative_k():

@@ -1,5 +1,6 @@
 """Tests for the EfficientNet-B4 detector (slots A — SBI, and E — FF++ appearance)."""
 import logging
+from dataclasses import FrozenInstanceError
 
 import numpy as np
 import pytest
@@ -126,7 +127,7 @@ def test_preprocess_resizes_nonsquare_input_correctly():
 
 def test_detector_is_frozen(tmp_path):
     d = EffNetDetector(name="sbi", slot="A", weights_path=tmp_path / "w.pt")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         d.name = "modified"  # type: ignore
 
 

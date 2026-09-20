@@ -29,9 +29,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ..quality import meets_floor
 from ..types import Modality, Observation, RawScore
-from .base import BELOW_FLOOR, NO_OBSERVATIONS, NO_QUALITY, OK, WEIGHTS_ABSENT, abstain
+from .base import (
+    NO_OBSERVATIONS,
+    OK,
+    WEIGHTS_ABSENT,
+    abstain,
+    filter_by_quality_floor,
+)
 from .loading import load_model
 
 logger = logging.getLogger(__name__)
@@ -156,28 +161,10 @@ class NPRDetector:
             )
             return abstain(self.name, self.version, WEIGHTS_ABSENT)
 
-        # Filter observations by quality floor
-        usable = []
-        has_measured_below_floor = False
-
-        for o in obs:
-            if o.quality is None:
-                logger.debug("observation has quality=None; skipping")
-                continue
-            if meets_floor(o.quality.band, self.min_quality_band):
-                usable.append(o)
-            else:
-                logger.debug(
-                    "observation band %s below floor %s; skipping",
-                    o.quality.band,
-                    self.min_quality_band,
-                )
-                has_measured_below_floor = True
-
-        # Abstain if no usable observations
-        if not usable:
-            reason = BELOW_FLOOR if has_measured_below_floor else NO_QUALITY
-            logger.debug("no usable observations; abstaining: %s", reason)
+        # Filter observations by quality floor (shared with every other
+        # detector via detectors.base.filter_by_quality_floor).
+        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
+        if reason is not None:
             return abstain(self.name, self.version, reason)
 
         # Load model (or retrieve from cache) via the shared secure loader.

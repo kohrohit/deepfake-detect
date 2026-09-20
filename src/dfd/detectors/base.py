@@ -43,6 +43,64 @@ def abstain(detector: str, version: str, reason: str) -> RawScore:
                     abstained=True, reason=reason)
 
 
+def filter_by_quality_floor(
+    obs: Sequence[Observation],
+    min_quality_band: Literal["low", "medium", "high"],
+) -> tuple[list[Observation], str | None]:
+    """Select observations meeting the floor, and diagnose why none did.
+
+    Returns (usable, abstention_reason). When `usable` is non-empty the
+    reason is None. The diagnosis rule is deliberate and must not be
+    reduced to inspecting obs[0]: if ANY observation carried a measured
+    quality that failed the floor, the reason is BELOW_FLOOR, because
+    "I measured it and it was too poor" is strictly more actionable than
+    "I could not measure it". NO_QUALITY applies only when no observation
+    carried quality at all; NO_OBSERVATIONS only when the list is empty.
+
+    This lives in one place because the order-dependent version of this
+    logic has already shipped and been fixed twice, in two separate files
+    (base.SyntheticDetector during Task 6's review, then again independently
+    in npr.NPRDetector). A third copy landed in effnet.EffNetDetector before
+    this function existed; all three now call this instead.
+
+    Args:
+        obs: sequence of observations to filter.
+        min_quality_band: minimum quality band a measured observation must
+            meet to be considered usable.
+
+    Returns:
+        A (usable, reason) pair. `usable` is the list of observations
+        meeting the floor (possibly empty). `reason` is None when `usable`
+        is non-empty; otherwise one of NO_OBSERVATIONS, NO_QUALITY, or
+        BELOW_FLOOR.
+    """
+    if not obs:
+        logger.debug("filter_by_quality_floor: empty observation sequence")
+        return [], NO_OBSERVATIONS
+
+    usable: list[Observation] = []
+    has_measured_below_floor = False
+
+    for o in obs:
+        if o.quality is None:
+            logger.debug("observation has quality=None; skipping")
+            continue
+        if meets_floor(o.quality.band, min_quality_band):
+            usable.append(o)
+        else:
+            logger.debug(
+                "observation band %s below floor %s; skipping",
+                o.quality.band, min_quality_band)
+            has_measured_below_floor = True
+
+    if usable:
+        return usable, None
+
+    reason = BELOW_FLOOR if has_measured_below_floor else NO_QUALITY
+    logger.debug("no usable observations; abstaining: %s", reason)
+    return usable, reason
+
+
 class Detector(Protocol):
     """Contract for a detector: a callable that scores observations.
 
@@ -121,31 +179,8 @@ class SyntheticDetector:
         Raises:
             No exceptions raised; abstentions are reported via reason field
         """
-        if not obs:
-            logger.debug("score called with empty observation sequence; abstaining")
-            return abstain(self.name, self.version, NO_OBSERVATIONS)
-
-        usable = []
-        has_measured_below_floor = False
-
-        for o in obs:
-            if o.quality is None:
-                logger.debug("observation has quality=None; skipping")
-                continue
-            if meets_floor(o.quality.band, self.min_quality_band):
-                usable.append(o)
-            else:
-                logger.debug(
-                    "observation band %s below floor %s; skipping",
-                    o.quality.band, self.min_quality_band)
-                has_measured_below_floor = True
-
-        if not usable:
-            # Prioritize measured-but-failed over unmeasured: if ANY observation
-            # carried a measured quality that failed the floor, report that.
-            # Only when NO observation carried quality at all is it unmeasured.
-            reason = BELOW_FLOOR if has_measured_below_floor else NO_QUALITY
-            logger.debug("no usable observations; abstaining: %s", reason)
+        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
+        if reason is not None:
             return abstain(self.name, self.version, reason)
 
         # Hash the payload deterministically using seed.

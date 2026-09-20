@@ -29,9 +29,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ..quality import meets_floor
 from ..types import Modality, Observation, RawScore
-from .base import BELOW_FLOOR, NO_OBSERVATIONS, NO_QUALITY, OK, WEIGHTS_ABSENT, abstain
+from .base import (
+    NO_OBSERVATIONS,
+    OK,
+    WEIGHTS_ABSENT,
+    abstain,
+    filter_by_quality_floor,
+)
 from .loading import load_model
 
 logger = logging.getLogger(__name__)
@@ -155,33 +160,10 @@ class EffNetDetector:
             )
             return abstain(self.name, self.version, WEIGHTS_ABSENT)
 
-        # Filter observations by quality floor. An observation is usable only
-        # if it carries measured quality that meets the floor. If ANY
-        # observation carried measured quality that failed the floor, the
-        # abstention reason is BELOW_FLOOR; NO_QUALITY is reported only when
-        # NO observation carried quality at all. This must not be inferred
-        # from obs[0] alone — that was an order-dependent bug fixed twice
-        # already in this codebase (see base.SyntheticDetector, npr.NPRDetector).
-        usable: list[Observation] = []
-        has_measured_below_floor = False
-
-        for o in obs:
-            if o.quality is None:
-                logger.debug("observation has quality=None; skipping")
-                continue
-            if meets_floor(o.quality.band, self.min_quality_band):
-                usable.append(o)
-            else:
-                logger.debug(
-                    "observation band %s below floor %s; skipping",
-                    o.quality.band,
-                    self.min_quality_band,
-                )
-                has_measured_below_floor = True
-
-        if not usable:
-            reason = BELOW_FLOOR if has_measured_below_floor else NO_QUALITY
-            logger.debug("no usable observations; abstaining: %s", reason)
+        # Filter observations by quality floor (shared with every other
+        # detector via detectors.base.filter_by_quality_floor).
+        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
+        if reason is not None:
             return abstain(self.name, self.version, reason)
 
         try:
