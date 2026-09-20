@@ -128,8 +128,12 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
         FusedResult with verdict, aggregate LLR, posterior, disagreement, counts.
 
     Raises:
-        No exceptions; returns INSUFFICIENT_EVIDENCE for empty or all-abstained input.
+        ValueError: if n_frames < 1.
+        No other exceptions; returns INSUFFICIENT_EVIDENCE for empty or all-abstained input.
     """
+    if n_frames < 1:
+        raise ValueError(f"n_frames must be >= 1, got {n_frames}")
+
     reasons = {e.detector: e.reason for e in evidence}
     contributing = [e for e in evidence if not e.abstained]
 
@@ -148,11 +152,22 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
     # This applies ONLY when evidence list contains one entry per frame.
     # When detectors aggregate internally (n_frames=1), no discount applies.
     if n_frames > 1:
-        if len(contributing) < n_frames:
-            logger.warning("ESS discount: n_frames=%d but only %d evidence entries. "
-                          "If evidence is aggregated (not per-frame), use n_frames=1.",
-                          n_frames, len(contributing))
+        # Symmetric mismatch guard: warn if evidence count differs materially from n_frames.
+        if len(contributing) != n_frames:
+            logger.warning(
+                "ESS discount: n_frames=%d but %d evidence entries provided. "
+                "Discount assumes one entry per frame. If evidence is aggregated (not per-frame), use n_frames=1.",
+                n_frames, len(contributing))
+
+        # Clamp ESS to n_frames: ESS > n_frames would amplify evidence, not discount it.
         eff = ess if ess is not None else 1.0
+        if ess is not None and ess > n_frames:
+            logger.warning(
+                "ESS %.2f exceeds n_frames %d; clamping. An ESS above the "
+                "observation count would amplify evidence rather than discount it.",
+                ess, n_frames)
+            eff = float(n_frames)
+
         if ess is None:
             logger.warning("Fusion ran with n_frames=%d and no ESS data; max-discounting to 1.0", n_frames)
         total *= max(1.0, eff) / float(n_frames)

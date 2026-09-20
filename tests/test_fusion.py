@@ -1,3 +1,4 @@
+import logging
 import math
 import numpy as np
 import pytest
@@ -68,22 +69,25 @@ def test_aggregated_detector_path_undiscounted():
 
 
 def test_per_frame_evidence_with_ess_discount():
-    """Per-frame evidence list with ESS discount.
+    """Per-frame evidence list with ESS discount (well below the cap).
 
-    Contract: evidence list contains one entry per frame. Naive sum = 900.0.
-    With ess=20, discount factor = 20/900. Result = 900 * (20/900) = 20.0.
+    Result must sit comfortably BELOW MAX_TOTAL_LLR, or the assertion is
+    blind to bugs. With ess=5.0, n_frames=900, per-frame llr=1.0:
+    naive sum = 900, discounted = 900 * (5/900) = 5.0.
+
+    This value is diagnostic, not saturated by the cap:
+    - correct linear discount: 900 * (5/900) = 5.0
+    - old sqrt formula: 900 * sqrt(5/900) ≈ 67.1 (still below cap)
+    - no discount at all: 900 (capped to 20.0)
+
+    If someone changes the numbers back into the saturated region,
+    the guard assertion catches it.
     """
     per_frame = [_ev(1.0, f"f{i}") for i in range(900)]
-    r = fuse(per_frame, n_frames=900, ess=20.0)
-    # Naive sum is 900
-    assert sum(e.llr for e in per_frame) == 900.0
-    # Discounted by ess/n_frames = 20/900
-    expected = 900.0 * (20.0 / 900.0)
-    assert r.llr_total == pytest.approx(expected, rel=1e-3)
-    # Result is exactly ESS frames' worth
-    assert r.llr_total == pytest.approx(20.0)
-    # Fixture: ess < n_frames (to catch vacuity if numbers change)
-    assert 20.0 < 900
+    r = fuse(per_frame, n_frames=900, ess=5.0)
+    assert r.llr_total == pytest.approx(5.0, rel=1e-2)
+    assert r.llr_total < _MAX_TOTAL, "expected value must not saturate the cap"
+    assert 5.0 < 900  # fixture: ess < n_frames
 
 
 def test_per_frame_evidence_with_ess_equals_one():
@@ -144,3 +148,41 @@ def test_effective_sample_size_n_less_than_3():
     assert effective_sample_size([42.0]) == 1.0
     # n=0 returns 0.0
     assert effective_sample_size([]) == 0.0
+
+
+def test_ess_clamped_to_n_frames(caplog):
+    """ESS > n_frames amplifies instead of discounting; must be clamped.
+
+    With ess=5000, n_frames=900, per-frame llr=1.0:
+    naive sum = 900
+    unclamped discount: 900 * (5000/900) ≈ 5000 (AMPLIFIES, wrong)
+    clamped to n_frames: 900 * (900/900) = 900 -> capped to MAX_TOTAL_LLR=20.0
+
+    Compare with smaller ess: ess=4, n_frames=900, per-frame llr=1.0:
+    naive sum = 900, discounted = 900 * (4/900) = 4.0
+    """
+    per_frame = [_ev(1.0, f"f{i}") for i in range(900)]
+    with caplog.at_level(logging.WARNING):
+        r_clamped = fuse(per_frame, n_frames=900, ess=5000.0)
+
+    # With ESS clamped to n_frames, discount = 900/900 = 1.0 (no discount)
+    # naive sum = 900, capped to MAX_TOTAL_LLR = 20.0
+    assert r_clamped.llr_total == pytest.approx(_MAX_TOTAL)
+
+    # Warning should have been logged for the clamp
+    assert "exceeds n_frames" in caplog.text
+    assert "clamping" in caplog.text
+
+    # Verify that smaller ess gives smaller result (discount applies normally)
+    r_normal = fuse(per_frame, n_frames=900, ess=4.0)
+    assert r_normal.llr_total == pytest.approx(4.0, rel=1e-2)
+    assert r_normal.llr_total < r_clamped.llr_total
+
+
+def test_n_frames_validation():
+    """n_frames < 1 is invalid and raises ValueError."""
+    with pytest.raises(ValueError, match="n_frames must be >= 1"):
+        fuse([_ev(1.0)], n_frames=0)
+
+    with pytest.raises(ValueError, match="n_frames must be >= 1"):
+        fuse([_ev(1.0)], n_frames=-5)
