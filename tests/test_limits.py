@@ -288,6 +288,46 @@ def test_load_video_rejects_a_container_declaring_excessive_duration(tmp_path, m
         load_video(p, Context(), limits=DEFAULT_LIMITS)
 
 
+@pytest.mark.parametrize("fps,expect_gate_fires", [
+    (100.0, False),        # real, usable fps: 60000/100 = 600s, well under the cap
+    (-30.0, True),         # negative: `or DEFAULT_FPS` leaves it truthy, untouched
+    (float("nan"), True),  # NaN: also truthy, also survives a bare `or`
+])
+def test_load_video_duration_gate_treats_fps_as_a_domain_not_a_truthiness_check(
+        tmp_path, monkeypatch, fps, expect_gate_fires):
+    """fps is adversary-controlled container metadata. `cap.get(...) or
+    DEFAULT_FPS` only substitutes when fps == 0.0 exactly: a negative fps
+    stays truthy (dividing by it yields a negative duration that can never
+    exceed a positive limit) and NaN stays truthy too (NaN compared to
+    anything is False, so the limit check silently never fires). Both must
+    fall back to DEFAULT_FPS instead. The positive case pins that the fix
+    is a domain check, not a fallback taken unconditionally: with a real,
+    usable fps the declared duration is 600s and the gate must NOT fire."""
+    p = tmp_path / "fake.mp4"
+    p.write_bytes(b"0" * 100)
+
+    props = {
+        cv2.CAP_PROP_FRAME_WIDTH: 64.0,
+        cv2.CAP_PROP_FRAME_HEIGHT: 48.0,
+        cv2.CAP_PROP_FRAME_COUNT: 60_000.0,  # at DEFAULT_FPS=25.0 this is 2400s, over the cap
+        cv2.CAP_PROP_FPS: fps,
+    }
+    monkeypatch.setattr(cv2.VideoCapture, "isOpened", lambda self: True)
+    monkeypatch.setattr(cv2.VideoCapture, "get", lambda self, prop: props.get(prop, 0.0))
+    monkeypatch.setattr(cv2.VideoCapture, "read", lambda self: (False, None))
+    monkeypatch.setattr(cv2.VideoCapture, "release", lambda self: None)
+
+    if expect_gate_fires:
+        with pytest.raises(ResourceLimitExceeded, match="exceeds limit"):
+            load_video(p, Context(), limits=DEFAULT_LIMITS)
+    else:
+        # Gate did not fire; falls through to the (mocked, frameless) read
+        # loop, which is the observable proof that no ResourceLimitExceeded
+        # was raised for this fps.
+        with pytest.raises(ValueError, match="could not decode any frames"):
+            load_video(p, Context(), limits=DEFAULT_LIMITS)
+
+
 def test_load_video_stops_decoding_once_it_has_the_frames_it_needs(tmp_path, monkeypatch):
     """The max_frames clamp must bound decode work, not merely retained
     observations: a loop that keeps reading to the end of the stream after

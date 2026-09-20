@@ -96,7 +96,13 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
         check_frame_dims(width, height, limits)
 
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
+        # `or DEFAULT_FPS` would only catch fps == 0.0: a negative fps stays
+        # truthy (yields a negative duration that never exceeds the limit)
+        # and NaN stays truthy too. `> 0` is false for zero, negative, and
+        # NaN alike, so it is the domain check this adversary-controlled
+        # header value needs, not a truthiness check.
+        raw_fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = raw_fps if raw_fps > 0 else DEFAULT_FPS
 
         # Determine which frames to extract.
         if total <= 0:
