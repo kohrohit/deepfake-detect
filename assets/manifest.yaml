@@ -8,3 +8,10 @@ assets:
     evidence_url: "https://github.com/opencv/opencv_zoo/blob/main/LICENSE"
     date_checked: "2026-09-20"
     checked_by: "kohrohit@gmail.com"
+  npr_weights:
+    source: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
