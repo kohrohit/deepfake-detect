@@ -5419,11 +5419,24 @@ git commit -m "feat: resource limits enforced before decode, not after"
 
 **Why this task exists:** the production standards in Global Constraints are only real if something enforces them. A standard enforced by intention is a standard that decays by the third contributor. This also wires Task 19's asset gate into CI, which is what makes spec §12.1 criterion 6 an enforced property rather than a claim.
 
+**A gate test must run the gate, not read its config.** `assert "strict = True" in mypy.ini` proves a string is in a file. It cannot tell you whether mypy passes, so the suite goes green locally while CI goes red on the first push — which is the same "enforced by intention" failure this task exists to end, relocated into the task's own tests. Every gate test here therefore *invokes* the gate and asserts it exits zero.
+
+**Both gates currently fail, and fixing them is part of this task.** Measured on the tree as it stands:
+
+- `ruff check src/ bench/ corpora/` — **11 `F541` findings** (f-string with no placeholders): 8 in `bench/guards.py`, 3 in `src/dfd/detectors/loading.py`. All auto-fixable with `ruff check --fix`.
+- `mypy --strict` over `src/dfd` — **22 errors in 7 files**, all mechanical: 15 bare `np.ndarray`, 4 bare `dict`, 3 bare `npt.NDArray`, plus 1 `no-any-return` and 2 stale `type: ignore` comments. By file: `faces.py` 5, `types.py` 4, `quality.py` 3, `detectors/npr.py` 3, `calibration.py` 3, `fusion.py` 2, `detectors/effnet.py` 2.
+
+Turning on a gate without clearing it ships a red pipeline; clearing it without turning it on ships a standard nobody enforces. This task does both.
+
+Timing, so the choice to run the gates in-suite is made with numbers: `ruff` takes 0.04 s. `mypy` takes ~1 s warm and ~41 s on a cold cache. That is worth paying for a gate that otherwise rots silently.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_ci_gates.py
 """The CI config is itself tested: a gate nobody verifies is a gate that rots."""
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -5452,12 +5465,49 @@ def test_mypy_is_configured_strict():
     assert "strict = True" in cfg or "strict=True" in cfg
 
 
+def test_ruff_actually_passes():
+    """Runs the gate. Asserting the config file contains "E722" proves a
+    string is in a file, not that the tree is clean — the suite would go
+    green here while CI went red on the first push."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "src", "bench", "corpora"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_mypy_strict_actually_passes():
+    """Runs the gate. ~1s warm, ~41s cold — worth it for a gate that
+    otherwise rots silently."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "mypy", "--config-file", "mypy.ini"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_ruff_bans_silent_exception_handling():
     """Global constraint: a swallowed error in a fraud detector is an approved fraud."""
     cfg = (ROOT / "ruff.toml").read_text()
     # E722 = bare except; BLE = blind except; S110 = try/except/pass
     assert "E722" in cfg
     assert "BLE" in cfg or "S110" in cfg
+
+
+def test_the_declared_dependencies_cover_what_is_imported():
+    """CI installs from these files; a missing entry is a red pipeline on a
+    clean runner and nothing at all locally, where the package is present."""
+    dev = (ROOT / "requirements-dev.txt").read_text().lower()
+    for package in ("pytest", "ruff", "mypy", "numpy", "opencv-python-headless",
+                    "pillow", "torch", "scikit-learn", "pyyaml"):
+        assert package in dev, f"{package} missing from requirements-dev.txt"
+
+
+def test_pyproject_declares_runtime_dependencies():
+    """pyproject declared none at all, so `pip install .` produced a package
+    that imports numpy, opencv, torch and Pillow and depends on none of them."""
+    cfg = (ROOT / "pyproject.toml").read_text().lower()
+    assert "dependencies" in cfg
+    for package in ("numpy", "opencv", "pillow"):
+        assert package in cfg, f"{package} not declared in pyproject.toml"
 
 
 def test_no_bare_except_anywhere_in_src():
@@ -5483,7 +5533,7 @@ def test_no_print_statements_in_src():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python3 -m pytest tests/test_ci_gates.py -v`
-Expected: FAIL — the workflow and config files do not exist
+Expected: FAIL — the workflow and config files do not exist, and the two gate-running tests fail because the tree does not yet pass either gate
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -5556,7 +5606,26 @@ jobs:
           "
 ```
 
-Also create `requirements-dev.txt` listing: `pytest`, `pytest-cov`, `ruff`, `mypy`, `numpy`, `opencv-python-headless`, `scikit-learn`, `pyyaml`, `torch`.
+Also create `requirements-dev.txt` listing: `pytest`, `pytest-cov`, `ruff`, `mypy`, `numpy`, `opencv-python-headless`, `pillow`, `scikit-learn`, `pyyaml`, `torch`. **Pillow is required** — Task 21's decode-bomb defence reads image headers with it, and without the entry CI installs a tree that cannot import `dfd.limits`.
+
+And add the runtime dependencies to `pyproject.toml`, which currently declares **none at all** despite the package importing numpy, opencv, Pillow and torch:
+
+```toml
+[project]
+name = "dfd"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+]
+```
+
+`torch` and `scikit-learn` stay out of the runtime set deliberately: the detectors that need them abstain cleanly when they are absent, so a caller who only wants the NPR physics detector and the evidence core should not be made to install a GPU stack. They remain in `requirements-dev.txt`, which is what CI installs.
+
+**Clear the gates before turning them on.** Run `ruff check --fix src bench corpora` for the 11 `F541` findings, then work through the 22 `mypy --strict` errors listed above — parameterise the bare `np.ndarray` annotations (`npt.NDArray[np.uint8]`, `npt.NDArray[np.float32]`, and so on, matching what each function actually handles rather than blanket-typing them), give the bare `dict` annotations their key and value types, delete the two stale `type: ignore` comments, and fix the one `no-any-return`. Do not silence any of these with `# type: ignore`; the point of the gate is that the annotations become true.
 
 - [ ] **Step 4: Run test to verify it passes**
 
