@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Tasks:** 18 (Task 18 added by pre-flight ruling on CONFLICT 4).
+
 **Goal:** Build the modality-agnostic evidence core (Sample → Detector → Evidence → Fusion) and a leave-one-generator-out benchmark harness rigorous enough to prove — or disprove — that this system beats Reality Defender.
 
 **Architecture:** Detectors emit raw scores and abstentions; a quality-conditioned calibrator converts those to log-likelihood ratios; fusion sums LLRs with an effective-sample-size discount for correlated frames. The benchmark harness wraps all of it with five evaluation-hygiene guards, a robustness surface, and a white-box adversarial baseline. Everything is hermetic: the harness is fully testable with zero model weights and zero network, so it can be proven correct before any EULA'd dataset arrives.
@@ -3576,3 +3578,149 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 **Placeholder scan.** No TBDs. Every step carries runnable code. Threshold constants in `quality.py` are marked as starting values with a stated plan (Task 18 follow-up) rather than left as magic numbers.
 
 **Type consistency.** `RawScore` (Tasks 1, 6, 7, 8) → `Calibrator.to_evidence` (Task 9) → `Evidence` (Tasks 1, 10) → `FusedResult` (Task 10) verified consistent. `meets_floor(band, floor)` signature identical in Tasks 3, 6, 7, 8. `abstain(detector, version, reason)` identical in Tasks 6, 7, 8. `Registry` defined in `base.py` and re-exported from `registry.py`, imported both ways in tests — consistent.
+
+---
+
+### Task 18: Wire the robustness sweep into the runner
+
+**Files:**
+- Modify: `bench/runner.py`, `bench/report.py`
+- Test: `tests/bench/test_runner_robustness.py`
+
+**Interfaces:**
+- Consumes: `robustness_sweep`, `PERTURBATIONS` (Task 14); `RunConfig`, `DetectorResult`, `run_benchmark` (Task 17)
+- Produces: `RunConfig.robustness` flag, `DetectorResult.tpr_by_perturbation: dict[str, float]`
+
+**Why this task exists:** Tasks 14 and 17 were both correct in isolation and did not connect — `robustness_sweep` was built, tested, and never called. Spec acceptance criterion 9 requires screenshot-of-screen and print-recapture to be **measured**, and without this task P0 would close believing it measured them. The two cheapest laundering steps available to any adversary would have gone untested.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/bench/test_runner_robustness.py
+import numpy as np
+import pytest
+from bench.robustness import PERTURBATIONS
+from bench.runner import RunConfig, run_benchmark
+from dfd.detectors.base import Registry, SyntheticDetector
+
+
+def _records(n=30):
+    out = []
+    for i in range(n):
+        fake = i % 2 == 0
+        out.append({
+            "sample_id": f"s{i}", "subject_id": f"p{i}",
+            "generator": "deepfacelive" if fake else None,
+            "label": 1 if fake else 0,
+            "compression": ["c0", "c23", "c40"][i % 3],
+            "face_detector": "yunet", "align": "v1",
+            "image": np.random.default_rng(i).integers(
+                0, 255, (64, 64, 3), dtype=np.uint8),
+        })
+    return out
+
+
+def _registry():
+    reg = Registry()
+    reg.register(SyntheticDetector(name="synth_a", seed=1))
+    return reg
+
+
+def test_robustness_is_off_by_default():
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=1))
+    assert rec.detector_results["synth_a"].tpr_by_perturbation == {}
+
+
+def test_robustness_reports_one_entry_per_perturbation_plus_clean():
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    got = rec.detector_results["synth_a"].tpr_by_perturbation
+    assert "clean" in got
+    assert set(PERTURBATIONS).issubset(set(got))
+
+
+def test_physical_recapture_paths_are_measured():
+    """Spec acceptance criterion 9 — the reason this task exists."""
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    got = rec.detector_results["synth_a"].tpr_by_perturbation
+    assert "screenshot_recapture" in got
+    assert "print_recapture" in got
+
+
+def test_robustness_run_is_reproducible():
+    a = run_benchmark(_records(), _registry(), RunConfig(seed=1, robustness=True))
+    b = run_benchmark(_records(), _registry(), RunConfig(seed=1, robustness=True))
+    assert (a.detector_results["synth_a"].tpr_by_perturbation
+            == b.detector_results["synth_a"].tpr_by_perturbation)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/bench/test_runner_robustness.py -v`
+Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'robustness'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `bench/runner.py`, add `robustness: bool = False` to `RunConfig`, add
+`tpr_by_perturbation: dict = field(default_factory=dict)` to `DetectorResult`,
+import `from .robustness import robustness_sweep`, and after the clean scoring
+loop for each detector add:
+
+```python
+        tpr_by_perturbation: dict[str, float] = {}
+        if config.robustness:
+            variants: dict[str, list[float]] = {}
+            for rec_in, obs in zip(records, observations):
+                for pname, pimg in robustness_sweep(rec_in["image"]).items():
+                    pobs = Observation(t=obs.t, payload=pimg, roi=obs.roi,
+                                       quality=obs.quality,
+                                       source_id=obs.source_id)
+                    praw = det.score([pobs])
+                    variants.setdefault(pname, []).append(
+                        float(praw.score) if not praw.abstained
+                        and praw.score is not None else np.nan)
+            for pname, pscores in variants.items():
+                ps = np.array(pscores, dtype=float)
+                pv = np.isfinite(ps)
+                tpr_by_perturbation[pname] = (
+                    tpr_at_fpr(ps[pv], labels[pv], 0.01)
+                    if pv.sum() and len(np.unique(labels[pv])) > 1
+                    else float("nan"))
+```
+
+Pass `tpr_by_perturbation=tpr_by_perturbation` into both `DetectorResult(...)`
+constructions in the function (the degenerate-case one and the normal one).
+
+In `bench/report.py`, after the per-detector table, add:
+
+```python
+    any_rob = any(d.tpr_by_perturbation for d in record.detector_results.values())
+    if any_rob:
+        names = sorted({p for d in record.detector_results.values()
+                        for p in d.tpr_by_perturbation})
+        lines.append("## Robustness — TPR@FPR=1% under perturbation\n")
+        lines.append("| detector | " + " | ".join(names) + " |")
+        lines.append("|---" * (len(names) + 1) + "|")
+        for name in sorted(record.detector_results):
+            d = record.detector_results[name]
+            row = " | ".join(_f(d.tpr_by_perturbation.get(p)) for p in names)
+            lines.append(f"| {d.detector} | {row} |")
+        lines.append("")
+        lines.append("`screenshot_recapture` and `print_recapture` are the two "
+                     "cheapest laundering steps available to an adversary; a "
+                     "detector that collapses under them is not deployable "
+                     "against the threat model in spec §3A.\n")
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/bench/test_runner_robustness.py tests/bench/test_runner.py tests/bench/test_report.py -v`
+Expected: PASS — 4 new tests, and Tasks 17's 14 tests still green
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add bench/runner.py bench/report.py tests/bench/test_runner_robustness.py
+git commit -m "feat: measure the robustness surface in the benchmark runner"
+```
