@@ -37,6 +37,12 @@ def test_video_level_passes_for_one_sample_per_group():
     check_video_level(sample_ids=["s1", "s2"], groups=["v1", "v2"])
 
 
+def test_video_level_raises_when_groups_identical_to_sample_ids():
+    """FIX 2: Raise ValueError when guard would be a no-op (groups == sample_ids)."""
+    with pytest.raises(ValueError, match=r"vacuous"):
+        check_video_level(sample_ids=["s1", "s2"], groups=["s1", "s2"])
+
+
 def test_compression_coverage_raises_when_a_level_is_missing():
     recs = [{"compression": "c23"}, {"compression": "c23"}]
     with pytest.raises(GuardViolation, match=r"compression levels missing"):
@@ -107,3 +113,32 @@ def test_demographic_parity_ignores_strata_with_no_negatives():
     rep = check_demographic_parity(scores, labels, strata, threshold=0.5,
                                    max_fpr_ratio=2.0)
     assert "B" not in rep.fpr_by_stratum
+
+
+def test_demographic_parity_subfloor_ratio_computed_correctly():
+    """FIX 1: For lo nonzero but below 1e-3, compute true ratio, not floored.
+
+    Fixture: A FPR=0.0002 (nonzero, below old 1e-3 floor), B FPR=0.0008.
+    True ratio: 0.0008 / 0.0002 = 4.0x.
+    Old buggy floor would compute: 0.0008 / 1e-3 = 0.8x (false negative).
+    """
+    # Engineer scores to get A FPR=0.0002 and B FPR=0.0008 (5 negatives each)
+    # A: 1 above threshold, 4 below = 0.2 FPR... need 0.0002
+    # With 5000 negatives: 1 above, 4999 below = 0.0002 FPR
+    scores_a = [0.4] * 4999 + [0.6]  # FPR = 1/5000 ≈ 0.0002
+    scores_b = [0.4] * 4992 + [0.6] * 8  # FPR = 8/5000 ≈ 0.0016 (approx 4x)
+    scores = scores_a + scores_b
+    labels = [0] * 5000 + [0] * 5000
+    strata = ["A"] * 5000 + ["B"] * 5000
+
+    # Ratio = 0.0016 / 0.0002 = 8.0, which exceeds 2.0 ceiling -> should raise
+    with pytest.raises(GuardViolation, match=r"demographic FPR"):
+        check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                 max_fpr_ratio=2.0)
+
+    # Now test with ceiling high enough to pass: true ratio should be ~8.0
+    rep = check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                   max_fpr_ratio=10.0)
+    # Ratio should be approximately 8.0, not a floored value like 0.8
+    assert rep.max_fpr_ratio == pytest.approx(8.0, rel=0.1)
+    assert rep.fpr_by_stratum["B"] > rep.fpr_by_stratum["A"]

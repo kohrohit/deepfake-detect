@@ -6,12 +6,10 @@ direction — which is exactly why they are easy to leave out.
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 
 class GuardViolation(Exception):
@@ -20,7 +18,11 @@ class GuardViolation(Exception):
 
 @dataclass(frozen=True)
 class IdentityReport:
-    """Report from identity leakage guard with measured similarity metrics."""
+    """Report from identity leakage guard with measured similarity metrics.
+
+    Note: max_similarity=0.0 and violations=0 when train or test ids are empty
+    does not confirm low risk, only that zero pairs were compared.
+    """
     n_train: int
     n_test: int
     max_similarity: float
@@ -48,8 +50,12 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
-def check_identity_disjoint(train_ids, test_ids, embeddings: dict,
-                            threshold: float = 0.6) -> IdentityReport:
+def check_identity_disjoint(
+    train_ids: list[str],
+    test_ids: list[str],
+    embeddings: dict[str, np.ndarray],
+    threshold: float = 0.6,
+) -> IdentityReport:
     """Guard 1 — identity leakage.
 
     The same person in train and test teaches the model faces, not forgery.
@@ -78,16 +84,34 @@ def check_identity_disjoint(train_ids, test_ids, embeddings: dict,
                           threshold=threshold)
 
 
-def check_video_level(sample_ids, groups) -> None:
+def check_video_level(
+    sample_ids: list[str],
+    groups: list[str],
+) -> None:
     """Guard 2 — one sample per source video.
 
     Frames must be aggregated before scoring. 10,000 frames from 100 videos is
     100 independent samples; treating them as 10,000 inflates AUC and shrinks
     confidence intervals dishonestly.
 
+    Args:
+        sample_ids: Identifiers for samples (rows).
+        groups: Source video identifiers — must uniquely identify the origin
+                video for each sample. MUST NOT be the sample_ids themselves,
+                as that makes the guard vacuous.
+
     Raises:
         GuardViolation: If a video appears in multiple samples.
+        ValueError: If groups and sample_ids are element-wise identical,
+                   indicating the guard would be a no-op.
     """
+    # Check that groups are not identical to sample_ids (FIX 2)
+    if list(sample_ids) == list(groups):
+        raise ValueError(
+            "check_video_level guard is vacuous: groups are identical to "
+            "sample_ids. Pass the SOURCE VIDEO identifier as groups, not "
+            "sample_ids; one sample_id per video.")
+
     seen: dict = {}
     for sid, g in zip(sample_ids, groups):
         if g in seen and seen[g] != sid:
@@ -97,7 +121,10 @@ def check_video_level(sample_ids, groups) -> None:
         seen[g] = sid
 
 
-def check_compression_coverage(records, required=("c0", "c23", "c40")) -> None:
+def check_compression_coverage(
+    records: list[dict[str, Any]],
+    required: tuple[str, ...] = ("c0", "c23", "c40"),
+) -> None:
     """Guard 3 — evaluate across compression levels, report the worst.
 
     Raises:
@@ -111,20 +138,22 @@ def check_compression_coverage(records, required=("c0", "c23", "c40")) -> None:
                 ', '.join(missing)))
 
 
-def check_uniform_preprocessing(records) -> None:
-    """Guard 4 — one preprocessing pipeline, applied blind to label.
+def check_uniform_preprocessing(
+    records: list[dict[str, Any]],
+) -> None:
+    """Guard 4 — one preprocessing pipeline, applied to entire dataset.
 
-    Different face detectors on real vs fake is itself a giveaway the model will
-    happily learn.
+    All samples must use the same face detector and alignment method.
+    Applying different preprocessing by label is itself a giveaway the model
+    will happily learn.
 
     Raises:
-        GuardViolation: If preprocessing pipeline parameters vary.
+        GuardViolation: If preprocessing parameters vary across any samples.
     """
     for key in ("face_detector", "align"):
-        by_label: dict = {}
+        all_values: set = set()
         for r in records:
-            by_label.setdefault(r["label"], set()).add(r.get(key))
-        all_values = set().union(*by_label.values()) if by_label else set()
+            all_values.add(r.get(key))
         if len(all_values) > 1:
             raise GuardViolation(
                 f"non-uniform preprocessing: %s takes values %s" % (
@@ -142,8 +171,13 @@ def check_threshold_provenance(source: str) -> None:
             f"threshold source must be 'validation', got %r" % source)
 
 
-def check_demographic_parity(scores, labels, strata, threshold: float,
-                             max_fpr_ratio: float = 2.0) -> ParityReport:
+def check_demographic_parity(
+    scores: list[float] | np.ndarray,
+    labels: list[int] | np.ndarray,
+    strata: list[str] | np.ndarray,
+    threshold: float,
+    max_fpr_ratio: float = 2.0,
+) -> ParityReport:
     """Guard 6 — per-stratum error parity (spec §8.2 guard 6).
 
     An aggregate FPR of 1% is compatible with 0.3% on one group and 4% on
@@ -180,9 +214,12 @@ def check_demographic_parity(scores, labels, strata, threshold: float,
         values = [v for v in fpr.values()]
         lo = min(values)
         hi = max(values)
-        # An absolute floor keeps a 0%-vs-0.5% difference from reading as infinite.
-        # FLOOR_FOR_RATIO: 1e-3 prevents division by near-zero FPR values
-        ratio = hi / max(lo, 1e-3)
+        # FIX 1: Only apply infinity at literal zero, else compute true ratio.
+        # For lo=0.0002, hi=0.0008, true ratio is 4.0x, not 0.8.
+        if lo == 0.0:
+            ratio = float("inf") if hi > 0.0 else 1.0
+        else:
+            ratio = hi / lo
 
     report = ParityReport(fpr_by_stratum=fpr, tpr_by_stratum=tpr,
                           max_fpr_ratio=float(ratio), ceiling=max_fpr_ratio)
@@ -190,7 +227,7 @@ def check_demographic_parity(scores, labels, strata, threshold: float,
         worst = max(fpr, key=fpr.get)
         best = min(fpr, key=fpr.get)
         raise GuardViolation(
-            f"demographic FPR disparity %.2f%% exceeds ceiling %.2f%%: "
+            f"demographic FPR disparity %.1fx exceeds ceiling %.1fx: "
             f"%s=%.4f vs %s=%.4f" % (
                 ratio, max_fpr_ratio, worst, fpr[worst], best, fpr[best]))
     return report
