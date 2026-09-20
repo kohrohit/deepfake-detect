@@ -3,8 +3,9 @@ import logging
 
 import pytest
 from bench.guards import GuardViolation
+from bench.metrics import auc, bootstrap_ci_by_group
 from bench.runner import (
-    RunConfig, dataset_hash, run_benchmark, worst_logo_auc,
+    RunConfig, _observation, dataset_hash, run_benchmark, worst_logo_auc,
 )
 from dfd.detectors.base import Registry, SyntheticDetector
 
@@ -73,10 +74,20 @@ def test_dataset_hash_is_stable():
     ("generator", "changed"),
     ("label", 0),
     ("compression", "c99"),
+    ("face_detector", "retinaface"),
+    ("align", "v2"),
 ])
 def test_dataset_hash_is_sensitive_to_every_identifying_field(field_name, value):
     """Mutating one field was one field's worth of evidence. The hash is what
-    ties an audit record to the corpus it was computed on."""
+    ties an audit record to the corpus it was computed on.
+
+    `face_detector` and `align` are included because `check_uniform_preprocessing`
+    treats either varying as grounds to abort the run — two runs aligned on
+    every other field but differing here would otherwise hash identically
+    while producing different metrics, and this test was previously unable
+    to discover that: it asserts a completeness property while enumerating
+    only the fields the implementation already covered.
+    """
     a, b = _records(), _records()
     b[0][field_name] = value
     assert dataset_hash(a) != dataset_hash(b)
@@ -192,3 +203,123 @@ def test_run_is_reproducible_given_a_seed():
     # Folds are drawn from a seeded permutation; same seed, same folds.
     assert ({g: f["synth_a"].auc for g, f in a.logo_results.items()}
             == {g: f["synth_a"].auc for g, f in b.logo_results.items()})
+
+
+def test_bootstrap_ci_is_computed_over_source_groups_not_rows():
+    """The one wiring decision this task was corrected for: the `groups`
+    array fed into `bootstrap_ci_by_group` must be `source_id`, never
+    `sample_id`. Resampling rows instead of videos fabricates precision
+    (measured at 11.9x too narrow elsewhere in this codebase).
+
+    The stock `_records()` fixture gives every record its own `source_id`,
+    so `sample_id` and `source_id` are the same partition there and a
+    regression to `sample_id` would pass every other test in this file
+    silently. This fixture pairs samples onto shared `source_id`s so the
+    two groupings actually differ, and uses `enforce_guards=False` because
+    `check_video_level` correctly refuses a corpus shaped this way — which
+    is exactly the path an honest interval matters most on.
+    """
+    records = _records()
+    for i, r in enumerate(records):
+        r["source_id"] = f"grp{i // 2}"          # 20 groups of 2 samples
+
+    reg = _registry()
+    rec = run_benchmark(records, reg, RunConfig(seed=7, enforce_guards=False))
+
+    # Recompute the score array independently (same detector, same
+    # observations) to derive an expectation from each candidate grouping,
+    # rather than trusting the runner's own intermediate values.
+    det = reg.get("synth_a")
+    scores = [det.score([_observation(r)]).score for r in records]
+    s = np.array(scores, dtype=float)
+    labels = np.array([r["label"] for r in records], dtype=int)
+    source_groups = np.array([r["source_id"] for r in records])
+    sample_groups = np.array([r["sample_id"] for r in records])
+
+    expected_by_source = bootstrap_ci_by_group(s, labels, source_groups, auc,
+                                               n=RunConfig().bootstrap_n, seed=7)
+    expected_by_row = bootstrap_ci_by_group(s, labels, sample_groups, auc,
+                                            n=RunConfig().bootstrap_n, seed=7)
+
+    assert rec.detector_results["synth_a"].auc_ci == expected_by_source
+    assert rec.detector_results["synth_a"].auc_ci != expected_by_row
+
+
+def test_logo_fold_reports_measured_abstention_not_fabricated_zero():
+    """The first cut of the LOGO fold slicer passed `latencies=[]` and
+    `abstentions=0` literally, so every fold claimed 0% abstained and 0.0ms
+    regardless of what happened in that slice. A detector that abstains on
+    everything must show `abstention_rate == 1.0` in every fold — recovered
+    from the slice itself — and an explicitly unmeasured (NaN) p95 latency,
+    never a false `0.0` that reads as instantaneous.
+    """
+    reg = Registry()
+    reg.register(SyntheticDetector(name="picky", seed=1, min_quality_band="high"))
+    rec = run_benchmark(_records(), reg, RunConfig(seed=7, enforce_guards=False))
+    assert rec.logo_results          # sanity: LOGO was computed for this corpus
+    for folds in rec.logo_results.values():
+        result = folds["picky"]
+        assert result.abstention_rate == 1.0
+        assert result.p95_latency_ms != result.p95_latency_ms  # NaN
+
+
+def _identity_conflict_record(sample_id, subject_id, source_id, label,
+                              generator, compression, image_seed):
+    return {
+        "sample_id": sample_id, "subject_id": subject_id,
+        "source_id": source_id, "generator": generator, "label": label,
+        "compression": compression, "face_detector": "yunet", "align": "v1",
+        "image": np.random.default_rng(image_seed).integers(
+            0, 255, (128, 160, 3), dtype=np.uint8),
+    }
+
+
+def _identity_conflict_fixture():
+    """Two subjects, each with a real record and fakes from BOTH generators.
+
+    A subject with a real record never moves sides for generator reasons
+    (only subjects with no real record do, per `logo_splits`'s
+    Pareto-improving move). So for every fold, exactly one of each
+    subject's two fakes disagrees with its fixed side and is dropped —
+    2 drops per fold here, independently confirmed against
+    `bench.protocol.logo_splits` directly before being encoded as this
+    fixture's expected value.
+    """
+    return [
+        _identity_conflict_record("s1", "target", "t_real", 0, None, "c0", 1),
+        _identity_conflict_record("s2", "target", "t_df", 1, "deepfacelive", "c23", 2),
+        _identity_conflict_record("s3", "target", "t_fs", 1, "faceswap", "c40", 3),
+        _identity_conflict_record("s4", "other", "o_real", 0, None, "c0", 4),
+        _identity_conflict_record("s5", "other", "o_df", 1, "deepfacelive", "c23", 5),
+        _identity_conflict_record("s6", "other", "o_fs", 1, "faceswap", "c40", 6),
+    ]
+
+
+def test_logo_dropped_counts_are_reported_and_nonzero_when_drops_occur():
+    """`logo_splits` drops identity-conflicted fakes rather than leaking
+    them (`Split.dropped_for_identity`). Without carrying that count into
+    `RunRecord`, a reader seeing a fold's `n_samples` cannot tell whether
+    2 or 20 records were removed to reach it."""
+    rec = run_benchmark(_identity_conflict_fixture(), _registry(), RunConfig(seed=7))
+    assert rec.logo_dropped == {"deepfacelive": 2, "faceswap": 2}
+
+
+def test_logo_dropped_is_zero_for_a_corpus_with_no_identity_conflicts():
+    """The stock fixture drops nothing (each subject carries exactly one
+    generator), so this is the counterpart to the test above: the count
+    must be present and zero, not merely absent."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.logo_dropped == {"deepfacelive": 0, "faceswap": 0}
+
+
+def test_duplicate_sample_id_raises_rather_than_silently_mis_slicing_folds():
+    """The `position` map inside the LOGO fold slicer maps sample_id ->
+    row index; a duplicate collapses to one entry, so one row would be
+    scored twice and another dropped from every fold with no error — and
+    `0 < n < len(records)` still holds, so the fold-subset test elsewhere
+    in this file would not notice. This must raise instead of mis-slicing.
+    """
+    records = _records()
+    records[1]["sample_id"] = records[0]["sample_id"]
+    with pytest.raises(ValueError, match="duplicate sample_id"):
+        run_benchmark(records, _registry(), RunConfig(seed=7, enforce_guards=False))

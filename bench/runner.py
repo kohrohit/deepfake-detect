@@ -64,14 +64,28 @@ class RunRecord:
     #: that predicts field performance. Empty when the corpus cannot be split.
     logo_results: dict[str, dict[str, DetectorResult]] = field(
         default_factory=dict)
+    #: held-out generator -> count of fakes dropped by logo_splits for
+    #: identity disjointness (Split.dropped_for_identity). A fold's AUC is
+    #: computed over test_ids() only; without this a reader cannot tell a
+    #: fold with 2 drops from one with 20 — both would print the same
+    #: n_samples and AUC. Empty when logo_results is empty.
+    logo_dropped: dict[str, int] = field(default_factory=dict)
 
 
 def dataset_hash(records: list[dict]) -> str:
-    """Content hash over identifying fields — stable, order-independent."""
+    """Content hash over identifying fields — stable, order-independent.
+
+    Includes every field `check_uniform_preprocessing` can fail the run
+    over (`face_detector`, `align`), not only the fields `logo_splits` and
+    subject/label identity depend on. Two runs with different preprocessing
+    aligned to the same sample/subject/source/generator/label/compression
+    tuple would otherwise hash identically while producing different
+    metrics, breaking the audit tie acceptance criterion 10 exists for.
+    """
     keys = sorted(
         json.dumps({k: r.get(k) for k in
                     ("sample_id", "subject_id", "source_id", "generator",
-                     "label", "compression")},
+                     "label", "compression", "face_detector", "align")},
                    sort_keys=True)
         for r in records)
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
@@ -137,13 +151,14 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
         results[name] = _detector_result(
             name, s, labels, groups, latencies, abstentions, config)
 
-    logo_results = _logo_results(records, registry, scores_by_detector,
-                                 labels, groups, config)
+    logo_results, logo_dropped = _logo_results(
+        records, registry, scores_by_detector, labels, groups, config)
 
     return RunRecord(seed=config.seed, dataset_hash=dataset_hash(records),
                      guards_enforced=config.enforce_guards,
                      model_versions=versions, identity_report=None,
-                     detector_results=results, logo_results=logo_results)
+                     detector_results=results, logo_results=logo_results,
+                     logo_dropped=logo_dropped)
 
 
 def _detector_result(name, s, labels, groups, latencies, abstentions,
@@ -179,7 +194,8 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
 
 
 def _logo_results(records, registry, scores_by_detector, labels, groups,
-                  config) -> dict[str, dict[str, DetectorResult]]:
+                  config) -> tuple[dict[str, dict[str, DetectorResult]],
+                                    dict[str, int]]:
     """Per-held-out-generator metrics — spec 8.1, the number that predicts field
     performance.
 
@@ -193,25 +209,56 @@ def _logo_results(records, registry, scores_by_detector, labels, groups,
     number you report, and it becomes the full protocol once training or
     calibration fitting exists — at which point the fold's train side is also
     where the operating threshold must be frozen (spec 8.2 guard 5).
+
+    Returns (logo_results, logo_dropped): the second maps held-out generator
+    to the number of fakes `logo_splits` dropped for identity disjointness
+    in that fold (Split.dropped_for_identity), so a shrunken test set is
+    visible rather than indistinguishable from a clean one.
     """
+    # A duplicate sample_id collapses in the `position` map below: one row
+    # would be scored twice and another dropped from every fold with no
+    # error, while `0 < n < len(records)` still holds so nothing downstream
+    # notices. sample_id is the join key `logo_splits` and this function both
+    # rely on; it must be unique before either is trusted.
+    sample_ids = [r["sample_id"] for r in records]
+    if len(set(sample_ids)) != len(sample_ids):
+        seen: set = set()
+        dupes = sorted({s for s in sample_ids
+                        if s in seen or seen.add(s)})
+        raise ValueError(
+            "duplicate sample_id(s) would silently mis-slice LOGO folds: "
+            f"{dupes}")
+
     try:
         splits = logo_splits(records, seed=config.seed)
     except ValueError as exc:
         # A corpus with one generator, one subject, or no measurable fold.
         # Recorded rather than raised: the in-dataset numbers are still valid.
         logger.warning("LOGO unavailable for this corpus: %s", exc)
-        return {}
+        return {}, {}
 
     position = {r["sample_id"]: i for i, r in enumerate(records)}
     out: dict[str, dict[str, DetectorResult]] = {}
+    dropped: dict[str, int] = {}
     for split in splits:
         rows = np.array([position[sid] for sid in split.test_ids()], dtype=int)
-        out[split.held_out_generator] = {
-            name: _detector_result(name, scores_by_detector[name][rows],
-                                   labels[rows], groups[rows], [], 0, config)
-            for name in registry.names()
-        }
-    return out
+        dropped[split.held_out_generator] = len(split.dropped_for_identity)
+        fold_results = {}
+        for name in registry.names():
+            sliced = scores_by_detector[name][rows]
+            # Fabricating 0.0 for both would be false: every row in the
+            # fold WAS scored (by the main loop above), but which of those
+            # scores are abstentions, and how long scoring took, are facts
+            # about the fold's slice, not the whole corpus. Abstentions are
+            # recovered from the slice itself; latency was never measured
+            # per fold, so it is reported as unmeasured (NaN) rather than
+            # printed as a false "0.0 ms" that reads as instantaneous.
+            fold_abstentions = int((~np.isfinite(sliced)).sum())
+            fold_results[name] = _detector_result(
+                name, sliced, labels[rows], groups[rows],
+                [float("nan")], fold_abstentions, config)
+        out[split.held_out_generator] = fold_results
+    return out, dropped
 
 
 def worst_logo_auc(record: "RunRecord", detector: str) -> float:

@@ -43,11 +43,27 @@ def render_markdown(record: RunRecord) -> str:
                      "attacker will actually use.\n")
         detectors = sorted(record.detector_results)
         generators = sorted(record.logo_results)
-        lines.append("| detector | worst AUC | "
-                     + " | ".join(f"held out {g}" for g in generators) + " |")
+        # Dropped-for-identity count sits beside each fold's AUC in the same
+        # column header: `Split.dropped_for_identity` is a property of the
+        # fold (subject/generator geometry), not of which detector scored
+        # it, so it does not vary by row and does not need its own column.
+        # Without it, n=23 does not say whether 2 or 20 records were
+        # removed to reach that number.
+        lines.append(
+            "| detector | worst AUC | "
+            + " | ".join(f"held out {g} (dropped {record.logo_dropped.get(g, 0)})"
+                        for g in generators)
+            + " |")
         lines.append("|---|---|" + "---|" * len(generators))
         for name in detectors:
-            cells = [_f(record.logo_results[g][name].auc) for g in generators]
+            # `worst_logo_auc` already treats a detector missing from a
+            # fold as absent rather than a KeyError (spec: a fold that
+            # never scored a detector is unmeasured for it, not zero).
+            # Building each row's cells must fail the same way, or a
+            # bold worst-AUC renders and the row crashes building itself.
+            cells = [_f(record.logo_results[g][name].auc)
+                    if name in record.logo_results[g] else "n/a"
+                    for g in generators]
             lines.append(f"| {name} | **{_f(worst_logo_auc(record, name))}** | "
                          + " | ".join(cells) + " |")
         lines.append("")
