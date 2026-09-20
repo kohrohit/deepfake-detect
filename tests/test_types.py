@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from dfd.types import (
     Modality, Verdict, Quality, Observation, Context, Sample, RawScore, Evidence,
+    QUALITY_BANDS,
 )
 
 
@@ -42,3 +43,11 @@ def test_zero_llr_means_no_information():
 def test_four_verdicts_exist():
     assert {v.value for v in Verdict} == {
         "real", "fake", "insufficient_evidence", "out_of_distribution"}
+
+
+def test_quality_bands_are_ordered_worst_to_best():
+    """Order is semantic: meets_floor() indexes into this tuple."""
+    assert QUALITY_BANDS == ("reject", "low", "medium", "high")
+    assert QUALITY_BANDS.index("reject") < QUALITY_BANDS.index("low")
+    assert QUALITY_BANDS.index("low") < QUALITY_BANDS.index("medium")
+    assert QUALITY_BANDS.index("medium") < QUALITY_BANDS.index("high")
