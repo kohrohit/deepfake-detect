@@ -49,7 +49,19 @@ def test_pgd_output_stays_within_the_epsilon_ball(model):
 
 
 def test_pgd_output_stays_in_valid_pixel_range(model):
+    """y=0 at x=0.99: ascending the loss on class 0 drives pixels upward,
+    so the iterate walks toward 1.0 and actually exercises the in-loop
+    clamp rather than only the one-off clamp on the random start."""
     x = _batch(0.99)
+    adv = pgd_attack(model, x, torch.zeros(8, dtype=torch.long),
+                     eps=0.1, alpha=0.02, steps=5)
+    assert adv.min().item() >= 0.0 and adv.max().item() <= 1.0
+
+
+def test_pgd_output_stays_in_valid_pixel_range_at_the_lower_bound(model):
+    """Mirrors the case above: y=1 at x=0.01 drives pixels downward toward
+    0.0, pinning the other side of the in-loop clamp the same way."""
+    x = _batch(0.01)
     adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
                      eps=0.1, alpha=0.02, steps=5)
     assert adv.min().item() >= 0.0 and adv.max().item() <= 1.0
@@ -123,13 +135,41 @@ def test_attack_collapses_tpr_to_zero(model):
     assert adversarial_tpr(model, x, y, eps=0.2, fpr=0.1) == 0.0
 
 
-def test_negatives_are_left_clean(model):
-    """The adversary wants fakes to read as real, not the reverse; attacking
-    negatives too would understate the detector by moving the threshold."""
+def test_adversarial_tpr_does_not_mutate_the_callers_input_in_place(model):
+    """`adversarial_tpr` must not corrupt the caller's tensor, whatever it
+    does internally. This does NOT establish that only positives are
+    attacked — `adv = x.clone()` inside `adversarial_tpr` guarantees `x`
+    itself is untouched regardless of which rows the attack later writes
+    into `adv`. See test_only_the_positives_are_attacked for that."""
     x, y = _labelled()
-    before = x[y == 0].clone()
+    before = x.clone()
     adversarial_tpr(model, x, y, eps=0.2, fpr=0.1)
-    assert torch.equal(x[y == 0], before)
+    assert torch.equal(x, before)
+
+
+def test_only_the_positives_are_attacked(model):
+    """The adversary wants fakes to read as real, not the reverse; attacking
+    negatives too would understate the detector by moving the threshold, and
+    spec §3A.4's demotion decision rides on that number. Spies on the scores
+    the model is actually evaluated on, not on the caller's tensor — `x` is
+    never mutated in place regardless of which rows get attacked, so
+    asserting on `x` cannot distinguish positives-only from whole-batch."""
+    seen = []
+
+    class Spy(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, z):
+            seen.append(z.detach().clone())
+            return self.inner(z)
+
+    x, y = _labelled()
+    adversarial_tpr(Spy(model), x, y, eps=0.2, fpr=0.1)
+    scored = seen[-1]  # the final whole-batch scoring pass
+    assert torch.equal(scored[y == 0], x[y == 0])
+    assert not torch.equal(scored[y == 1], x[y == 1])
 
 
 def test_zero_epsilon_is_the_identity(model):
