@@ -1,4 +1,6 @@
 """Tests for the NPR detector (slot C — upsampling fingerprint)."""
+import logging
+
 import numpy as np
 import pytest
 import torch
@@ -25,6 +27,22 @@ class _Tiny2Class(nn.Module):
         # Input: NCHW tensor from npr_feature (N, 3, H, W)
         # Average spatial dims to 1D, feed to linear layer
         return self.fc(x.mean(dim=(2, 3)))
+
+
+class _NegatedTiny2Class(nn.Module):
+    """Same architecture as _Tiny2Class but negates the output logits.
+
+    Used to prove that two `model_factory` values loading the SAME state_dict
+    file produce genuinely different models: same weights, opposite-signed
+    logits, so softmax output differs.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fc = nn.Linear(3, 2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return -self.fc(x.mean(dim=(2, 3)))
 
 
 class _Tiny3Class(nn.Module):
@@ -405,6 +423,26 @@ def test_detector_fails_on_invalid_model_output_shape(tmp_path, tiny_model_facto
         d.score(obs)
 
 
+def test_model_factory_with_full_module_pickle_gives_actionable_error(tmp_path, tiny_model_factory):
+    """A full-module pickle supplied alongside model_factory gets a clear, actionable error.
+
+    Previously this path re-raised torch's raw weights_only unpickling failure —
+    internal WeightsUnpickler diagnostics instead of a statement of the actual
+    conflict. The file is still correctly rejected either way (this is a
+    usability fix, not a security fix); the message must name the conflict:
+    model_factory expects a state_dict, but the file is a full module.
+    """
+    p = tmp_path / "full_module.pt"
+    torch.save(_Tiny2Class(), p)
+
+    d = NPRDetector(weights_path=p, model_factory=tiny_model_factory)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        d.score(obs)
+
+
 def test_detector_cache_invalidation_on_file_replacement(tmp_path, tiny_model_factory):
     """Cache is invalidated when weights file is replaced (mtime/size change)."""
     weights_path = tmp_path / "weights.pt"
@@ -437,6 +475,42 @@ def test_detector_cache_invalidation_on_file_replacement(tmp_path, tiny_model_fa
     # CRITICAL: assert the score actually changed
     assert r1.score != r2.score, (
         "cache served the stale model after the weights file was replaced"
+    )
+
+
+def test_model_cache_distinguishes_different_factories_over_same_file(tmp_path):
+    """Two detectors sharing one weights file but different factories must not collide.
+
+    Regression test for the Round 3 bug: the cache key was
+    (resolved_path, mtime_ns, size) only, so a second NPRDetector built with a
+    different model_factory over the same file silently received the first
+    detector's cached model (the wrong architecture). The two factories here
+    load the identical state_dict but negate the logits, so a correct cache
+    key must yield genuinely different scores.
+    """
+    weights_path = tmp_path / "shared.pt"
+    torch.save(_Tiny2Class().state_dict(), weights_path)
+
+    def factory_positive():
+        return _Tiny2Class()
+
+    def factory_negated():
+        return _NegatedTiny2Class()
+
+    d_positive = NPRDetector(weights_path=weights_path, model_factory=factory_positive)
+    d_negated = NPRDetector(weights_path=weights_path, model_factory=factory_negated)
+
+    img = np.random.default_rng(20).integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    r_positive = d_positive.score(obs)
+    r_negated = d_negated.score(obs)
+
+    assert not r_positive.abstained and not r_negated.abstained
+    # CRITICAL: assert the two factories' scores actually differ
+    assert r_positive.score != r_negated.score, (
+        "cache served one factory's model to the other factory's detector: "
+        f"factory_positive={r_positive.score} vs factory_negated={r_negated.score}"
     )
 
 
@@ -474,7 +548,3 @@ def test_detector_abstains_quality_not_measured_secure_path(tiny_weights, tiny_m
     r = d.score(obs)
 
     assert r.abstained and r.reason == NO_QUALITY
-
-
-# Add logging import at the top
-import logging
