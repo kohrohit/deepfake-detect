@@ -4618,32 +4618,68 @@ git commit -m "feat: immutable per-decision audit record and error hierarchy"
 - Test: `tests/test_limits.py`
 
 **Interfaces:**
-- Consumes: `ResourceLimitExceeded` (Task 20); `load_image`, `load_video` (Task 5)
-- Produces: `Limits`, `DEFAULT_LIMITS`, `check_file_size(path, limits)`, `check_frame_dims(w, h, limits)`
+- Consumes: `InvalidInput`, `ResourceLimitExceeded` (Task 20); `load_image`, `load_video` (Task 5)
+- Produces: `Limits`, `DEFAULT_LIMITS`, `check_file_size(path, limits)`, `check_frame_dims(w, h, limits)`, `probe_image_dims(path)`, `check_image_before_decode(path, limits)`
 
-**Why this task exists:** spec §3A assumes a well-resourced adversary and spec §10 names resource exhaustion via crafted media as an attack surface. A 50,000×50,000 PNG decodes to 7.5 GB and takes the service down — a denial-of-service against a fraud control is itself a fraud enabler, because it forces a fallback path. Limits must be enforced **before** allocation, not after.
+**Why this task exists:** spec §3A assumes a well-resourced adversary and spec §10 names resource exhaustion via crafted media as an attack surface. A 50,000×50,000 PNG decodes to 7.5 GB and takes the service down — a denial-of-service against a fraud control is itself a fraud enabler, because it forces a fallback path.
+
+**Limits are enforced before allocation, and that word is load-bearing.** The obvious design — check the file size, decode, then check the decoded array's shape — does not defend against this attack at all, for two reasons:
+
+1. **A file-size limit is exactly what a decompression bomb defeats.** Measured: a 12,000×12,000 uniform PNG is **161,331 bytes on disk** — 0.15 MB — and decodes to **0.40 GB**. It passes a 256 MB file limit with five orders of magnitude to spare. The task's own headline example, 50,000×50,000, is roughly 2.8 MB on disk and 7.5 GB decoded.
+2. **Checking `decoded.shape` runs after the allocation it exists to prevent.** By the time an array has a shape, the memory is already committed.
+
+So dimensions are read from the image **header**, before any decode. Pillow does this: `Image.open(path).size` returned `(12000, 12000)` in **0.007 s** without decoding a pixel. Only a frame whose header dimensions pass is handed to `cv2.imread`.
+
+**Pillow's own bomb guard must be absorbed, not left to fire on its own.** Pillow warns with `DecompressionBombWarning` above `MAX_IMAGE_PIXELS` (89,478,485 by default) and raises `DecompressionBombError` above twice that. Our `max_pixels` is 33.2 M — stricter than Pillow's — so our check is the one that should speak. `probe_image_dims` suppresses Pillow's warning and converts its error into `ResourceLimitExceeded`, giving one source of truth and keeping test output pristine.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_limits.py
+import dataclasses
+
+import cv2
 import numpy as np
 import pytest
-from dfd.errors import DfdError, ResourceLimitExceeded
-from dfd.limits import DEFAULT_LIMITS, Limits, check_file_size, check_frame_dims
+
+from dfd.errors import DfdError, InvalidInput, ResourceLimitExceeded
+from dfd.limits import (
+    DEFAULT_LIMITS, Limits, check_file_size, check_frame_dims,
+    check_image_before_decode, probe_image_dims,
+)
+from dfd.ingest.image import load_image
+from dfd.types import Context
+
+
+def _png(path, width, height):
+    """A uniform image: large in pixels, tiny on disk. That gap is the attack."""
+    cv2.imwrite(str(path), np.zeros((height, width), dtype=np.uint8))
+    return path
+
+
+@pytest.fixture
+def context():
+    return Context(label=0)
 
 
 def test_limits_are_a_frozen_value_object():
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         DEFAULT_LIMITS.max_pixels = 1
 
 
-def test_oversized_file_is_rejected_before_decode(tmp_path):
+def test_defaults_are_the_documented_values():
+    """Asserting only `> 0` would let max_pixels drift to 1 unnoticed."""
+    assert DEFAULT_LIMITS.max_pixels == 7680 * 4320
+    assert DEFAULT_LIMITS.max_file_bytes == 256 * 1024 * 1024
+    assert DEFAULT_LIMITS.max_frames == 10_000
+    assert DEFAULT_LIMITS.max_duration_s == 1800.0
+
+
+def test_oversized_file_is_rejected(tmp_path):
     p = tmp_path / "big.bin"
     p.write_bytes(b"0" * 2048)
-    with pytest.raises(ResourceLimitExceeded) as exc:
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit 1024"):
         check_file_size(p, Limits(max_file_bytes=1024))
-    assert "1024" in str(exc.value)
 
 
 def test_file_within_limit_passes(tmp_path):
@@ -4652,31 +4688,107 @@ def test_file_within_limit_passes(tmp_path):
     assert check_file_size(p, Limits(max_file_bytes=1024)) is None
 
 
-def test_decode_bomb_dimensions_are_rejected():
-    """50000x50000 would allocate ~7.5GB. Reject on the header, not after."""
-    with pytest.raises(ResourceLimitExceeded):
-        check_frame_dims(50000, 50000, DEFAULT_LIMITS)
-
-
-def test_reasonable_dimensions_pass():
-    assert check_frame_dims(1920, 1080, DEFAULT_LIMITS) is None
-
-
-def test_zero_or_negative_dimensions_are_rejected():
-    for w, h in ((0, 100), (100, 0), (-1, 100)):
-        with pytest.raises(DfdError):
-            check_frame_dims(w, h, DEFAULT_LIMITS)
-
-
-def test_missing_file_raises_a_typed_error(tmp_path):
-    with pytest.raises(DfdError):
+def test_missing_file_is_invalid_input_not_a_resource_limit(tmp_path):
+    """`DfdError` alone cannot tell these apart — ResourceLimitExceeded is one."""
+    with pytest.raises(InvalidInput, match="not a readable file"):
         check_file_size(tmp_path / "nope.bin", DEFAULT_LIMITS)
 
 
-def test_defaults_are_documented_constants():
-    assert DEFAULT_LIMITS.max_pixels > 0
-    assert DEFAULT_LIMITS.max_file_bytes > 0
-    assert DEFAULT_LIMITS.max_frames > 0
+@pytest.mark.parametrize("width,height", [
+    (50000, 50000),        # the square bomb
+    (1, 10 ** 9),          # a degenerate strip: same pixel count, no large side
+    (10 ** 9, 1),          # and its transpose
+    (7681, 4320),          # one pixel over the cap
+])
+def test_oversized_dimensions_are_rejected(width, height):
+    """Shape is parametrised deliberately. A check that compares each side
+    against a maximum instead of the product passes the strips."""
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit"):
+        check_frame_dims(width, height, DEFAULT_LIMITS)
+
+
+@pytest.mark.parametrize("width,height", [(1920, 1080), (7680, 4320), (1, 1)])
+def test_dimensions_within_the_cap_pass(width, height):
+    assert check_frame_dims(width, height, DEFAULT_LIMITS) is None
+
+
+@pytest.mark.parametrize("width,height", [(0, 100), (100, 0), (-1, 100), (100, -1)])
+def test_non_positive_dimensions_are_invalid_input(width, height):
+    with pytest.raises(InvalidInput, match="must be positive"):
+        check_frame_dims(width, height, DEFAULT_LIMITS)
+
+
+def test_probe_reads_dimensions_from_the_header(tmp_path):
+    _png(tmp_path / "a.png", 640, 480)
+    assert probe_image_dims(tmp_path / "a.png") == (640, 480)
+
+
+def test_probe_reads_a_bomb_without_decoding_it(tmp_path):
+    """12000x12000 is 144M pixels. If this decoded, it would allocate ~0.4GB."""
+    _png(tmp_path / "bomb.png", 12000, 12000)
+    assert probe_image_dims(tmp_path / "bomb.png") == (12000, 12000)
+
+
+def test_probe_emits_no_warnings_on_a_bomb(tmp_path, recwarn):
+    """Pillow's own DecompressionBombWarning must be absorbed, not leaked:
+    this project requires pristine test output."""
+    _png(tmp_path / "bomb.png", 12000, 12000)
+    probe_image_dims(tmp_path / "bomb.png")
+    assert [w.category.__name__ for w in recwarn] == []
+
+
+def test_probe_rejects_a_file_that_is_not_an_image(tmp_path):
+    p = tmp_path / "junk.png"
+    p.write_bytes(b"not an image")
+    with pytest.raises(InvalidInput, match="could not read image header"):
+        probe_image_dims(p)
+
+
+def test_a_bomb_passes_the_file_size_check_and_is_still_rejected(tmp_path):
+    """The measurement that justifies header probing: this file is ~0.15MB,
+    far under the 256MB default, and decodes to ~0.4GB."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+    assert p.stat().st_size < DEFAULT_LIMITS.max_file_bytes
+    assert check_file_size(p, DEFAULT_LIMITS) is None
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit"):
+        check_image_before_decode(p, DEFAULT_LIMITS)
+
+
+def test_the_check_runs_before_any_decode(tmp_path, monkeypatch):
+    """The whole point. If cv2.imread is reached, the allocation already
+    happened and the limit is decorative."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("cv2.imread was called — decode preceded the check")
+
+    monkeypatch.setattr(cv2, "imread", _boom)
+    with pytest.raises(ResourceLimitExceeded):
+        check_image_before_decode(p, DEFAULT_LIMITS)
+
+
+def test_load_image_rejects_a_bomb_before_decoding_it(tmp_path, monkeypatch, context):
+    """The guard must be WIRED IN. Calling the checker directly in every test
+    would let the loader enforce nothing while the suite stayed green."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("cv2.imread was called — decode preceded the check")
+
+    monkeypatch.setattr(cv2, "imread", _boom)
+    with pytest.raises(ResourceLimitExceeded):
+        load_image(p, context)
+
+
+def test_load_image_still_loads_a_normal_image(tmp_path, context):
+    _png(tmp_path / "ok.png", 64, 48)
+    sample = load_image(tmp_path / "ok.png", context)
+    assert sample.observations[0].payload.shape == (48, 64, 3)
+
+
+def test_resource_limit_exceeded_is_a_dfd_error():
+    assert issubclass(ResourceLimitExceeded, DfdError)
+    assert issubclass(InvalidInput, DfdError)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -4692,14 +4804,27 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.limits'`
 
 Media arrives from an adversary. A crafted image can allocate gigabytes before
 any detection logic runs, and a denial-of-service against a fraud control is a
-fraud enabler: it forces the fallback path. Checks run on metadata, before
-allocation.
+fraud enabler: it forces the fallback path.
+
+Two things this module refuses to do, because both are the usual way this
+control is built and neither works:
+
+- It does not treat file size as a proxy for decoded size. A 12,000x12,000
+  uniform PNG occupies 161 KB on disk and 0.40 GB decoded; defeating a size
+  limit is what a decompression bomb IS.
+- It does not inspect a decoded array's shape. By the time an array has a
+  shape the memory is already committed.
+
+Dimensions come from the image header instead, before any decode.
 """
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
+from PIL import Image, UnidentifiedImageError
 
 from .errors import InvalidInput, ResourceLimitExceeded
 
@@ -4721,6 +4846,9 @@ DEFAULT_LIMITS = Limits()
 def check_file_size(path: str | Path, limits: Limits = DEFAULT_LIMITS) -> None:
     """Raise unless the file exists and is within `limits.max_file_bytes`.
 
+    This is a cheap first gate against a merely huge file. It is NOT a defence
+    against a decompression bomb — see the module docstring.
+
     Raises:
         InvalidInput: the path does not exist or is not a regular file.
         ResourceLimitExceeded: the file is larger than the configured maximum.
@@ -4738,30 +4866,84 @@ def check_frame_dims(width: int, height: int,
                      limits: Limits = DEFAULT_LIMITS) -> None:
     """Raise unless the frame dimensions are positive and within the pixel cap.
 
+    The cap is on the PRODUCT, not on either side: a 1 x 10**9 strip carries
+    the same allocation as a square bomb and has no large dimension.
+
     Raises:
         InvalidInput: a dimension is zero or negative.
         ResourceLimitExceeded: width * height exceeds `limits.max_pixels`.
     """
     if width <= 0 or height <= 0:
-        raise InvalidInput(f"frame dimensions must be positive, got {width}x{height}")
+        raise InvalidInput(
+            f"frame dimensions must be positive, got {width}x{height}")
     if width * height > limits.max_pixels:
         raise ResourceLimitExceeded(
             f"frame {width}x{height} = {width * height} pixels, "
             f"exceeds limit {limits.max_pixels}")
+
+
+def probe_image_dims(path: str | Path) -> tuple[int, int]:
+    """Read (width, height) from the image header without decoding it.
+
+    Pillow's own bomb guard is absorbed here rather than allowed to surface:
+    its threshold is looser than ours, so our limit should be the one that
+    speaks, and its warning would otherwise pollute output.
+
+    Raises:
+        InvalidInput: the header cannot be read.
+        ResourceLimitExceeded: Pillow refused the image as a bomb outright.
+    """
+    p = Path(path)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(p) as im:
+                return int(im.width), int(im.height)
+    except Image.DecompressionBombError as exc:
+        raise ResourceLimitExceeded(
+            f"{p.name} rejected as a decompression bomb: {exc}") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise InvalidInput(f"could not read image header for {p}: {exc}") from exc
+
+
+def check_image_before_decode(path: str | Path,
+                              limits: Limits = DEFAULT_LIMITS) -> tuple[int, int]:
+    """Gate an image file before a single pixel is decoded.
+
+    Returns:
+        The header (width, height), so callers need not read it twice.
+
+    Raises:
+        InvalidInput: unreadable path or unreadable header.
+        ResourceLimitExceeded: file too large, or too many pixels.
+    """
+    check_file_size(path, limits)
+    width, height = probe_image_dims(path)
+    check_frame_dims(width, height, limits)
+    return width, height
 ```
 
-Then in `src/dfd/ingest/image.py`, call `check_file_size(path)` before `cv2.imread`, and `check_frame_dims(rgb.shape[1], rgb.shape[0])` after decode. In `src/dfd/ingest/video.py`, call `check_file_size(path)` before opening, and clamp `max_frames` to `limits.max_frames`. Import both from `..limits`.
+Then in `src/dfd/ingest/image.py`, call `check_image_before_decode(path)` **before** `cv2.imread` — not after, and not on the decoded array. In `src/dfd/ingest/video.py`, call `check_file_size(path)` before opening and clamp the requested frame count to `limits.max_frames`. Import from `..limits`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/test_limits.py tests/test_ingest.py -v`
-Expected: PASS — 8 new tests, Task 5's 7 still green
+Expected: PASS — 28 new tests, Task 5's still green.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the ordering and wiring tests can fail**
+
+These are the two properties the whole task rests on, and both are invisible to a test that merely calls the checker directly.
+
+1. **Ordering.** In `check_image_before_decode`, move `check_file_size` and `check_frame_dims` to run *after* a `cv2.imread(str(path))` call. Run `pytest tests/test_limits.py -k before_any_decode` and confirm it FAILS with the `cv2.imread was called` assertion. Restore.
+2. **Wiring.** In `src/dfd/ingest/image.py`, delete the `check_image_before_decode` call. Run `pytest tests/test_limits.py -k load_image_rejects` and confirm it FAILS. Restore.
+
+Record all four outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/dfd/limits.py src/dfd/ingest tests/test_limits.py
-git commit -m "feat: resource limits at the decode boundary"
+git commit -m "feat: resource limits enforced before decode, not after"
 ```
 
 ---
