@@ -2320,3 +2320,65 @@ an operator-facing message; loading.py:191 `from None` drops the chained reason
 the safe load failed, in the supply-chain path; THE COVERAGE GATE IS THE ONE
 GATE WITH NO GATE TEST (impractical to self-invoke without recursion, so
 red-in-CI-only); and tests/test_ci_gates.py:5 imports pytest unused.
+
+=== FINAL WHOLE-BRANCH REVIEW: Ready with follow-ups. 6 must-fix. ===
+Most serious, verified by the reviewer's own execution:
+  check_identity_disjoint(['a','b','c'], ['a','b','c'], {}, threshold=0.6)
+  -> IdentityReport(n_train=3, n_test=3, max_similarity=0.0, violations=0)
+Three identical identities on both sides, certified disjoint, because no
+embeddings were supplied — guards.py:72 `continue`s past any missing id. Same
+vacuity class Task 19 spent two rounds removing from the asset gate, left in
+the guard carrying criterion 2, which the plan calls its most important gap.
+A future task wiring this into the runner before an embedder exists would
+produce a green, numbered, apparently-verified identity report over ZERO
+comparisons.
+
+Also found: 2 of 6 guards never called (identity, demographic parity) so
+criterion 1's "all five hygiene guards active" is FALSE; criteria 4 and 11
+unmet and UNDISCLOSED while the Self-Review claims coverage; runner.py:290
+catches protocol's ValueError wholesale, so a malformed corpus and an
+unsplittable one both render as "Not computed for this corpus"; pyproject
+declares neither torch nor sklearn though three modules import them at top
+level; mypy and coverage both scope to src/dfd only, so bench/ (1335 lines,
+the actual P0 deliverable) is ungated and "mypy clean on 21 files / 93%
+coverage" reads as tree-wide when it is not.
+
+Ledger synced by me (my own bookkeeping file): 1828 -> current.
+Final fix wave dispatched — one subagent, five code/doc items.
+
+=== FIX-WAVE RE-REVIEW: all 5 addressed, no new breakage. 5 residuals. ===
+Re-review verified each of protocol.py's SEVEN raise sites lands on the correct
+side of the new split (5 propagate as corpus defects, 2 degrade as unsplittable)
+and confirmed _validate runs first, so a malformed corpus can never reach a
+degradable site. It also reproduced the old bootstrap fixture and found 20
+straddling sources out of 20 — so that fixture was genuinely invalid and the
+edit is a correction, with production right. And it confirmed the identity
+refusal is correctly scoped: zero production call sites, no test relied on the
+skip, and a future ArcFace caller omits unembeddable ids explicitly rather than
+having them silently dropped.
+
+Ruling (adjudicated, not fixed — there is no second fix wave):
+1. torch>=2.2 is now unconditional install_requires, so `pip install dfd` pulls
+   ~800MB-2GB even for a caller touching only dfd.quality. ACCEPT: the imports
+   are genuinely top-level, so the declaration is honest; an optional extra plus
+   lazy import is P1 work. — Cost if wrong: a heavier install than some callers
+   need, visible and fixable.
+2. The corrected bootstrap fixture collapses to one generator, so the test takes
+   the degrade-and-warn path — as it did before, via the swallowed straddle.
+   ACCEPT: no assertion weakened, auc_ci is all it asserts.
+3. _logo_results runs after all detector scoring, so a malformed corpus now
+   aborts only after paying full scoring cost. ACCEPT: same species as the
+   already-deferred duplicate-sample_id placement; hoist validation to the front
+   of run_benchmark in P1.
+4. A corpus legitimately sharing one source_id between a real video and its
+   derived fake is classed malformed and now aborts loudly. ACCEPT: it is
+   protocol.py's pre-existing rule; the fix only made it audible. NOTE IT FOR
+   THE FIRST REAL CORPUS ADAPTER — this is the most likely of the five to bite.
+5. The missing-embedding refusal uses GuardViolation, which reads "hygiene
+   violated" rather than "input incomplete". ACCEPT: documented in both the
+   function docstring and the report; no caller distinguishes.
+
+WORKSPACE NOT DELETED, deliberately, against the skill's default. The committed
+ledger carries every ruling, but the per-task reports are gitignored and would
+be destroyed — and the branch is not merged, so nobody has read them yet.
+Deleting the reasoning before the decision it informs is the wrong order.
