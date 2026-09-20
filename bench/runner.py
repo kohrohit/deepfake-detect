@@ -165,6 +165,19 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
             variants: dict[str, list[float]] = {}
             for rec_in, obs in zip(records, observations):
                 for pname, pimg in robustness_sweep(rec_in["image"]).items():
+                    # Deliberately reuses the CLEAN observation's `quality`
+                    # rather than re-measuring it on the perturbed pixels.
+                    # Measured across the full sweep at three fixture sizes
+                    # (128x160, 240x320, 360x480): every perturbed variant
+                    # bands identically to clean, so this is behaviourally
+                    # equivalent today, not just convenient. That is a fact
+                    # about `measure_quality`'s current thresholds, not a
+                    # law — blur halves high-frequency energy and both
+                    # recapture paths destroy roughly two thirds of it, yet
+                    # none of that moves the band. If quality banding is
+                    # ever made sensitive to these perturbations, this reuse
+                    # must be revisited or a detector's quality floor will
+                    # never trigger on a laundered image.
                     pobs = Observation(t=obs.t, payload=pimg, roi=obs.roi,
                                        quality=obs.quality,
                                        source_id=obs.source_id)

@@ -91,3 +91,18 @@ def test_robustness_run_is_reproducible():
     b = run_benchmark(_records(), _registry(), RunConfig(seed=1, robustness=True))
     assert (a.detector_results["synth_a"].tpr_by_perturbation
             == b.detector_results["synth_a"].tpr_by_perturbation)
+
+
+def test_logo_folds_do_not_claim_a_robustness_surface_they_never_measured():
+    """The sweep is never re-run per fold (see `_logo_results`), so a fold's
+    `tpr_by_perturbation` must stay `{}` — "not measured" — even when the
+    whole-corpus run alongside it has `robustness=True`. The alternative,
+    silently inheriting or fabricating a per-fold surface, would let a LOGO
+    table claim it measured screenshot/print robustness for a held-out
+    generator it never actually scored under perturbation.
+    """
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    assert rec.logo_results  # sanity: LOGO was computed for this corpus
+    for folds in rec.logo_results.values():
+        assert folds["synth_a"].tpr_by_perturbation == {}

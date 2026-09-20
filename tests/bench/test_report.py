@@ -137,3 +137,39 @@ def test_report_handles_a_detector_missing_from_one_logo_fold():
     md = render_markdown(_logo_record_with_a_detector_missing_from_one_fold())
     assert "synth_b" in md
     assert "n/a" in md.lower()
+
+
+def _record_with_robustness():
+    base = _record()
+    dr = replace(base.detector_results["synth_a"],
+                tpr_by_perturbation={"clean": 0.5, "jpeg_q10": 0.1,
+                                     "screenshot_recapture": 0.2})
+    return replace(base, detector_results={"synth_a": dr})
+
+
+def test_report_shows_the_robustness_table_when_populated():
+    """The table must carry the actual sweep column names and values, not
+    just announce its own existence — a renderer that printed the heading
+    with an empty body would still satisfy a weaker check."""
+    md = render_markdown(_record_with_robustness())
+    assert "Robustness" in md
+    after_heading = md[md.index("## Robustness"):]
+    lines = after_heading.splitlines()
+    header_line = next(line for line in lines if line.startswith("| detector |"))
+    for col in ("clean", "jpeg_q10", "screenshot_recapture"):
+        assert col in header_line
+    row_line = next(line for line in lines if line.startswith("| synth_a |"))
+    assert "0.500" in row_line
+    assert "0.100" in row_line
+    assert "0.200" in row_line
+
+
+def test_report_omits_the_robustness_table_when_nothing_was_measured():
+    """The `any_rob` gate must close as well as open. Every detector in
+    `_record()` has the default `tpr_by_perturbation == {}` (robustness was
+    never run), so the section — heading, table, and caption — must not
+    appear at all. A gate that never closes and prints an empty table would
+    misreport an unmeasured sweep as one that ran and found nothing."""
+    md = render_markdown(_record())
+    assert "Robustness" not in md
+    assert "screenshot_recapture" not in md
