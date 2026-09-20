@@ -40,18 +40,23 @@ class _Tiny3Class(nn.Module):
 
 @pytest.fixture
 def tiny_weights(tmp_path):
-    """Create a minimal dummy model and save it as a full module.
+    """Create a minimal dummy model and save its state_dict.
 
-    This fixture creates a valid model that the detector can load and execute,
-    allowing tests to exercise the real scoring path without requiring
-    a pre-trained weights file. Saved as a full module (not state_dict) because
-    the detector is architecture-agnostic and cannot reconstruct a model
-    from a bare state_dict.
+    This fixture creates a state_dict (secure-loadable format) that the detector
+    can load with weights_only=True when given a matching model_factory.
     """
     p = tmp_path / "tiny.pt"
     model = _Tiny2Class()
-    torch.save(model, p)
+    torch.save(model.state_dict(), p)
     return p
+
+
+@pytest.fixture
+def tiny_model_factory():
+    """Factory function that creates an uninitialized _Tiny2Class."""
+    def factory():
+        return _Tiny2Class()
+    return factory
 
 
 def _obs(img: np.ndarray, band: str = "high") -> Observation:
@@ -200,17 +205,18 @@ def test_detector_abstains_on_empty_observation_list():
 
 
 # ============================================================================
-# Real Scoring Path Tests (with tiny model)
+# Secure Path Tests (model_factory + state_dict, weights_only=True)
 # ============================================================================
 
 
-def test_detector_produces_real_score(tiny_weights):
-    """The detector's scoring path produces a real score in [0, 1].
+def test_detector_produces_real_score_via_secure_path(tiny_weights, tiny_model_factory):
+    """The detector's secure path produces a real score in [0, 1].
 
-    This exercises the full path: quality filtering, model loading,
-    NPR feature computation, inference, and score aggregation.
+    This exercises the full path: quality filtering, secure model loading via
+    weights_only=True + model_factory, NPR feature computation, inference,
+    and score aggregation.
     """
-    d = NPRDetector(weights_path=tiny_weights, allow_unsafe_load=True)
+    d = NPRDetector(weights_path=tiny_weights, model_factory=tiny_model_factory)
     img = np.random.default_rng(10).integers(0, 255, (64, 64, 3), dtype=np.uint8)
     obs = [_obs(img)]
 
@@ -225,14 +231,14 @@ def test_detector_produces_real_score(tiny_weights):
     assert r.artifacts["n_observations"] == 1
 
 
-def test_detector_records_per_observation_scores(tiny_weights):
-    """Detector records individual per-observation scores in artifacts.
+def test_detector_records_per_observation_scores_secure_path(tiny_weights, tiny_model_factory):
+    """Detector records individual per-observation scores in artifacts (secure path).
 
     Per-observation scores allow downstream fusion to make informed decisions
     about which frames are most confident, avoiding the dilution that would
     come from averaging during detection.
     """
-    d = NPRDetector(weights_path=tiny_weights, allow_unsafe_load=True)
+    d = NPRDetector(weights_path=tiny_weights, model_factory=tiny_model_factory)
 
     # Create 3 observations
     rng = np.random.default_rng(11)
@@ -249,13 +255,17 @@ def test_detector_records_per_observation_scores(tiny_weights):
     assert r.artifacts["max_score"] >= r.score
 
 
-def test_detector_mixed_batch_order_independent(tiny_weights):
-    """Order of observations does not affect quality filtering decision.
+def test_detector_mixed_batch_order_independent_secure_path(tiny_weights, tiny_model_factory):
+    """Order of observations does not affect quality filtering (secure path).
 
     This pins the Task-6 bug class: if filtering relied on obs[0], then
     reordering would change which observations are used. Test both orderings.
     """
-    d = NPRDetector(weights_path=tiny_weights, min_quality_band="high", allow_unsafe_load=True)
+    d = NPRDetector(
+        weights_path=tiny_weights,
+        model_factory=tiny_model_factory,
+        min_quality_band="high",
+    )
 
     img = np.random.default_rng(12).integers(0, 255, (64, 64, 3), dtype=np.uint8)
     obs_high = _obs(img, band="high")
@@ -275,16 +285,16 @@ def test_detector_mixed_batch_order_independent(tiny_weights):
     assert r2.artifacts["n_observations"] == 1
 
 
-def test_detector_quality_filtering_with_mixed_batch(tiny_weights):
-    """Detector correctly filters observations by quality floor in mixed batches.
+def test_detector_quality_filtering_with_mixed_batch_secure_path(tiny_weights, tiny_model_factory):
+    """Detector correctly filters observations by quality floor (secure path).
 
     When given a mix of usable and unusable observations, the detector should
     score only the usable ones, as recorded in n_observations artifact.
     """
     d = NPRDetector(
         weights_path=tiny_weights,
+        model_factory=tiny_model_factory,
         min_quality_band="high",
-        allow_unsafe_load=True,
     )
 
     img = np.random.default_rng(13).integers(0, 255, (64, 64, 3), dtype=np.uint8)
@@ -312,12 +322,131 @@ def test_detector_quality_filtering_with_mixed_batch(tiny_weights):
     assert len(r.artifacts["per_observation_scores"]) == 3
 
 
-def test_detector_abstains_below_quality_floor(tiny_weights):
-    """Detector reports BELOW_FLOOR when all observations fail quality check."""
+def test_detector_secure_path_logs_no_warning(tiny_weights, tiny_model_factory, caplog):
+    """Secure path (model_factory + state_dict) produces no warning log.
+
+    This proves the secure path is the expected, warning-free default.
+    """
+    d = NPRDetector(weights_path=tiny_weights, model_factory=tiny_model_factory)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    with caplog.at_level(logging.WARNING):
+        r = d.score(obs)
+
+    assert not r.abstained
+    # No warning should have been logged
+    assert not any("allow_unsafe_load" in record.message for record in caplog.records)
+
+
+# ============================================================================
+# Unsafe Path Tests (only 2, for the explicit bypass)
+# ============================================================================
+
+
+def test_detector_rejects_full_pickle_without_model_factory_or_unsafe_load(tmp_path):
+    """Detector rejects full-module pickle when model_factory=None and allow_unsafe_load=False.
+
+    This is the security gate: full pickles require explicit opt-in.
+    """
+    # Save a full module (not state_dict)
+    p = tmp_path / "full_module.pt"
+    torch.save(_Tiny2Class(), p)
+
+    d = NPRDetector(weights_path=p, model_factory=None, allow_unsafe_load=False)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    with pytest.raises(RuntimeError, match="model_factory"):
+        d.score(obs)
+
+
+def test_detector_loads_full_pickle_with_unsafe_load_and_logs_warning(tmp_path, caplog):
+    """Detector loads full-module pickle when allow_unsafe_load=True and logs a warning."""
+    # Save a full module
+    p = tmp_path / "full_module.pt"
+    torch.save(_Tiny2Class(), p)
+
+    d = NPRDetector(weights_path=p, model_factory=None, allow_unsafe_load=True)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    with caplog.at_level(logging.WARNING):
+        r = d.score(obs)
+
+    # Must score successfully
+    assert not r.abstained
+    # Must have logged a warning about unsafe load
+    assert any("allow_unsafe_load" in record.message for record in caplog.records)
+    assert any("arbitrary code execution" in record.message for record in caplog.records)
+
+
+# ============================================================================
+# Error Handling Tests
+# ============================================================================
+
+
+def test_detector_fails_on_invalid_model_output_shape(tmp_path, tiny_model_factory):
+    """Detector raises ValueError when model output has wrong number of classes."""
+    # Save a 3-class model as state_dict
+    p = tmp_path / "bad_classes.pt"
+    model_3class = _Tiny3Class()
+    torch.save(model_3class.state_dict(), p)
+
+    # Factory for 3-class model
+    def factory_3class():
+        return _Tiny3Class()
+
+    d = NPRDetector(weights_path=p, model_factory=factory_3class)
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    with pytest.raises(ValueError, match="expected 2 output classes"):
+        d.score(obs)
+
+
+def test_detector_cache_invalidation_on_file_replacement(tmp_path, tiny_model_factory):
+    """Cache is invalidated when weights file is replaced (mtime/size change)."""
+    weights_path = tmp_path / "weights.pt"
+
+    # Create and save first state_dict
+    model1 = _Tiny2Class()
+    torch.save(model1.state_dict(), weights_path)
+    d = NPRDetector(weights_path=weights_path, model_factory=tiny_model_factory)
+
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    obs = [_obs(img)]
+
+    # First load
+    r1 = d.score(obs)
+    assert not r1.abstained
+
+    # Replace the weights file (simulate model rotation)
+    import time
+
+    time.sleep(0.01)  # Ensure mtime changes
+    model2 = _Tiny2Class()
+    # Modify the model to produce different output
+    with torch.no_grad():
+        model2.fc.weight.fill_(2.0)
+    torch.save(model2.state_dict(), weights_path)
+
+    # Second load should get the new model (not cached)
+    r2 = d.score(obs)
+    assert not r2.abstained
+
+
+# ============================================================================
+# Integration Tests
+# ============================================================================
+
+
+def test_detector_abstains_below_quality_floor_secure_path(tiny_weights, tiny_model_factory):
+    """Detector reports BELOW_FLOOR when all observations fail quality check (secure path)."""
     d = NPRDetector(
         weights_path=tiny_weights,
+        model_factory=tiny_model_factory,
         min_quality_band="high",
-        allow_unsafe_load=True,
     )
 
     img = np.random.default_rng(14).integers(0, 255, (64, 64, 3), dtype=np.uint8)
@@ -328,9 +457,9 @@ def test_detector_abstains_below_quality_floor(tiny_weights):
     assert r.abstained and r.reason == BELOW_FLOOR
 
 
-def test_detector_abstains_quality_not_measured(tiny_weights):
-    """Detector reports NO_QUALITY when no observation has quality measured."""
-    d = NPRDetector(weights_path=tiny_weights, allow_unsafe_load=True)
+def test_detector_abstains_quality_not_measured_secure_path(tiny_weights, tiny_model_factory):
+    """Detector reports NO_QUALITY when no observation has quality measured (secure path)."""
+    d = NPRDetector(weights_path=tiny_weights, model_factory=tiny_model_factory)
 
     img = np.zeros((64, 64, 3), dtype=np.uint8)
     obs = [
@@ -343,80 +472,5 @@ def test_detector_abstains_quality_not_measured(tiny_weights):
     assert r.abstained and r.reason == NO_QUALITY
 
 
-# ============================================================================
-# Supply-Chain Security Tests
-# ============================================================================
-
-
-def test_detector_loads_state_dict(tiny_weights):
-    """Detector loads state_dict format (weights_only=True safe mode)."""
-    d = NPRDetector(weights_path=tiny_weights, allow_unsafe_load=True)
-    img = np.random.default_rng(15).integers(0, 255, (64, 64, 3), dtype=np.uint8)
-    obs = [_obs(img)]
-
-    # This should succeed because tiny_weights is a state_dict
-    r = d.score(obs)
-    assert not r.abstained
-
-
-def test_detector_fails_on_invalid_model_output_shape(tmp_path):
-    """Detector raises ValueError when model output has wrong number of classes."""
-    p = tmp_path / "bad_classes.pt"
-    torch.save(_Tiny3Class(), p)  # Save full module with 3 output classes
-
-    d = NPRDetector(weights_path=p, allow_unsafe_load=True)
-    img = np.zeros((64, 64, 3), dtype=np.uint8)
-    obs = [_obs(img)]
-
-    with pytest.raises(ValueError, match="expected 2 output classes"):
-        d.score(obs)
-
-
-def test_detector_cache_invalidation_on_file_replacement(tmp_path):
-    """Cache is invalidated when weights file is replaced (mtime/size change).
-
-    This tests the staleness detection: if an operator replaces the weights
-    file at the same path, the detector must load the new file, not serve
-    the old cached model forever.
-    """
-    weights_path = tmp_path / "weights.pt"
-
-    # Create and save first model
-    model1 = _Tiny2Class()
-    torch.save(model1, weights_path)  # Save full module
-    d = NPRDetector(weights_path=weights_path, allow_unsafe_load=True)
-
-    img = np.zeros((64, 64, 3), dtype=np.uint8)
-    obs = [_obs(img)]
-
-    # First load
-    r1 = d.score(obs)
-    assert not r1.abstained
-
-    # Replace the weights file (simulate model rotation / compromise detection)
-    import time
-
-    time.sleep(0.01)  # Ensure mtime changes
-    model2 = _Tiny2Class()
-    # Modify the model to produce different output
-    with torch.no_grad():
-        model2.fc.weight.fill_(2.0)
-    torch.save(model2, weights_path)  # Save full module
-
-    # Second load should get the new model (not cached)
-    r2 = d.score(obs)
-    assert not r2.abstained
-    # Scores should differ because the model changed
-    # (with very high probability; random initialization differences)
-    # Note: We don't assert inequality here because there's a tiny chance
-    # the new random model produces the same score. Instead, we just verify
-    # that the new model was loaded by checking it doesn't crash.
-
-
-def test_detector_unsafe_load_requires_explicit_opt_in():
-    """Full-pickle models require allow_unsafe_load=True and log warning."""
-    # This test would require creating a full-module pickle, which is complex.
-    # The feature is implemented but integration test coverage here is skipped
-    # as the test requires torch model surgery. The code path is exercised
-    # by the state_dict test passing (the try succeeds) and documented.
-    pass
+# Add logging import at the top
+import logging

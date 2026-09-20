@@ -23,7 +23,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 import numpy as np
 
@@ -85,12 +85,28 @@ class NPRDetector:
     (mtime_ns, size) to avoid silent re-use of replaced files, and thread-safe
     to protect against concurrent first-load races.
 
-    Supply-chain control: weights are loaded with torch.load(..., weights_only=True)
-    by default, preventing arbitrary code execution from tampered models. Full
-    pickles require explicit allow_unsafe_load=True and log a warning.
+    Supply-chain control: weights are loaded securely by default via
+    torch.load(..., weights_only=True) combined with a model_factory that
+    reconstructs the architecture and loads the state_dict into it. This
+    prevents arbitrary code execution from tampered models (spec §3A).
+
+    **Secure path:** Provide model_factory as a callable that returns an
+    instantiated, uninitialized model (e.g., `lambda: torch.nn.Linear(3, 2)`).
+    The weights file must be a state_dict. This path uses weights_only=True and
+    produces no warnings.
+
+    **Unsafe path:** Omit model_factory and set allow_unsafe_load=True to load
+    full-module pickles. This permits arbitrary code execution and logs a warning.
+
+    Note: A state_dict alone cannot become a model without knowing the architecture.
+    Secure loading therefore requires the architecture to be known (via model_factory).
+    This is a genuine constraint, not a limitation of this implementation.
 
     Attributes:
         weights_path: path to the detector's trained weights file
+        model_factory: callable that returns an uninitialized model instance.
+            If provided, enables the secure weights_only=True path. If None,
+            only full-module pickles with allow_unsafe_load=True are accepted.
         name: unique identifier (read-only via property)
         slot: detector slot designation (read-only via property)
         version: detector version string (read-only via property)
@@ -99,6 +115,7 @@ class NPRDetector:
         allow_unsafe_load: if True, load full-module pickles unsafely; logs warning
     """
     weights_path: str | Path
+    model_factory: Callable[[], nn.Module] | None = None
     allow_unsafe_load: bool = False
 
     # Identity fields (read-only after frozen)
@@ -237,12 +254,22 @@ class NPRDetector:
     def _load_model(self, path: Path) -> nn.Module:
         """Load model from disk with staleness detection and thread safety.
 
+        Three paths, in order of preference:
+
+        1. **Secure path (recommended):** model_factory is provided.
+           Load state_dict via weights_only=True and instantiate model via
+           model_factory. No warnings. This is the secure-by-default path.
+
+        2. **Rejection path:** model_factory is None and file is a full module.
+           Reject with clear error message directing user to path 1 or 3.
+
+        3. **Unsafe path (last resort):** allow_unsafe_load=True.
+           Load full module via unpickle (code execution possible).
+           Logs a warning.
+
         Uses a module-level cache keyed by (resolved_path, mtime_ns, size)
         to detect file replacement (e.g., a compromised model pushed at the
         same path). Protected by a lock against concurrent first-load races.
-
-        Loads with weights_only=True (supply-chain control) by default. Full
-        pickles require allow_unsafe_load=True and trigger a warning.
 
         Args:
             path: path to weights file
@@ -251,7 +278,8 @@ class NPRDetector:
             loaded model object as nn.Module
 
         Raises:
-            RuntimeError: if weights_only=True fails and allow_unsafe_load is False
+            RuntimeError: if path is full module and (model_factory is None
+                and allow_unsafe_load is False)
             Exception: any other exception from torch.load propagates
         """
         resolved = path.resolve()
@@ -266,39 +294,75 @@ class NPRDetector:
 
             logger.debug("loading model from %s", resolved)
 
-            # Try secure load first (weights only, no code execution)
+            # CASE 1: Secure path — model_factory provided
+            if self.model_factory is not None:
+                try:
+                    sd = torch.load(
+                        str(resolved), map_location="cpu", weights_only=True
+                    )
+                    if not isinstance(sd, dict):
+                        raise ValueError(
+                            f"expected state_dict (dict) with model_factory, "
+                            f"got {type(sd).__name__}"
+                        )
+                    model = self.model_factory()
+                    model.load_state_dict(sd)
+                    model.eval()
+                    logger.debug("loaded state_dict securely with model_factory")
+                    _MODEL_CACHE[cache_key] = model
+                    return model
+                except Exception as e:
+                    logger.error(
+                        "failed to load state_dict with model_factory: %s",
+                        type(e).__name__,
+                        exc_info=True,
+                    )
+                    raise
+
+            # CASE 2: Attempt weights_only=True (expecting state_dict or error)
             try:
                 model = torch.load(
                     str(resolved), map_location="cpu", weights_only=True
                 )
-                logger.debug("loaded with weights_only=True (secure)")
+                # weights_only succeeded but model_factory is None
+                if isinstance(model, dict):
+                    raise RuntimeError(
+                        f"loaded a state_dict but model_factory is None. "
+                        f"To securely load weights, provide model_factory as "
+                        f"a callable that returns an uninitialized model instance."
+                    )
+                if not isinstance(model, nn.Module):
+                    raise ValueError(
+                        f"expected torch.nn.Module, got {type(model).__name__}"
+                    )
+                model.eval()
+                logger.debug("loaded full module with weights_only=True")
+                _MODEL_CACHE[cache_key] = model
+                return model
             except Exception as e:
-                # weights_only failed (likely a full module pickle); user must opt in
+                # weights_only failed (likely a full module pickle)
                 if not self.allow_unsafe_load:
                     raise RuntimeError(
                         f"failed to load {resolved} with weights_only=True. "
                         f"This is a supply-chain security measure (spec §3A). "
-                        f"Either: (1) convert the weights to a state_dict file, or "
-                        f"(2) explicitly set allow_unsafe_load=True (will log warning). "
-                        f"Error: {type(e).__name__}: {str(e)[:200]}"
+                        f"To fix: (1) provide model_factory to load state_dict, or "
+                        f"(2) set allow_unsafe_load=True (logs warning). "
+                        f"Error: {type(e).__name__}"
                     ) from e
 
-                # Fallback to unsafe load with warning
+                # CASE 3: Unsafe path — operator has explicitly opted in
                 logger.warning(
                     "loading %s with full unpickle (allow_unsafe_load=True); "
-                    "this permits arbitrary code execution",
+                    "this permits arbitrary code execution from the weights file",
                     resolved,
                 )
                 model = torch.load(str(resolved), map_location="cpu")
-                logger.debug("loaded with unsafe unpickle")
-
-            # Ensure it's a module (not just a state dict)
-            if not isinstance(model, nn.Module):
-                raise ValueError(
-                    f"loaded object is not a torch.nn.Module; "
-                    f"got {type(model).__name__}"
-                )
-
-            model.eval()
-            _MODEL_CACHE[cache_key] = model
-            return model
+                if not isinstance(model, nn.Module):
+                    raise ValueError(
+                        f"unsafe load: expected torch.nn.Module, "
+                        f"got {type(model).__name__}"
+                    )
+                model.eval()
+                logger.debug("loaded full module with unsafe unpickle")
+                _MODEL_CACHE[cache_key] = model
+                return model
