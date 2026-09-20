@@ -3644,9 +3644,13 @@ This delivers spec acceptance criteria 1, 5 and 10: a reproducible run producing
 ```python
 # tests/bench/test_runner.py
 import numpy as np
+import logging
+
 import pytest
 from bench.guards import GuardViolation
-from bench.runner import RunConfig, RunRecord, dataset_hash, run_benchmark
+from bench.runner import (
+    RunConfig, RunRecord, dataset_hash, run_benchmark, worst_logo_auc,
+)
 from dfd.detectors.base import Registry, SyntheticDetector
 
 
@@ -3661,13 +3665,24 @@ def _records(n=40):
             # to sample_id: the moment video records arrive, several samples
             # share one source_id and the video-level guard must still bite.
             "source_id": f"src{i}",
-            "generator": "deepfacelive" if fake else None,
+            # TWO generators, because leave-one-generator-out is undefined
+            # with one: holding out the only generator leaves nothing to
+            # train on, and logo_splits refuses such a corpus outright.
+            "generator": ["deepfacelive", "faceswap"][(i // 2) % 2] if fake else None,
             "label": 1 if fake else 0,
             "compression": ["c0", "c23", "c40"][i % 3],
             "face_detector": "yunet",
             "align": "v1",
+            # Non-square and varying, and at least 128px on the short side.
+            # Both matter. A uniform fixture SHAPE hid a crash through every
+            # test in Task 14. And a 64x64 image measures quality band
+            # "reject", below SyntheticDetector's "low" floor, so the whole
+            # corpus abstains: AUC, CI, TPR and ECE all come back nan and the
+            # runner's entire metric path goes untested while the suite looks
+            # green.
             "image": np.random.default_rng(i).integers(
-                0, 255, (64, 64, 3), dtype=np.uint8),
+                0, 255, (128 + (i % 3) * 16, 160 + (i % 5) * 16, 3),
+                dtype=np.uint8),
         })
     return out
 
@@ -3691,11 +3706,24 @@ def test_run_records_seed_and_dataset_hash_for_reproducibility():
     assert len(rec.dataset_hash) == 64
 
 
-def test_dataset_hash_is_stable_and_content_sensitive():
+def test_dataset_hash_is_stable():
     a = _records()
     assert dataset_hash(a) == dataset_hash(a)
-    b = _records()
-    b[0]["sample_id"] = "changed"
+
+
+@pytest.mark.parametrize("field_name,value", [
+    ("sample_id", "changed"),
+    ("subject_id", "changed"),
+    ("source_id", "changed"),
+    ("generator", "changed"),
+    ("label", 0),
+    ("compression", "c99"),
+])
+def test_dataset_hash_is_sensitive_to_every_identifying_field(field_name, value):
+    """Mutating one field was one field's worth of evidence. The hash is what
+    ties an audit record to the corpus it was computed on."""
+    a, b = _records(), _records()
+    b[0][field_name] = value
     assert dataset_hash(a) != dataset_hash(b)
 
 
@@ -3705,16 +3733,20 @@ def test_run_records_model_versions():
 
 
 def test_run_records_latency_per_detector():
-    """Spec acceptance criterion 5: recorded, not optimised."""
+    """Spec acceptance criterion 5: recorded, not optimised.
+
+    `>= 0.0` would be satisfied by a stub that never measures anything and
+    returns 0.0. Scoring 40 records takes real time, so require it.
+    """
     rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
-    assert rec.detector_results["synth_a"].p95_latency_ms >= 0.0
+    assert rec.detector_results["synth_a"].p95_latency_ms > 0.0
 
 
 def test_guards_run_by_default_and_fail_the_run():
     recs = _records()
     for r in recs:
         r["compression"] = "c23"          # violates compression coverage
-    with pytest.raises(GuardViolation):
+    with pytest.raises(GuardViolation, match="compression"):
         run_benchmark(recs, _registry(), RunConfig(seed=7))
 
 
@@ -3726,12 +3758,74 @@ def test_guards_can_be_waived_only_explicitly():
     assert rec.guards_enforced is False
 
 
-def test_abstention_rate_is_reported():
-    """A detector that abstains on everything must be visible as such."""
+def test_a_detector_that_abstains_on_everything_reports_rate_one():
+    """The previous form asserted only `0.0 <= rate <= 1.0`, which any value
+    satisfies — while its own docstring named the property it failed to test."""
     reg = Registry()
     reg.register(SyntheticDetector(name="picky", seed=1, min_quality_band="high"))
     rec = run_benchmark(_records(), reg, RunConfig(seed=7, enforce_guards=False))
-    assert 0.0 <= rec.detector_results["picky"].abstention_rate <= 1.0
+    result = rec.detector_results["picky"]
+    assert result.abstention_rate == 1.0
+    assert result.auc != result.auc          # nan: nothing was scored
+
+
+def test_a_detector_that_abstains_on_nothing_reports_rate_zero():
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.detector_results["synth_a"].abstention_rate == 0.0
+
+
+def test_logo_results_exist_for_every_generator():
+    """Spec 8.1. Without this the harness reports only in-dataset AUC, which
+    the spec describes as measuring memorisation."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert set(rec.logo_results) == {"deepfacelive", "faceswap"}
+    for folds in rec.logo_results.values():
+        assert set(folds) == {"synth_a", "synth_b"}
+
+
+def test_a_logo_fold_scores_only_its_held_out_generator():
+    """The fold must be a strict subset of the corpus, or it is not held out
+    at all — a fold silently scoring everything would report in-dataset
+    numbers under a LOGO heading, which is worse than reporting neither."""
+    records = _records()
+    rec = run_benchmark(records, _registry(), RunConfig(seed=7))
+    # Without this, an empty logo_results passes by never entering the loop.
+    assert len(rec.logo_results) == 2
+    for folds in rec.logo_results.values():
+        n = folds["synth_a"].n_samples
+        assert 0 < n < len(records)
+
+
+def test_logo_and_in_dataset_numbers_are_reported_separately():
+    """They must not be the same object or the same number by construction."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.detector_results["synth_a"].n_samples == 40
+    # `all(...)` over an empty dict is True, so the count is asserted first.
+    assert len(rec.logo_results) == 2
+    assert all(f["synth_a"].n_samples < 40 for f in rec.logo_results.values())
+
+
+def test_worst_logo_auc_takes_the_minimum_not_the_mean():
+    """Spec 8.2 guard 3 reports the WORST compression cell for the same
+    reason: an average over generators hides the one an attacker will use."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    per_fold = [f["synth_a"].auc for f in rec.logo_results.values()]
+    assert worst_logo_auc(rec, "synth_a") == min(per_fold)
+
+
+def test_a_single_generator_corpus_reports_no_logo_rather_than_failing(caplog):
+    """LOGO is undefined with one generator. The in-dataset numbers are still
+    valid, so the run degrades rather than raising."""
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "deepfacelive"
+    with caplog.at_level(logging.WARNING):
+        rec = run_benchmark(records, _registry(),
+                            RunConfig(seed=7, enforce_guards=False))
+    assert rec.logo_results == {}
+    assert "LOGO unavailable" in caplog.text
+    assert rec.detector_results["synth_a"].n_samples == 40
 
 
 def test_run_is_reproducible_given_a_seed():
@@ -3739,10 +3833,16 @@ def test_run_is_reproducible_given_a_seed():
     b = run_benchmark(_records(), _registry(), RunConfig(seed=7))
     assert (a.detector_results["synth_a"].auc
             == b.detector_results["synth_a"].auc)
+    assert a.dataset_hash == b.dataset_hash
+    # Folds are drawn from a seeded permutation; same seed, same folds.
+    assert ({g: f["synth_a"].auc for g, f in a.logo_results.items()}
+            == {g: f["synth_a"].auc for g, f in b.logo_results.items()})
 ```
 
 ```python
 # tests/bench/test_report.py
+from dataclasses import replace
+
 from bench.report import render_markdown
 from bench.runner import DetectorResult, RunRecord
 
@@ -3788,6 +3888,41 @@ def test_report_flags_a_detector_defeated_by_adversarial_attack():
 def test_report_shows_confidence_intervals():
     md = render_markdown(_record())
     assert "0.71" in md and "0.92" in md
+
+
+def _logo_record():
+    base = _record()
+    def _dr(auc):
+        return DetectorResult(
+            detector="synth_a", auc=auc, auc_ci=(auc - 0.1, auc + 0.1),
+            tpr_at_1pct=0.2, tpr_at_0p1pct=0.1, ece=0.05,
+            adversarial_tpr_at_1pct=0.03, abstention_rate=0.0,
+            p95_latency_ms=1.0, n_samples=12)
+    return replace(base, logo_results={
+        "deepfacelive": {"synth_a": _dr(0.77)},
+        "faceswap": {"synth_a": _dr(0.51)},
+    })
+
+
+def test_report_leads_with_the_worst_held_out_generator():
+    """Spec §8.1. The mean of 0.77 and 0.51 is 0.64; reporting that would
+    hide the generator an attacker would actually choose."""
+    md = render_markdown(_logo_record())
+    assert "0.510" in md
+    assert "0.640" not in md
+    assert md.index("Leave-one-generator-out") < md.index("In-dataset")
+
+
+def test_report_labels_whole_corpus_numbers_as_memorisation():
+    md = render_markdown(_logo_record())
+    assert "memorisation" in md.lower()
+
+
+def test_report_says_so_when_logo_was_not_computed():
+    """A missing LOGO number must be stated, not left as a silent absence
+    that reads as though the in-dataset table were the result."""
+    md = render_markdown(_record())
+    assert "not computed" in md.lower()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -3809,6 +3944,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -3822,6 +3958,9 @@ from .guards import (
     check_uniform_preprocessing, check_video_level,
 )
 from .metrics import auc, bootstrap_ci_by_group, ece, tpr_at_fpr
+from .protocol import logo_splits
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -3854,7 +3993,13 @@ class RunRecord:
     guards_enforced: bool
     model_versions: dict[str, str]
     identity_report: IdentityReport | None
+    #: Whole-corpus metrics. THIS IS IN-DATASET PERFORMANCE, which measures
+    #: memorisation, not field performance. Never report it as the headline.
     detector_results: dict[str, DetectorResult] = field(default_factory=dict)
+    #: held-out generator -> detector -> metrics. Spec 8.1: the only number
+    #: that predicts field performance. Empty when the corpus cannot be split.
+    logo_results: dict[str, dict[str, DetectorResult]] = field(
+        default_factory=dict)
 
 
 def dataset_hash(records: list[dict]) -> str:
@@ -3892,11 +4037,18 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
         check_threshold_provenance(config.threshold_source)
 
     labels = np.array([r["label"] for r in records], dtype=int)
-    groups = np.array([r["sample_id"] for r in records])
+    # The SOURCE video, not the sample id. bootstrap_ci_by_group resamples
+    # over these, and resampling over frames rather than videos fabricates
+    # precision: measured at 11.9x too narrow (group CI 0.751 vs row 0.063).
+    # check_video_level enforces a 1:1 mapping while guards are on, but
+    # enforce_guards=False is a supported path and that is exactly where an
+    # honest interval matters most.
+    groups = np.array([r["source_id"] for r in records])
     observations = [_observation(r) for r in records]
 
     results: dict[str, DetectorResult] = {}
     versions: dict[str, str] = {}
+    scores_by_detector: dict[str, np.ndarray] = {}
 
     for name in registry.names():
         det = registry.get(name)
@@ -3917,36 +4069,98 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
                 scores.append(float(raw.score))
 
         s = np.array(scores, dtype=float)
-        valid = np.isfinite(s)
-        if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
-            results[name] = DetectorResult(
-                detector=name, auc=float("nan"), auc_ci=(float("nan"), float("nan")),
-                tpr_at_1pct=float("nan"), tpr_at_0p1pct=float("nan"),
-                ece=float("nan"), adversarial_tpr_at_1pct=None,
-                abstention_rate=abstentions / max(1, len(records)),
-                p95_latency_ms=float(np.percentile(latencies, 95)),
-                n_samples=len(records))
-            continue
+        scores_by_detector[name] = s
+        results[name] = _detector_result(
+            name, s, labels, groups, latencies, abstentions, config)
 
-        results[name] = DetectorResult(
-            detector=name,
-            auc=auc(s[valid], labels[valid]),
-            auc_ci=bootstrap_ci_by_group(s[valid], labels[valid], groups[valid],
-                                         auc, n=config.bootstrap_n,
-                                         seed=config.seed),
-            tpr_at_1pct=tpr_at_fpr(s[valid], labels[valid], 0.01),
-            tpr_at_0p1pct=tpr_at_fpr(s[valid], labels[valid], 0.001),
-            ece=ece(s[valid], labels[valid]),
-            adversarial_tpr_at_1pct=None,
-            abstention_rate=abstentions / max(1, len(records)),
-            p95_latency_ms=float(np.percentile(latencies, 95)),
-            n_samples=len(records),
-        )
+    logo_results = _logo_results(records, registry, scores_by_detector,
+                                 labels, groups, config)
 
     return RunRecord(seed=config.seed, dataset_hash=dataset_hash(records),
                      guards_enforced=config.enforce_guards,
                      model_versions=versions, identity_report=None,
-                     detector_results=results)
+                     detector_results=results, logo_results=logo_results)
+
+
+def _detector_result(name, s, labels, groups, latencies, abstentions,
+                     config) -> DetectorResult:
+    """Metrics for one detector over one set of rows.
+
+    Split out so a LOGO fold can reuse it verbatim: the fold differs only in
+    which rows it passes, never in how the numbers are computed.
+    """
+    n = len(s)
+    valid = np.isfinite(s)
+    base = dict(
+        detector=name,
+        adversarial_tpr_at_1pct=None,
+        abstention_rate=abstentions / max(1, n),
+        p95_latency_ms=float(np.percentile(latencies, 95)) if latencies else 0.0,
+        n_samples=n,
+    )
+    if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
+        nan = float("nan")
+        return DetectorResult(auc=nan, auc_ci=(nan, nan), tpr_at_1pct=nan,
+                              tpr_at_0p1pct=nan, ece=nan, **base)
+    return DetectorResult(
+        auc=auc(s[valid], labels[valid]),
+        auc_ci=bootstrap_ci_by_group(s[valid], labels[valid], groups[valid],
+                                     auc, n=config.bootstrap_n,
+                                     seed=config.seed),
+        tpr_at_1pct=tpr_at_fpr(s[valid], labels[valid], 0.01),
+        tpr_at_0p1pct=tpr_at_fpr(s[valid], labels[valid], 0.001),
+        ece=ece(s[valid], labels[valid]),
+        **base,
+    )
+
+
+def _logo_results(records, registry, scores_by_detector, labels, groups,
+                  config) -> dict[str, dict[str, DetectorResult]]:
+    """Per-held-out-generator metrics — spec 8.1, the number that predicts field
+    performance.
+
+    Detection is not re-run per fold: a detector's score for a record does not
+    depend on which fold the record lands in, so folds slice the scores already
+    computed.
+
+    HONEST SCOPE. A full LOGO protocol trains on the fold's train side and
+    tests on the held-out one. P0 detectors are not trained here, so what this
+    computes is evaluation on the held-out generator's test rows. That is the
+    number you report, and it becomes the full protocol once training or
+    calibration fitting exists — at which point the fold's train side is also
+    where the operating threshold must be frozen (spec 8.2 guard 5).
+    """
+    try:
+        splits = logo_splits(records, seed=config.seed)
+    except ValueError as exc:
+        # A corpus with one generator, one subject, or no measurable fold.
+        # Recorded rather than raised: the in-dataset numbers are still valid.
+        logger.warning("LOGO unavailable for this corpus: %s", exc)
+        return {}
+
+    position = {r["sample_id"]: i for i, r in enumerate(records)}
+    out: dict[str, dict[str, DetectorResult]] = {}
+    for split in splits:
+        rows = np.array([position[sid] for sid in split.test_ids()], dtype=int)
+        out[split.held_out_generator] = {
+            name: _detector_result(name, scores_by_detector[name][rows],
+                                   labels[rows], groups[rows], [], 0, config)
+            for name in registry.names()
+        }
+    return out
+
+
+def worst_logo_auc(record: "RunRecord", detector: str) -> float:
+    """The weakest held-out generator for one detector.
+
+    Reported in preference to the mean, for the same reason spec 8.2 guard 3
+    reports the worst compression cell: an average over generators hides the
+    one an attacker will actually use.
+    """
+    folds = [f[detector].auc for f in record.logo_results.values()
+             if detector in f]
+    finite = [a for a in folds if a == a]
+    return min(finite) if finite else float("nan")
 ```
 
 ```python
@@ -3958,7 +4172,7 @@ number that always looks good and never means anything.
 """
 from __future__ import annotations
 
-from .runner import RunRecord
+from .runner import RunRecord, worst_logo_auc
 
 ADVERSARIAL_FLOOR = 0.10
 
@@ -3982,7 +4196,33 @@ def render_markdown(record: RunRecord) -> str:
                      f"at threshold `{r.threshold}`, {r.violations} violations")
     lines.append("")
 
-    lines.append("## Per-detector results\n")
+    lines.append("## Leave-one-generator-out (spec §8.1)\n")
+    if not record.logo_results:
+        lines.append(
+            "**Not computed for this corpus.** Without a held-out-generator "
+            "number there is nothing here that predicts field performance; "
+            "the table below measures memorisation only.\n")
+    else:
+        lines.append("Worst held-out generator per detector — the headline "
+                     "number. Reported as the worst rather than the mean for "
+                     "the same reason spec §8.2 guard 3 reports the worst "
+                     "compression cell: an average hides the generator an "
+                     "attacker will actually use.\n")
+        detectors = sorted(record.detector_results)
+        generators = sorted(record.logo_results)
+        lines.append("| detector | worst AUC | "
+                     + " | ".join(f"held out {g}" for g in generators) + " |")
+        lines.append("|---|---|" + "---|" * len(generators))
+        for name in detectors:
+            cells = [_f(record.logo_results[g][name].auc) for g in generators]
+            lines.append(f"| {name} | **{_f(worst_logo_auc(record, name))}** | "
+                         + " | ".join(cells) + " |")
+        lines.append("")
+
+    lines.append("## In-dataset results — memorisation, not field performance\n")
+    lines.append("These are computed over the whole corpus, with every "
+                 "generator seen. Spec §8.1: in-dataset AUC measures "
+                 "memorisation. Read the LOGO table above instead.\n")
     lines.append("| detector | AUC | 95% CI | TPR@FPR=1% | TPR@FPR=0.1% | "
                  "adversarial TPR@FPR=1% | ECE | abstained | p95 ms | n |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
@@ -4015,7 +4255,7 @@ def render_markdown(record: RunRecord) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/bench/test_runner.py tests/bench/test_report.py -v`
-Expected: PASS, 14 tests
+Expected: PASS, 29 tests (21 runner, 8 report)
 
 - [ ] **Step 5: Run the full suite and commit**
 
@@ -4035,10 +4275,12 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 
 **Known gaps, deliberately deferred and recorded here so they are not forgotten:**
 
-1. **Guard 1 (identity leakage) is implemented in Task 12 but not yet wired into `run_benchmark`.** `RunRecord.identity_report` is present and rendered but always `None`, because computing it needs a face-embedding model that is not part of P0's licence-clean set (spec §11 flags InsightFace). **Acceptance criterion 2 is therefore not met by this plan alone** — it needs a follow-up task once an embedding model is chosen. This is the single most important gap; do not close P0 without it.
-2. `adversarial_tpr_at_1pct` is computed by Task 15 but wired as `None` in the runner, because it needs a differentiable model and the P0 detectors abstain without weights. Wire it when real weights land.
-3. Calibration is fitted per detector but the runner scores raw detector output rather than fused LLRs. End-to-end fusion scoring belongs in P1.
-4. **Resolved, not deferred.** `check_video_level` reads a real `source_id` field; records must populate it. For image corpora each image is its own source, recorded explicitly. Aliasing `source_id` to `sample_id` at the call site makes the guard vacuous — its only failure condition is `groups[i] != sample_ids[i]` — so the alias is forbidden rather than tolerated.
+1. **The LOGO number is now computed, but this is not a trained LOGO protocol.** `run_benchmark` evaluates each detector on each held-out generator's test rows and reports the worst as the headline. A full protocol also *trains* on the fold's train side; P0 detectors are not trained here, so the train side is currently unused. It becomes load-bearing the moment calibration or training lands — and that is also where the operating threshold must be frozen, which would make spec §8.2 guard 5 real rather than the string check on `config.threshold_source` it is today.
+
+2. **Guard 1 (identity leakage) is implemented in Task 12 but not yet wired into `run_benchmark`.** `RunRecord.identity_report` is present and rendered but always `None`, because computing it needs a face-embedding model that is not part of P0's licence-clean set (spec §11 flags InsightFace). **Acceptance criterion 2 is therefore not met by this plan alone** — it needs a follow-up task once an embedding model is chosen. This is the single most important gap; do not close P0 without it.
+3. `adversarial_tpr_at_1pct` is computed by Task 15 but wired as `None` in the runner, because it needs a differentiable model and the P0 detectors abstain without weights. Wire it when real weights land.
+4. Calibration is fitted per detector but the runner scores raw detector output rather than fused LLRs. End-to-end fusion scoring belongs in P1.
+5. **Resolved, not deferred.** `check_video_level` reads a real `source_id` field; records must populate it. For image corpora each image is its own source, recorded explicitly. Aliasing `source_id` to `sample_id` at the call site makes the guard vacuous — its only failure condition is `groups[i] != sample_ids[i]` — so the alias is forbidden rather than tolerated.
 
 **Placeholder scan.** No TBDs. Every step carries runnable code. Threshold constants in `quality.py` are marked as starting values with a stated plan (Task 18 follow-up) rather than left as magic numbers.
 
@@ -4046,6 +4288,7 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 
 ---
 
+### Task 18: Wire the robustness sweep into the runner
 ### Task 18: Wire the robustness sweep into the runner
 
 **Files:**
