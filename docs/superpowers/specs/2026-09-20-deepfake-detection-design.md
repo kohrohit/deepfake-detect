@@ -129,6 +129,97 @@ survive, input purification, and probing-pattern monitoring.
 
 ---
 
+## 3A. Threat model: state-sponsored adversary
+
+**Decision (2026-09-20):** design against a well-resourced state-sponsored
+adversary, not a commodity fraudster. This is the governing threat model and it
+overrides convenience everywhere it conflicts.
+
+### 3A.1 Adversary capabilities assumed
+
+| # | Capability | Consequence |
+|---|---|---|
+| A1 | Trains bespoke generators targeting *our* detectors | Commodity-generator benchmarks are irrelevant to worst case |
+| A2 | **Possesses our model weights** | White-box adversarial attacks are the primary vector |
+| A3 | Custom hardware injection (UVC device emulating real sensor timing) | Timing forensics alone is insufficient |
+| A4 | Real-time neural relighting | The optical challenge is defeatable if predictable |
+| A5 | Supply-chain compromise (deps, model bundle, update channel) | Signed, reproducible builds are mandatory |
+| A6 | Insider: operator, reviewer, ops engineer | Technical detection alone does not decide outcomes |
+| A7 | Patience — establish a genuine identity, age it, use it later | Onboarding-time detection has a structural blind spot |
+| A8 | Attacks the cheapest link, not the hardest | Hardening detection *relocates* the attack |
+
+### 3A.2 The on-prem oracle problem
+
+**On-prem deployment hands this adversary an offline oracle.** They acquire the
+appliance through a shell entity or a compromised customer, then probe it
+without rate limit, without logging we can see, and without time pressure. This
+is strictly worse than SaaS for adversarial robustness — SaaS at least
+rate-limits and observes probing.
+
+We keep on-prem (§10 compliance rationale stands), so the exposure must be
+mitigated architecturally:
+
+- **The decision function is not the appliance.** Fusion weights, thresholds and
+  the active-detector subset are held in a TEE (SGX / SEV-SNP / TrustZone) or
+  rotated from a control plane, so owning the box does not yield the decision
+  function.
+- **Per-deployment randomised configuration.** Each installation votes with a
+  different detector subset drawn from the portfolio, so a stolen appliance does
+  not reveal what any other site runs.
+- **Canary detectors.** Models that never influence a decision but fire on
+  probing patterns. Tripwires, not defences.
+- **Assume compromise and detect it**, rather than assuming containment.
+
+### 3A.3 What actually holds against A1–A8
+
+Ordered by the adversary's cost to defeat:
+
+1. **Hardware-backed cryptographic attestation** — Play Integrity, App Attest,
+   secure-element-signed capture. Defeating this requires breaking hardware
+   security or compromising a device vendor. **This is the only layer a
+   state actor cannot simply out-compute**, and it should carry the most weight.
+2. **Out-of-band and multi-party verification** for high-value onboarding —
+   independent channels, two-person rules. A well-designed protocol beats a
+   better classifier.
+3. **Population-level analytics** (§9.7) — a single session can be made perfect;
+   a campaign leaves statistical traces across sessions.
+4. **Randomised physical challenges** — unpredictable in *type*, parameters and
+   timing, not merely in colour. The adversary must defeat the distribution of
+   challenges, not one configuration.
+5. **Non-differentiable / destroyed-representation detectors** — heavy
+   quantisation, re-compression, noise-residual-only paths that gradient attacks
+   cannot traverse cleanly.
+6. **Differentiable ML detectors** — assume these are defeated under A2. They
+   provide evidence, never verdicts.
+
+### 3A.4 Consequences for the design
+
+- **ML detectors are demoted from deciders to evidence contributors.** The
+  system must degrade gracefully when every ML slot is compromised, falling back
+  on attestation, protocol and population analytics.
+- **Randomisation becomes a core primitive.** A deterministic system is a
+  solvable system.
+- **Forensic retention is a first-class requirement.** Against A1–A4 some
+  attacks will succeed in the moment; the system must make them *reconstructable
+  afterwards* — full session capture, challenge seeds, model versions, raw
+  evidence. Post-hoc attribution has deterrent value that real-time blocking
+  does not.
+- **Continuous re-verification.** A1–A7 defeat any single gate. Re-verify at
+  high-value transactions rather than trusting an onboarding decision forever.
+- **A8 must be stated to stakeholders.** Hardening v-CIP pushes the adversary
+  toward document forgery, bribed operators, compromised enrollment, SIM swap
+  and post-onboarding takeover. A detection system that ignores this displaces
+  fraud rather than preventing it.
+
+### 3A.5 Honest limit
+
+Against a genuine state actor, no onboarding system is unbeatable. The
+achievable goals are: **raise attack cost by orders of magnitude, raise
+detection probability, and guarantee post-hoc reconstructability.** Any claim
+beyond that is marketing, and this document will not make it.
+
+---
+
 ## 4. Design principles
 
 1. **Likelihood ratios, not scores.** The common currency across all detectors
@@ -142,6 +233,15 @@ survive, input purification, and probing-pattern monitoring.
 6. **Measure decay continuously**; do not assume durability.
 7. **Correctness first.** Latency is an optimisation applied after correctness
    is established, not a design driver.
+8. **Assume the ML layer is compromised** (§3A.2). Detectors contribute
+   evidence; attestation, protocol and population analytics decide. The system
+   must remain useful with every ML slot defeated.
+9. **Randomisation is a primitive, not a feature.** Detector subsets, challenge
+   type, challenge parameters and timing are drawn per session. A deterministic
+   system is a solvable system.
+10. **Everything is reconstructable after the fact.** Where prevention fails,
+    forensic retention must let us prove what happened, with what models, under
+    what challenge seed.
 
 ---
 
@@ -523,6 +623,17 @@ mistake that let a 96% score with 40% internal dissent look like a win.
 5. Per-detector p95 latency recorded on the target hardware (i5-1235U).
 6. Asset manifest covering every dataset and weight file in use.
 7. Quality gate demonstrably abstaining on degraded input rather than guessing.
+8. **Adversarial baseline measured, not assumed.** White-box PGD against each
+   registered detector, reporting TPR@FPR=1% under attack alongside the clean
+   number. A detector whose adversarial TPR is ~0 is recorded as such and kept
+   only as evidence, never as a decider (§3A.4). This is the criterion that
+   makes the state-sponsored threat model real rather than decorative.
+9. **Robustness surface includes the physical re-capture paths** —
+   screenshot-of-screen and print-recapture measured, not skipped, since these
+   are the cheapest laundering steps available to any adversary.
+10. Every benchmark run is reproducible from a recorded seed, dataset manifest
+    hash and model-version set, so results remain auditable and comparable
+    across the decay loop.
 
 ---
 
@@ -543,3 +654,8 @@ mistake that let a 96% score with 40% internal dissent look like a win.
 We win not by having a better classifier, but by owning **calibration,
 abstention, capture-path physics, and a measured decay loop** — the four things
 a score-returning SaaS structurally cannot sell.
+
+Under the state-sponsored threat model (§3A) the sentence gains a clause: and
+by building so that **when the classifier is defeated — which we assume it will
+be — cryptographic attestation, randomised protocol and population-level
+analytics still hold, and the attack remains reconstructable afterwards.**
