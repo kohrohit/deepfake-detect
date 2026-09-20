@@ -88,6 +88,17 @@ def test_pgd_seed_is_load_bearing(model):
                            pgd_attack(model, x, y, seed=999, **kw))
 
 
+def test_pgd_step_size_is_proportional_to_alpha(model):
+    """`alpha` is a documented parameter; nothing else pins it. A single
+    step from a shared random start differs by exactly the alpha
+    difference on the pixels the projection does not clamp."""
+    x, y = _batch(0.5), torch.ones(8, dtype=torch.long)
+    kw = dict(eps=0.4, steps=1, seed=11)
+    a = pgd_attack(model, x, y, alpha=0.01, **kw)
+    b = pgd_attack(model, x, y, alpha=0.03, **kw)
+    assert (a - b).abs().max().item() == pytest.approx(0.02, abs=1e-6)
+
+
 def test_pgd_does_not_disturb_global_torch_rng(model):
     """The attack must not reseed the RNG every other test draws from."""
     torch.manual_seed(1234)
