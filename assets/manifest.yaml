@@ -1,3 +1,10 @@
 # Every dataset and weight file used anywhere in this repo must appear here.
 # Fails closed: unregistered == non-commercial. See spec §11.
-assets: {}
+assets:
+  yunet_face_detector:
+    source: "https://github.com/opencv/opencv_zoo — face_detection_yunet_2023mar.onnx"
+    license: "MIT"
+    commercial_use: true
+    evidence_url: "https://github.com/opencv/opencv_zoo/blob/main/LICENSE"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
