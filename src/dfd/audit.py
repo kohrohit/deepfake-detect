@@ -63,6 +63,38 @@ def _validate_serialisable(value: Any, *, field: str) -> None:
             "accepted")
 
 
+def _validate_evidence(e: Evidence) -> None:
+    """Reject an `Evidence` row this record cannot honestly carry, before the
+    row is built from it.
+
+    `Evidence` is a plain dataclass with no runtime type enforcement, and the
+    row-building loop below copies `detector`, `detector_version`, and
+    `reason` straight into the row. Without this check, a caller could
+    construct `Evidence(..., reason=b"...")`, `build_audit_record` would
+    succeed and the record would hold raw bytes in memory, and only a later
+    `to_json()` call would raise -- the identical build-succeeds/serialise-
+    fails split `_validate_serialisable` closes for `model_versions`,
+    relocated to a field that helper is never called on.
+    """
+    if not isinstance(e.detector, str):
+        raise InvalidInput(
+            f"evidence.detector must be a string, got {type(e.detector).__name__}")
+    if not isinstance(e.detector_version, str):
+        raise InvalidInput(
+            "evidence.detector_version must be a string, got "
+            f"{type(e.detector_version).__name__}")
+    if not isinstance(e.reason, str):
+        raise InvalidInput(
+            f"evidence.reason must be a string, got {type(e.reason).__name__}")
+    if not isinstance(e.llr, (int, float)):
+        raise InvalidInput(
+            f"evidence.llr must be numeric, got {type(e.llr).__name__}")
+    if e.raw_score is not None and not isinstance(e.raw_score, (int, float)):
+        raise InvalidInput(
+            "evidence.raw_score must be numeric or None, got "
+            f"{type(e.raw_score).__name__}")
+
+
 def _thaw(value: Any) -> Any:
     """Plain-Python view for serialisation. No `default=` fallback: a value
     this cannot render must raise rather than be silently stringified."""
@@ -146,8 +178,10 @@ def build_audit_record(
         InvalidInput: if `sample_id`, `quality_band`, `policy_version`, or
             `created_at` is not a string (or `sample_id` is empty); if
             `input_sha256` is not a lowercase 64-character hex digest; if
-            `created_at` is not a valid ISO-8601 timestamp; or if
-            `model_versions` holds a value this record cannot serialise.
+            `created_at` is not a valid ISO-8601 timestamp; if
+            `model_versions` holds a value this record cannot serialise; or
+            if any evidence row's `detector`, `detector_version`, or `reason`
+            is not a string, or its `llr`/`raw_score` is not numeric.
     """
     if not isinstance(sample_id, str) or not sample_id:
         raise InvalidInput(f"sample_id must be a non-empty string, got {sample_id!r}")
@@ -163,6 +197,8 @@ def build_audit_record(
             f"policy_version must be a string, got {type(policy_version).__name__}")
 
     _validate_serialisable(model_versions, field="model_versions")
+    for e in evidence:
+        _validate_evidence(e)
 
     if created_at is None:
         created_at = datetime.now(timezone.utc).isoformat()

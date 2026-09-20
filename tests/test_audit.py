@@ -122,14 +122,23 @@ def test_a_value_that_cannot_be_serialised_is_refused_not_stringified():
         _record(model_versions={"npr": np.zeros((4, 4), dtype=np.uint8)}).to_json()
 
 
-def test_a_value_that_cannot_be_serialised_is_refused_at_build_time():
+@pytest.mark.parametrize("kwargs", [
+    dict(model_versions={"npr": b"\x89PNG" + b"\x00" * 4000}),
+    dict(evidence=[_ev("npr", 2.0, reason=b"\x89PNG" + b"\x00" * 4000)]),
+], ids=["model_versions", "evidence"])
+def test_a_value_that_cannot_be_serialised_is_refused_at_build_time(kwargs):
     """The refusal must fire before a record carrying the value can exist at
     all, not only when to_json() happens to be called later -- otherwise a
     record built with e.g. raw image bytes in a field would sit in memory,
     reachable by a repr, a log line, or a pickle, for however long elapses
-    before someone serialises it."""
+    before someone serialises it. Both smuggling routes are covered: the
+    free-form `model_versions` mapping, and an `Evidence` row's string
+    fields -- `Evidence` is a plain dataclass with no runtime type
+    enforcement, and the row-building loop otherwise copies `reason`
+    straight through unvalidated. A fix that validates only one of the two
+    must fail the other case here."""
     with pytest.raises(InvalidInput):
-        _record(model_versions={"npr": b"\x89PNG" + b"\x00" * 4000})
+        _record(**kwargs)
 
 
 @pytest.mark.parametrize("field,value", [
