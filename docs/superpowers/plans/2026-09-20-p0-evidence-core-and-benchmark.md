@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Tasks:** 19 (Task 18 from pre-flight ruling on CONFLICT 4; Task 19 from the Task 2 review).
+**Tasks:** 22. Tasks 18-19 came from review findings; Tasks 20-22 from raising the bar to production standards. Task 20 (audit record) is a dropped spec requirement (§7.2), not an enhancement.
 
 **Goal:** Build the modality-agnostic evidence core (Sample → Detector → Evidence → Fusion) and a leave-one-generator-out benchmark harness rigorous enough to prove — or disprove — that this system beats Reality Defender.
 
@@ -3869,4 +3869,580 @@ Expected: PASS — 5 new tests, Task 2's 4 still green
 ```bash
 git add src/dfd/asset_scan.py tests/test_asset_scan.py
 git commit -m "feat: enumerate assets from disk so the release gate cannot pass vacuously"
+```
+
+---
+
+### Task 20: Immutable audit record
+
+**Files:**
+- Create: `src/dfd/errors.py`, `src/dfd/audit.py`
+- Test: `tests/test_audit.py`
+
+**Interfaces:**
+- Consumes: `Evidence`, `Verdict`, `Quality` (Task 1); `FusedResult` (Task 10)
+- Produces: `DfdError` hierarchy; `AuditRecord`, `build_audit_record(...) -> AuditRecord`, `AuditRecord.to_json() -> str`, `record_digest(record) -> str`
+
+**Why this task exists:** spec §7.2 requires every decision to emit an immutable record — input hash, model versions, per-detector LLRs, quality metrics, policy version, decision. It is the artifact that makes a rejection defensible to a regulator and doubles as next-cycle training data. **The original 19-task plan had no task for it; this is a dropped spec requirement, not an enhancement.** Without it the system can decide but cannot account for a decision, which is not shippable in BFSI.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_audit.py
+import json
+import pytest
+from dfd.audit import AuditRecord, build_audit_record, record_digest
+from dfd.errors import DfdError, InvalidInput
+from dfd.types import Evidence, Verdict
+
+
+def _ev(name, llr, abstained=False, reason="ok"):
+    return Evidence(detector=name, detector_version="1.0", llr=llr,
+                    raw_score=0.5, uncertainty=0.0,
+                    abstained=abstained, reason=reason)
+
+
+def _record(**kw):
+    base = dict(
+        sample_id="s1", input_sha256="a" * 64, verdict=Verdict.FAKE,
+        llr_total=3.2, posterior=0.96,
+        evidence=[_ev("npr", 2.0), _ev("sbi", 1.2)],
+        quality_band="high", ood_score=0.1,
+        policy_version="policy-1", threshold=1.0,
+        model_versions={"npr": "0.1.0", "sbi": "0.1.0"},
+    )
+    base.update(kw)
+    return build_audit_record(**base)
+
+
+def test_record_carries_every_field_a_regulator_would_ask_for():
+    r = _record()
+    for field in ("sample_id", "input_sha256", "verdict", "llr_total",
+                  "policy_version", "threshold", "model_versions",
+                  "quality_band", "created_at"):
+        assert getattr(r, field) is not None, field
+
+
+def test_record_is_immutable():
+    r = _record()
+    with pytest.raises(Exception):
+        r.verdict = Verdict.REAL
+
+
+def test_per_detector_llrs_are_preserved_including_abstentions():
+    """An abstention is evidence about the system, not an absence of evidence."""
+    r = _record(evidence=[_ev("npr", 2.0),
+                          _ev("sbi", 0.0, abstained=True, reason="weights_absent")])
+    got = {e["detector"]: e for e in r.evidence}
+    assert got["sbi"]["abstained"] is True
+    assert got["sbi"]["reason"] == "weights_absent"
+
+
+def test_to_json_round_trips():
+    r = _record()
+    d = json.loads(r.to_json())
+    assert d["sample_id"] == "s1"
+    assert d["verdict"] == "fake"
+    assert len(d["evidence"]) == 2
+
+
+def test_digest_is_stable_for_identical_records():
+    assert record_digest(_record()) == record_digest(_record())
+
+
+def test_digest_changes_when_any_field_changes():
+    """Tamper-evidence: the digest must not be blind to a changed verdict."""
+    a = record_digest(_record())
+    b = record_digest(_record(verdict=Verdict.REAL))
+    assert a != b
+
+
+def test_record_never_contains_image_bytes():
+    """PII discipline: the record references the input by hash, never carries it."""
+    blob = r"\x89PNG"
+    r = _record()
+    assert blob not in r.to_json()
+
+
+def test_rejects_a_malformed_input_hash():
+    with pytest.raises(InvalidInput) as exc:
+        _record(input_sha256="not-a-hash")
+    assert "sha256" in str(exc.value).lower()
+
+
+def test_invalid_input_is_a_dfd_error():
+    """One catchable root for every error this package raises."""
+    assert issubclass(InvalidInput, DfdError)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_audit.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.audit'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/errors.py
+"""Exception hierarchy. One catchable root for everything this package raises."""
+from __future__ import annotations
+
+
+class DfdError(Exception):
+    """Base for every error raised by the dfd package."""
+
+
+class InvalidInput(DfdError):
+    """A caller supplied an argument that cannot be processed."""
+
+
+class ResourceLimitExceeded(DfdError):
+    """Input exceeded a configured decode or size limit."""
+```
+
+```python
+# src/dfd/audit.py
+"""Immutable per-decision audit record (spec §7.2).
+
+Makes a rejection defensible: what was decided, by which model versions, on
+what evidence, under which policy. References the input by SHA-256 and never
+carries image bytes — the record is retained far longer than the media, and
+BFSI face data is sensitive personal data under India's DPDP Act.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Sequence
+
+from .errors import InvalidInput
+from .types import Evidence, Verdict
+
+logger = logging.getLogger(__name__)
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+AUDIT_SCHEMA_VERSION = "1"
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    schema_version: str
+    sample_id: str
+    input_sha256: str
+    verdict: str
+    llr_total: float
+    posterior: float
+    evidence: tuple
+    quality_band: str
+    ood_score: float
+    policy_version: str
+    threshold: float
+    model_versions: dict
+    created_at: str
+
+    def to_json(self) -> str:
+        """Serialise deterministically (sorted keys) so digests are comparable."""
+        return json.dumps(asdict(self), sort_keys=True, default=str)
+
+
+def build_audit_record(
+    sample_id: str,
+    input_sha256: str,
+    verdict: Verdict,
+    llr_total: float,
+    posterior: float,
+    evidence: Sequence[Evidence],
+    quality_band: str,
+    ood_score: float,
+    policy_version: str,
+    threshold: float,
+    model_versions: dict,
+) -> AuditRecord:
+    """Build an immutable decision record.
+
+    Raises:
+        InvalidInput: if `sample_id` is empty or `input_sha256` is not a
+            lowercase 64-character hex digest.
+    """
+    if not sample_id:
+        raise InvalidInput("sample_id must be a non-empty string")
+    if not _SHA256_RE.match(input_sha256 or ""):
+        raise InvalidInput(
+            f"input_sha256 must be 64 lowercase hex characters, got {input_sha256!r}")
+
+    rows = tuple(
+        {
+            "detector": e.detector,
+            "version": e.detector_version,
+            "llr": float(e.llr),
+            "raw_score": None if e.raw_score is None else float(e.raw_score),
+            "abstained": bool(e.abstained),
+            "reason": e.reason,
+        }
+        for e in evidence
+    )
+    record = AuditRecord(
+        schema_version=AUDIT_SCHEMA_VERSION,
+        sample_id=sample_id,
+        input_sha256=input_sha256,
+        verdict=verdict.value if isinstance(verdict, Verdict) else str(verdict),
+        llr_total=float(llr_total),
+        posterior=float(posterior),
+        evidence=rows,
+        quality_band=quality_band,
+        ood_score=float(ood_score),
+        policy_version=policy_version,
+        threshold=float(threshold),
+        model_versions=dict(model_versions),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info("audit record built: sample=%s verdict=%s detectors=%d",
+                sample_id, record.verdict, len(rows))
+    return record
+
+
+def record_digest(record: AuditRecord) -> str:
+    """Tamper-evident digest over everything except the timestamp."""
+    payload = json.loads(record.to_json())
+    payload.pop("created_at", None)
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_audit.py -v`
+Expected: PASS, 9 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/dfd/errors.py src/dfd/audit.py tests/test_audit.py
+git commit -m "feat: immutable per-decision audit record and error hierarchy"
+```
+
+---
+
+### Task 21: Resource limits at the decode boundary
+
+**Files:**
+- Create: `src/dfd/limits.py`
+- Modify: `src/dfd/ingest/image.py`, `src/dfd/ingest/video.py`
+- Test: `tests/test_limits.py`
+
+**Interfaces:**
+- Consumes: `ResourceLimitExceeded` (Task 20); `load_image`, `load_video` (Task 5)
+- Produces: `Limits`, `DEFAULT_LIMITS`, `check_file_size(path, limits)`, `check_frame_dims(w, h, limits)`
+
+**Why this task exists:** spec §3A assumes a well-resourced adversary and spec §10 names resource exhaustion via crafted media as an attack surface. A 50,000×50,000 PNG decodes to 7.5 GB and takes the service down — a denial-of-service against a fraud control is itself a fraud enabler, because it forces a fallback path. Limits must be enforced **before** allocation, not after.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_limits.py
+import numpy as np
+import pytest
+from dfd.errors import DfdError, ResourceLimitExceeded
+from dfd.limits import DEFAULT_LIMITS, Limits, check_file_size, check_frame_dims
+
+
+def test_limits_are_a_frozen_value_object():
+    with pytest.raises(Exception):
+        DEFAULT_LIMITS.max_pixels = 1
+
+
+def test_oversized_file_is_rejected_before_decode(tmp_path):
+    p = tmp_path / "big.bin"
+    p.write_bytes(b"0" * 2048)
+    with pytest.raises(ResourceLimitExceeded) as exc:
+        check_file_size(p, Limits(max_file_bytes=1024))
+    assert "1024" in str(exc.value)
+
+
+def test_file_within_limit_passes(tmp_path):
+    p = tmp_path / "ok.bin"
+    p.write_bytes(b"0" * 100)
+    assert check_file_size(p, Limits(max_file_bytes=1024)) is None
+
+
+def test_decode_bomb_dimensions_are_rejected():
+    """50000x50000 would allocate ~7.5GB. Reject on the header, not after."""
+    with pytest.raises(ResourceLimitExceeded):
+        check_frame_dims(50000, 50000, DEFAULT_LIMITS)
+
+
+def test_reasonable_dimensions_pass():
+    assert check_frame_dims(1920, 1080, DEFAULT_LIMITS) is None
+
+
+def test_zero_or_negative_dimensions_are_rejected():
+    for w, h in ((0, 100), (100, 0), (-1, 100)):
+        with pytest.raises(DfdError):
+            check_frame_dims(w, h, DEFAULT_LIMITS)
+
+
+def test_missing_file_raises_a_typed_error(tmp_path):
+    with pytest.raises(DfdError):
+        check_file_size(tmp_path / "nope.bin", DEFAULT_LIMITS)
+
+
+def test_defaults_are_documented_constants():
+    assert DEFAULT_LIMITS.max_pixels > 0
+    assert DEFAULT_LIMITS.max_file_bytes > 0
+    assert DEFAULT_LIMITS.max_frames > 0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_limits.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.limits'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/limits.py
+"""Resource limits enforced at every decode boundary (spec §3A, §10).
+
+Media arrives from an adversary. A crafted image can allocate gigabytes before
+any detection logic runs, and a denial-of-service against a fraud control is a
+fraud enabler: it forces the fallback path. Checks run on metadata, before
+allocation.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+
+from .errors import InvalidInput, ResourceLimitExceeded
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Limits:
+    # 8K RGB decodes to ~100MB; beyond this nothing legitimate in v-CIP arrives.
+    max_pixels: int = 7680 * 4320
+    max_file_bytes: int = 256 * 1024 * 1024
+    max_frames: int = 10_000
+    max_duration_s: float = 1800.0
+
+
+DEFAULT_LIMITS = Limits()
+
+
+def check_file_size(path: str | Path, limits: Limits = DEFAULT_LIMITS) -> None:
+    """Raise unless the file exists and is within `limits.max_file_bytes`.
+
+    Raises:
+        InvalidInput: the path does not exist or is not a regular file.
+        ResourceLimitExceeded: the file is larger than the configured maximum.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise InvalidInput(f"not a readable file: {p}")
+    size = p.stat().st_size
+    if size > limits.max_file_bytes:
+        raise ResourceLimitExceeded(
+            f"file {p.name} is {size} bytes, exceeds limit {limits.max_file_bytes}")
+
+
+def check_frame_dims(width: int, height: int,
+                     limits: Limits = DEFAULT_LIMITS) -> None:
+    """Raise unless the frame dimensions are positive and within the pixel cap.
+
+    Raises:
+        InvalidInput: a dimension is zero or negative.
+        ResourceLimitExceeded: width * height exceeds `limits.max_pixels`.
+    """
+    if width <= 0 or height <= 0:
+        raise InvalidInput(f"frame dimensions must be positive, got {width}x{height}")
+    if width * height > limits.max_pixels:
+        raise ResourceLimitExceeded(
+            f"frame {width}x{height} = {width * height} pixels, "
+            f"exceeds limit {limits.max_pixels}")
+```
+
+Then in `src/dfd/ingest/image.py`, call `check_file_size(path)` before `cv2.imread`, and `check_frame_dims(rgb.shape[1], rgb.shape[0])` after decode. In `src/dfd/ingest/video.py`, call `check_file_size(path)` before opening, and clamp `max_frames` to `limits.max_frames`. Import both from `..limits`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_limits.py tests/test_ingest.py -v`
+Expected: PASS — 8 new tests, Task 5's 7 still green
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/dfd/limits.py src/dfd/ingest tests/test_limits.py
+git commit -m "feat: resource limits at the decode boundary"
+```
+
+---
+
+### Task 22: CI pipeline with lint, type and coverage gates
+
+**Files:**
+- Create: `.github/workflows/ci.yml`, `ruff.toml`, `mypy.ini`
+- Modify: `pyproject.toml`
+- Test: `tests/test_ci_gates.py`
+
+**Interfaces:**
+- Consumes: `assert_all_assets_registered` (Task 19)
+- Produces: a CI workflow that fails on lint, type, coverage or unregistered-asset violations
+
+**Why this task exists:** the production standards in Global Constraints are only real if something enforces them. A standard enforced by intention is a standard that decays by the third contributor. This also wires Task 19's asset gate into CI, which is what makes spec §12.1 criterion 6 an enforced property rather than a claim.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_ci_gates.py
+"""The CI config is itself tested: a gate nobody verifies is a gate that rots."""
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_ci_workflow_exists():
+    assert (ROOT / ".github/workflows/ci.yml").is_file()
+
+
+def test_ci_runs_every_gate():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    for gate in ("ruff", "mypy", "pytest"):
+        assert gate in ci, f"CI does not run {gate}"
+
+
+def test_ci_enforces_the_asset_registration_gate():
+    """Spec criterion 6 is only real if CI fails on an unregistered weight file."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "assert_all_assets_registered" in ci or "asset_scan" in ci
+
+
+def test_mypy_is_configured_strict():
+    cfg = (ROOT / "mypy.ini").read_text()
+    assert "strict = True" in cfg or "strict=True" in cfg
+
+
+def test_ruff_bans_silent_exception_handling():
+    """Global constraint: a swallowed error in a fraud detector is an approved fraud."""
+    cfg = (ROOT / "ruff.toml").read_text()
+    # E722 = bare except; BLE = blind except; S110 = try/except/pass
+    assert "E722" in cfg
+    assert "BLE" in cfg or "S110" in cfg
+
+
+def test_no_bare_except_anywhere_in_src():
+    """Enforced here too, so the rule holds even if ruff config drifts."""
+    offenders = []
+    for path in (ROOT / "src").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.strip() == "except:":
+                offenders.append(f"{path}:{n}")
+    assert offenders == [], f"bare except found: {offenders}"
+
+
+def test_no_print_statements_in_src():
+    """Global constraint: structured logging, never print."""
+    offenders = []
+    for path in (ROOT / "src").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.strip().startswith("print("):
+                offenders.append(f"{path}:{n}")
+    assert offenders == [], f"print() found in src: {offenders}"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_ci_gates.py -v`
+Expected: FAIL — the workflow and config files do not exist
+
+- [ ] **Step 3: Write minimal implementation**
+
+```toml
+# ruff.toml
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "S", "BLE", "RET", "SIM"]
+# E722 bare except, BLE001 blind except, S110 try-except-pass: a swallowed error
+# in a fraud detector is a fraud that was approved. Never silence these.
+ignore = ["S101"]  # assert is fine in tests
+
+[lint.per-file-ignores]
+"tests/*" = ["S", "N802"]
+```
+
+```ini
+# mypy.ini
+[mypy]
+python_version = 3.10
+strict = True
+warn_unreachable = True
+files = src/dfd
+
+[mypy-cv2.*]
+ignore_missing_imports = True
+
+[mypy-torch.*]
+ignore_missing_imports = True
+
+[mypy-sklearn.*]
+ignore_missing_imports = True
+
+[mypy-yaml.*]
+ignore_missing_imports = True
+```
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -e .
+      - name: Lint
+        run: ruff check .
+      - name: Types
+        run: mypy --config-file mypy.ini
+      - name: Tests
+        run: pytest -q --cov=src/dfd --cov-fail-under=85
+      - name: Asset registration gate
+        run: |
+          python -c "
+          from dfd.asset_scan import assert_all_assets_registered
+          assert_all_assets_registered('.', 'assets/manifest.yaml')
+          print('all assets registered and commercially cleared')
+          "
+```
+
+Also create `requirements-dev.txt` listing: `pytest`, `pytest-cov`, `ruff`, `mypy`, `numpy`, `opencv-python-headless`, `scikit-learn`, `pyyaml`, `torch`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_ci_gates.py -v && ruff check . && mypy --config-file mypy.ini`
+Expected: 7 tests PASS; ruff and mypy clean. Fix any violations they surface in existing code — that is the point of the gate.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .github ruff.toml mypy.ini requirements-dev.txt pyproject.toml tests/test_ci_gates.py
+git commit -m "feat: CI gates for lint, strict types, coverage and asset registration"
 ```
