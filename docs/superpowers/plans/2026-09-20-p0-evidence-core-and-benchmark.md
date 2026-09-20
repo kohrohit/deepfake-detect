@@ -4257,20 +4257,34 @@ git commit -m "feat: enumerate assets from disk so the release gate cannot pass 
 - Test: `tests/test_audit.py`
 
 **Interfaces:**
-- Consumes: `Evidence`, `Verdict`, `Quality` (Task 1); `FusedResult` (Task 10)
+- Consumes: `Evidence`, `Verdict` (Task 1)
 - Produces: `DfdError` hierarchy; `AuditRecord`, `build_audit_record(...) -> AuditRecord`, `AuditRecord.to_json() -> str`, `record_digest(record) -> str`
 
 **Why this task exists:** spec §7.2 requires every decision to emit an immutable record — input hash, model versions, per-detector LLRs, quality metrics, policy version, decision. It is the artifact that makes a rejection defensible to a regulator and doubles as next-cycle training data. **The original 19-task plan had no task for it; this is a dropped spec requirement, not an enhancement.** Without it the system can decide but cannot account for a decision, which is not shippable in BFSI.
+
+**The record is called immutable and tamper-evident, so it has to be both.** Three ways the obvious implementation is neither, all measured:
+
+1. **`@dataclass(frozen=True)` is shallow.** A `dict` field stays mutable: `record.model_versions["npr"] = "tampered"` raises nothing and *changes the digest*, so a record can be altered after the fact and re-digested to match. Containers are frozen here — `MappingProxyType` for mappings, tuples for sequences — and each is asserted to refuse mutation.
+2. **Excluding `created_at` from the digest makes backdating invisible.** Verified: moving a timestamp from 2026 to 1999 leaves the digest identical. The only reason to exclude it is so two separately-built records compare equal in a test — which weakens the guarantee to fit the test. Instead `created_at` is an **injectable parameter** defaulting to now, so identical records really are identical and the digest covers the timestamp. For an audit record defended to a regulator, the timestamp is among the most attack-relevant fields there is.
+3. **`json.dumps(..., default=str)` silently absorbs anything.** It never raises, so a caller passing a numpy array, bytes, or any other non-JSON value gets it stringified into the record instead of rejected. For a record whose digest is the tamper-evidence, silently absorbing an unexpected type is the wrong failure direction. `default=` is omitted, and a non-JSON value is asserted to raise.
+
+Note also what a PII test must actually do. Asserting `r"\x89PNG" not in r.to_json()` proves nothing — that is seven literal characters no implementation ever inserts, and the assertion passes on a record carrying a whole image. The real discipline is that the record references its input by hash and refuses values it cannot serialise.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_audit.py
+import dataclasses
 import json
+
+import numpy as np
 import pytest
+
 from dfd.audit import AuditRecord, build_audit_record, record_digest
 from dfd.errors import DfdError, InvalidInput
 from dfd.types import Evidence, Verdict
+
+FIXED_TIME = "2026-09-20T10:00:00+00:00"
 
 
 def _ev(name, llr, abstained=False, reason="ok"):
@@ -4287,6 +4301,7 @@ def _record(**kw):
         quality_band="high", ood_score=0.1,
         policy_version="policy-1", threshold=1.0,
         model_versions={"npr": "0.1.0", "sbi": "0.1.0"},
+        created_at=FIXED_TIME,
     )
     base.update(kw)
     return build_audit_record(**base)
@@ -4294,30 +4309,44 @@ def _record(**kw):
 
 def test_record_carries_every_field_a_regulator_would_ask_for():
     r = _record()
-    for field in ("sample_id", "input_sha256", "verdict", "llr_total",
-                  "policy_version", "threshold", "model_versions",
-                  "quality_band", "created_at"):
-        assert getattr(r, field) is not None, field
+    for name in ("sample_id", "input_sha256", "verdict", "llr_total",
+                 "posterior", "policy_version", "threshold", "model_versions",
+                 "quality_band", "ood_score", "created_at", "schema_version"):
+        assert getattr(r, name) is not None, name
 
 
-def test_record_is_immutable():
+def test_rebinding_a_field_raises():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        _record().verdict = Verdict.REAL
+
+
+def test_model_versions_cannot_be_mutated_in_place():
+    """`frozen=True` is shallow: a plain dict field stays writable and
+    mutating it changes the digest, so the record is not immutable at all."""
     r = _record()
-    with pytest.raises(Exception):
-        r.verdict = Verdict.REAL
+    with pytest.raises(TypeError):
+        r.model_versions["npr"] = "tampered"
+
+
+def test_evidence_rows_cannot_be_appended_to():
+    r = _record()
+    with pytest.raises(AttributeError):
+        r.evidence.append({"detector": "ghost"})
 
 
 def test_per_detector_llrs_are_preserved_including_abstentions():
     """An abstention is evidence about the system, not an absence of evidence."""
     r = _record(evidence=[_ev("npr", 2.0),
-                          _ev("sbi", 0.0, abstained=True, reason="weights_absent")])
+                          _ev("sbi", 0.0, abstained=True,
+                              reason="weights_absent")])
     got = {e["detector"]: e for e in r.evidence}
     assert got["sbi"]["abstained"] is True
     assert got["sbi"]["reason"] == "weights_absent"
+    assert got["npr"]["llr"] == 2.0
 
 
 def test_to_json_round_trips():
-    r = _record()
-    d = json.loads(r.to_json())
+    d = json.loads(_record().to_json())
     assert d["sample_id"] == "s1"
     assert d["verdict"] == "fake"
     assert len(d["evidence"]) == 2
@@ -4327,24 +4356,57 @@ def test_digest_is_stable_for_identical_records():
     assert record_digest(_record()) == record_digest(_record())
 
 
-def test_digest_changes_when_any_field_changes():
-    """Tamper-evidence: the digest must not be blind to a changed verdict."""
-    a = record_digest(_record())
-    b = record_digest(_record(verdict=Verdict.REAL))
-    assert a != b
+@pytest.mark.parametrize("field,value", [
+    ("verdict", Verdict.REAL),
+    ("llr_total", 3.3),
+    ("posterior", 0.95),
+    ("sample_id", "s2"),
+    ("input_sha256", "b" * 64),
+    ("quality_band", "low"),
+    ("ood_score", 0.2),
+    ("policy_version", "policy-2"),
+    ("threshold", 1.5),
+    ("model_versions", {"npr": "0.2.0", "sbi": "0.1.0"}),
+    ("created_at", "1999-01-01T00:00:00+00:00"),
+])
+def test_digest_changes_when_any_field_changes(field, value):
+    """Tamper-evidence, field by field. `created_at` is in this list
+    deliberately: excluding it makes backdating a decision invisible."""
+    assert record_digest(_record()) != record_digest(_record(**{field: value}))
 
 
-def test_record_never_contains_image_bytes():
-    """PII discipline: the record references the input by hash, never carries it."""
-    blob = r"\x89PNG"
-    r = _record()
-    assert blob not in r.to_json()
+def test_digest_changes_when_evidence_changes():
+    assert record_digest(_record()) != record_digest(
+        _record(evidence=[_ev("npr", 9.9), _ev("sbi", 1.2)]))
+
+
+def test_a_value_that_cannot_be_serialised_is_refused_not_stringified():
+    """`json.dumps(default=str)` never raises, so an image passed by mistake
+    would be absorbed into the record instead of rejected."""
+    with pytest.raises((InvalidInput, TypeError)):
+        _record(model_versions={"npr": np.zeros((4, 4), dtype=np.uint8)}).to_json()
+
+
+def test_the_record_references_its_input_by_hash_only():
+    d = json.loads(_record().to_json())
+    assert d["input_sha256"] == "a" * 64
+    assert not any(k.startswith("image") or k.endswith("bytes") for k in d)
 
 
 def test_rejects_a_malformed_input_hash():
-    with pytest.raises(InvalidInput) as exc:
+    with pytest.raises(InvalidInput, match="64 lowercase hex"):
         _record(input_sha256="not-a-hash")
-    assert "sha256" in str(exc.value).lower()
+
+
+def test_rejects_an_uppercase_hash():
+    """Case matters: the same digest in two cases would give two records."""
+    with pytest.raises(InvalidInput, match="64 lowercase hex"):
+        _record(input_sha256="A" * 64)
+
+
+def test_rejects_an_empty_sample_id():
+    with pytest.raises(InvalidInput, match="sample_id"):
+        _record(sample_id="")
 
 
 def test_invalid_input_is_a_dfd_error():
@@ -4385,6 +4447,10 @@ Makes a rejection defensible: what was decided, by which model versions, on
 what evidence, under which policy. References the input by SHA-256 and never
 carries image bytes — the record is retained far longer than the media, and
 BFSI face data is sensitive personal data under India's DPDP Act.
+
+Immutable means immutable in depth: `frozen=True` alone leaves dict and list
+fields writable, and mutating one changes the digest, which would let a record
+be altered after the fact and re-digested to match.
 """
 from __future__ import annotations
 
@@ -4392,9 +4458,10 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from typing import Sequence
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
 
 from .errors import InvalidInput
 from .types import Evidence, Verdict
@@ -4403,6 +4470,25 @@ logger = logging.getLogger(__name__)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 AUDIT_SCHEMA_VERSION = "1"
+
+
+def _freeze(value: Any) -> Any:
+    """Deep-freeze the containers a record holds."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """Plain-Python view for serialisation. No `default=` fallback: a value
+    this cannot render must raise rather than be silently stringified."""
+    if isinstance(value, Mapping):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(v) for v in value]
+    return value
 
 
 @dataclass(frozen=True)
@@ -4418,12 +4504,20 @@ class AuditRecord:
     ood_score: float
     policy_version: str
     threshold: float
-    model_versions: dict
+    model_versions: Mapping[str, str]
     created_at: str
 
     def to_json(self) -> str:
-        """Serialise deterministically (sorted keys) so digests are comparable."""
-        return json.dumps(asdict(self), sort_keys=True, default=str)
+        """Serialise deterministically (sorted keys) so digests are comparable.
+
+        `dataclasses.asdict` is deliberately not used: it deep-copies every
+        field value, and a `MappingProxyType` cannot be deep-copied.
+
+        Raises:
+            TypeError: if any field holds a value JSON cannot represent.
+        """
+        payload = {f.name: _thaw(getattr(self, f.name)) for f in fields(self)}
+        return json.dumps(payload, sort_keys=True)
 
 
 def build_audit_record(
@@ -4437,9 +4531,14 @@ def build_audit_record(
     ood_score: float,
     policy_version: str,
     threshold: float,
-    model_versions: dict,
+    model_versions: Mapping[str, str],
+    created_at: str | None = None,
 ) -> AuditRecord:
     """Build an immutable decision record.
+
+    `created_at` is injectable so that two records describing the same decision
+    are genuinely identical. It is covered by `record_digest`: a timestamp
+    outside the digest makes backdating a decision invisible.
 
     Raises:
         InvalidInput: if `sample_id` is empty or `input_sha256` is not a
@@ -4449,17 +4548,18 @@ def build_audit_record(
         raise InvalidInput("sample_id must be a non-empty string")
     if not _SHA256_RE.match(input_sha256 or ""):
         raise InvalidInput(
-            f"input_sha256 must be 64 lowercase hex characters, got {input_sha256!r}")
+            "input_sha256 must be 64 lowercase hex characters, got "
+            f"{input_sha256!r}")
 
     rows = tuple(
-        {
+        MappingProxyType({
             "detector": e.detector,
             "version": e.detector_version,
             "llr": float(e.llr),
             "raw_score": None if e.raw_score is None else float(e.raw_score),
             "abstained": bool(e.abstained),
             "reason": e.reason,
-        }
+        })
         for e in evidence
     )
     record = AuditRecord(
@@ -4474,8 +4574,8 @@ def build_audit_record(
         ood_score=float(ood_score),
         policy_version=policy_version,
         threshold=float(threshold),
-        model_versions=dict(model_versions),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        model_versions=_freeze(dict(model_versions)),
+        created_at=created_at or datetime.now(timezone.utc).isoformat(),
     )
     logger.info("audit record built: sample=%s verdict=%s detectors=%d",
                 sample_id, record.verdict, len(rows))
@@ -4483,19 +4583,25 @@ def build_audit_record(
 
 
 def record_digest(record: AuditRecord) -> str:
-    """Tamper-evident digest over everything except the timestamp."""
-    payload = json.loads(record.to_json())
-    payload.pop("created_at", None)
-    canonical = json.dumps(payload, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    """Tamper-evident digest over the whole record, timestamp included."""
+    return hashlib.sha256(record.to_json().encode()).hexdigest()
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/test_audit.py -v`
-Expected: PASS, 9 tests
+Expected: PASS, 25 tests (14 plus the digest test parametrised over 11 fields).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the tamper-evidence tests can fail**
+
+Two of these guard properties that the obvious implementation silently lacks. Prove each fires:
+
+1. Make `record_digest` drop the timestamp before hashing (`payload = json.loads(record.to_json()); payload.pop("created_at")`). Run `pytest tests/test_audit.py -k digest_changes` and confirm the `created_at` case FAILS while the others still pass. Restore.
+2. Replace `model_versions=_freeze(dict(model_versions))` with `model_versions=dict(model_versions)`. Run `pytest tests/test_audit.py -k mutated` and confirm it FAILS. Restore.
+
+Record all four outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/dfd/errors.py src/dfd/audit.py tests/test_audit.py
