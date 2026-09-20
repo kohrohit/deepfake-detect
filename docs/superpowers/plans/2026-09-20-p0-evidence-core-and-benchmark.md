@@ -3048,19 +3048,31 @@ git commit -m "feat: robustness surface including screen and print re-capture"
 - Test: `tests/bench/test_adversarial.py`
 
 **Interfaces:**
-- Consumes: nothing from `dfd`
-- Produces: `pgd_attack(model, x, y, eps, alpha, steps) -> torch.Tensor`, `adversarial_tpr(model, x, y, eps, fpr) -> float`
+- Consumes: `tpr_at_fpr` (Task 11)
+- Produces: `pgd_attack(model, x, y, eps, alpha, steps, seed) -> torch.Tensor`, `adversarial_tpr(model, x, y, eps, fpr) -> float`
 
 Spec acceptance criterion 8 and §3A. **This is the criterion that makes the state-sponsored threat model real rather than decorative.** A detector whose adversarial TPR is ~0 is recorded as such and demoted to evidence-only.
+
+**The fixture is tuned so that a working attack collapses the number, and a broken one does not.** This matters more than it sounds. The obvious formulation — assert `attacked <= clean` — is satisfied by a `pgd_attack` that returns its input unchanged, because then `attacked == clean`. Worse, the obvious fixture (negatives at mean pixel 0.2, positives at 0.8, eps=0.3) cannot be attacked at all: the attack moves positives the full 0.3 to 0.50, which still ranks above the clean negatives at 0.20, so TPR stays 1.0 even with a *perfect* attack. Both were measured. With negatives at 0.45, positives at 0.55 and eps=0.2:
+
+| attack | TPR@FPR=0.1 |
+|---|---|
+| none (clean) | 1.0 |
+| real PGD | **0.0** |
+| a no-op `pgd_attack` | 1.0 — the test must fail here |
+
+So the assertions are exact values, not an inequality.
+
+**PGD gets a real random start.** Without one this is BIM, not PGD, and — measured — `seed=3` and `seed=999` produce byte-identical tensors, so the `seed` parameter is dead code and its determinism test cannot fail. The start is drawn from an explicit `torch.Generator`, not the global `torch.manual_seed`, so running the attack does not perturb global RNG state for every other test in the suite.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_adversarial.py
-import numpy as np
 import pytest
 import torch
 import torch.nn as nn
+
 from bench.adversarial import adversarial_tpr, pgd_attack
 
 
@@ -3091,49 +3103,104 @@ def _batch(value, n=8):
     return torch.full((n, 3, 8, 8), value, dtype=torch.float32)
 
 
+def _labelled():
+    """Negatives at 0.45, positives at 0.55 — close enough that eps=0.2
+    genuinely flips the ranking. A wider gap makes the attack unmeasurable."""
+    x = torch.cat([_batch(0.45, 16), _batch(0.55, 16)])
+    y = torch.cat([torch.zeros(16, dtype=torch.long),
+                   torch.ones(16, dtype=torch.long)])
+    return x, y
+
+
 def test_pgd_output_stays_within_the_epsilon_ball(model):
     x = _batch(0.5)
-    y = torch.ones(8, dtype=torch.long)
-    adv = pgd_attack(model, x, y, eps=0.03, alpha=0.01, steps=5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.03, alpha=0.01, steps=5)
     assert torch.max(torch.abs(adv - x)).item() <= 0.03 + 1e-6
 
 
 def test_pgd_output_stays_in_valid_pixel_range(model):
     x = _batch(0.99)
-    y = torch.ones(8, dtype=torch.long)
-    adv = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.1, alpha=0.02, steps=5)
     assert adv.min().item() >= 0.0 and adv.max().item() <= 1.0
+
+
+def test_pgd_actually_moves_the_input(model):
+    """A no-op attack must not be able to reach the later assertions."""
+    x = _batch(0.5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.1, alpha=0.02, steps=5)
+    assert not torch.equal(adv, x)
 
 
 def test_pgd_reduces_confidence_on_the_true_class(model):
     x = _batch(0.9)
     y = torch.ones(8, dtype=torch.long)
     before = torch.softmax(model(x), 1)[:, 1].mean().item()
-    adv = pgd_attack(model, x, y, eps=0.2, alpha=0.05, steps=20)
-    after = torch.softmax(model(adv), 1)[:, 1].mean().item()
-    assert after < before
+    after = torch.softmax(model(pgd_attack(model, x, y, eps=0.2, alpha=0.05,
+                                           steps=20)), 1)[:, 1].mean().item()
+    assert after < before - 0.05
 
 
 def test_pgd_is_deterministic_given_a_seed(model):
-    x = _batch(0.7)
-    y = torch.ones(8, dtype=torch.long)
-    a = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5, seed=3)
-    b = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5, seed=3)
-    assert torch.allclose(a, b)
+    x, y = _batch(0.7), torch.ones(8, dtype=torch.long)
+    kw = dict(eps=0.1, alpha=0.02, steps=5)
+    assert torch.equal(pgd_attack(model, x, y, seed=3, **kw),
+                       pgd_attack(model, x, y, seed=3, **kw))
 
 
-def test_adversarial_tpr_is_at_most_clean_tpr(model):
-    x = torch.cat([_batch(0.2, 16), _batch(0.8, 16)])
-    y = torch.cat([torch.zeros(16, dtype=torch.long),
-                   torch.ones(16, dtype=torch.long)])
-    clean = adversarial_tpr(model, x, y, eps=0.0, fpr=0.1)
-    attacked = adversarial_tpr(model, x, y, eps=0.3, fpr=0.1)
-    assert attacked <= clean
+def test_pgd_seed_is_load_bearing(model):
+    """Without a random start the seed is dead code and the determinism
+    test above passes for any implementation, seeded or not."""
+    x, y = _batch(0.7), torch.ones(8, dtype=torch.long)
+    kw = dict(eps=0.1, alpha=0.02, steps=5)
+    assert not torch.equal(pgd_attack(model, x, y, seed=3, **kw),
+                           pgd_attack(model, x, y, seed=999, **kw))
+
+
+def test_pgd_does_not_disturb_global_torch_rng(model):
+    """The attack must not reseed the RNG every other test draws from."""
+    torch.manual_seed(1234)
+    expected = torch.randn(4)
+    torch.manual_seed(1234)
+    pgd_attack(model, _batch(0.5), torch.ones(8, dtype=torch.long),
+               eps=0.1, alpha=0.02, steps=5, seed=7)
+    assert torch.equal(torch.randn(4), expected)
+
+
+def test_clean_tpr_is_perfect_on_this_fixture(model):
+    """Anchors the collapse below: without this, 'attacked == 0.0' could
+    mean the detector never worked."""
+    x, y = _labelled()
+    assert adversarial_tpr(model, x, y, eps=0.0, fpr=0.1) == 1.0
+
+
+def test_attack_collapses_tpr_to_zero(model):
+    """Acceptance criterion 8. Exact values, not `attacked <= clean` — that
+    inequality is satisfied by an attack that does nothing at all."""
+    x, y = _labelled()
+    assert adversarial_tpr(model, x, y, eps=0.2, fpr=0.1) == 0.0
+
+
+def test_negatives_are_left_clean(model):
+    """The adversary wants fakes to read as real, not the reverse; attacking
+    negatives too would understate the detector by moving the threshold."""
+    x, y = _labelled()
+    before = x[y == 0].clone()
+    adversarial_tpr(model, x, y, eps=0.2, fpr=0.1)
+    assert torch.equal(x[y == 0], before)
+
+
+def test_zero_epsilon_is_the_identity(model):
+    x = _batch(0.5)
+    assert torch.equal(
+        pgd_attack(model, x, torch.ones(8, dtype=torch.long), eps=0.0), x)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/bench/test_adversarial.py -v`
+Run: `python3 -m pytest tests/bench/test_adversarial.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'bench.adversarial'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -3144,7 +3211,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.adversarial'`
 
 The threat model assumes the adversary holds our weights. Under that assumption
 a gradient attack against any differentiable detector is not a risk — it is the
-expected case. Measuring it is what turns 'state-sponsored threat model' from a
+expected case. Measuring it is what turns "state-sponsored threat model" from a
 sentence in a document into a number in a report.
 
 A detector whose adversarial TPR collapses is not thereby useless. It is
@@ -3152,7 +3219,6 @@ demoted from decider to evidence contributor (spec §3A.4).
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -3161,15 +3227,22 @@ from .metrics import tpr_at_fpr
 
 def pgd_attack(model, x: torch.Tensor, y: torch.Tensor, eps: float = 0.03,
                alpha: float = 0.01, steps: int = 10,
-               seed: int | None = None) -> torch.Tensor:
-    """Projected gradient descent within an L-inf ball, clamped to [0, 1]."""
-    if seed is not None:
-        torch.manual_seed(seed)
+               seed: int = 0) -> torch.Tensor:
+    """Projected gradient descent within an L-inf ball, clamped to [0, 1].
+
+    The random start is what distinguishes PGD from iterative FGSM, and it is
+    drawn from a local `torch.Generator` so that attacking does not perturb the
+    global RNG state the rest of the suite draws from.
+    """
     x = x.detach()
     if eps == 0.0:
         return x.clone()
 
-    adv = x.clone().detach()
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    start = (torch.rand(x.shape, generator=generator) * 2.0 - 1.0) * eps
+    adv = torch.clamp(x + start.to(x.device), 0.0, 1.0).detach()
+
     for _ in range(steps):
         adv.requires_grad_(True)
         loss = F.cross_entropy(model(adv), y)
@@ -3184,29 +3257,34 @@ def pgd_attack(model, x: torch.Tensor, y: torch.Tensor, eps: float = 0.03,
 
 def adversarial_tpr(model, x: torch.Tensor, y: torch.Tensor, eps: float,
                     fpr: float = 0.01, alpha: float | None = None,
-                    steps: int = 10) -> float:
+                    steps: int = 10, seed: int = 0) -> float:
     """TPR@FPR after attacking only the positives (the adversary's goal).
 
     Negatives are left clean: a fraudster wants fakes to read as real, not the
-    reverse.
+    reverse, and attacking negatives too would move the threshold and
+    understate the detector.
     """
     alpha = alpha if alpha is not None else max(eps / 4.0, 1e-4)
     pos = y == 1
     adv = x.clone()
-    if eps > 0 and pos.any():
+    if eps > 0 and bool(pos.any()):
         adv[pos] = pgd_attack(model, x[pos], y[pos], eps=eps, alpha=alpha,
-                              steps=steps, seed=0)
+                              steps=steps, seed=seed)
     with torch.no_grad():
         scores = torch.softmax(model(adv), dim=1)[:, 1].cpu().numpy()
-    return tpr_at_fpr(scores, y.cpu().numpy(), fpr=fpr)
+    return tpr_at_fpr(scores, y.cpu().numpy(), fpr)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/bench/test_adversarial.py -v`
-Expected: PASS, 5 tests
+Run: `python3 -m pytest tests/bench/test_adversarial.py -v`
+Expected: PASS, 11 tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the collapse test can fail**
+
+`test_attack_collapses_tpr_to_zero` is the assertion carrying acceptance criterion 8, and the formulation it replaced could not fail. Prove this one does: temporarily make `pgd_attack` return `x.clone()` unconditionally, run `pytest tests/bench/test_adversarial.py -k collapses`, and confirm it FAILS reporting 1.0 where 0.0 was expected. Restore, confirm it passes. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/adversarial.py tests/bench/test_adversarial.py
