@@ -35,21 +35,33 @@ def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
     for path in sorted(Path(root).glob("*/results.json")):
         try:
             d = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
+            if not isinstance(d, dict):
+                raise TypeError(
+                    f"expected a JSON object, got {type(d).__name__}")
+            decision = d.get("decision")
+            decision = decision if isinstance(decision, dict) else {}
+            scan = d.get("scan")
+            scan = scan if isinstance(scan, dict) else {}
+            session = CaptureSession(
+                session_id=d.get("session_id", path.parent.name),
+                folder=str(path.parent),
+                swapped=bool(d.get("swapped", False)),
+                approved=bool(decision.get("approved", False)),
+                scan_verdict=scan.get("verdict"),
+                frame_count=int(d.get("frame_count", 0)),
+            )
+        except (json.JSONDecodeError, OSError, TypeError, ValueError,
+                KeyError, AttributeError) as exc:
             # Never silent: a dropped session may be one of the five that are
-            # the actual fraud, and aggregate counts would not reveal it.
+            # the actual fraud, and aggregate counts would not reveal it. This
+            # catches JSON that parses fine but is the wrong shape (a list, a
+            # string, a field of the wrong type), not just decode/IO failures
+            # — one malformed session must not take the other 441 down with it.
             logger.warning("skipping unreadable session %s: %s",
                            path.parent.name, exc)
             skipped.append(path.parent.name)
             continue
-        out.append(CaptureSession(
-            session_id=d.get("session_id", path.parent.name),
-            folder=str(path.parent),
-            swapped=bool(d.get("swapped", False)),
-            approved=bool((d.get("decision") or {}).get("approved", False)),
-            scan_verdict=(d.get("scan") or {}).get("verdict"),
-            frame_count=int(d.get("frame_count", 0)),
-        ))
+        out.append(session)
     if skipped:
         logger.warning("loaded %d capture sessions, skipped %d: %s",
                        len(out), len(skipped), ", ".join(skipped))

@@ -38,16 +38,35 @@ def load_rd_cache(root: str | Path) -> list[RDResult]:
     for path in sorted(Path(root).glob("*/result.json")):
         try:
             d = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+            if not isinstance(d, dict):
+                raise TypeError(
+                    f"expected a JSON object, got {type(d).__name__}")
+            models = d.get("models") or []
+            if not isinstance(models, list):
+                raise TypeError(
+                    f"expected 'models' to be a list, got {type(models).__name__}")
+            model_scores: dict[str, float] = {}
+            model_verdicts: dict[str, str] = {}
+            for m in models:
+                if not isinstance(m, dict):
+                    raise TypeError("model entry is not a JSON object")
+                model_scores[m["name"]] = float(m["score"])
+                model_verdicts[m["name"]] = m.get("verdict", "")
+            result = RDResult(
+                cache_key=path.parent.name,
+                verdict=d.get("verdict", ""),
+                score=float(d.get("score", float("nan"))),
+                model_scores=model_scores,
+                model_verdicts=model_verdicts,
+            )
+        except (json.JSONDecodeError, OSError, TypeError, ValueError,
+                KeyError):
+            # Skip a result that parses but is the wrong shape (a list, a
+            # string, a non-numeric score, a model entry missing a field)
+            # exactly as a decode/IO failure is skipped — one bad cache entry
+            # must not take down the other 23.
             continue
-        models = d.get("models") or []
-        out.append(RDResult(
-            cache_key=path.parent.name,
-            verdict=d.get("verdict", ""),
-            score=float(d.get("score", float("nan"))),
-            model_scores={m["name"]: float(m["score"]) for m in models},
-            model_verdicts={m["name"]: m.get("verdict", "") for m in models},
-        ))
+        out.append(result)
     return out
 
 

@@ -45,16 +45,54 @@ def test_malformed_session_is_skipped_not_fatal(tmp_path):
     assert len(load_capture_sessions(tmp_path)) == 1
 
 
+def test_wrong_shape_session_is_skipped_not_fatal(tmp_path):
+    """A results.json that parses fine but is a list or a string, not an
+    object, must not take the other 441 sessions down with it."""
+    (tmp_path / "listshaped").mkdir()
+    (tmp_path / "listshaped" / "results.json").write_text(json.dumps([1, 2, 3]))
+    (tmp_path / "stringshaped").mkdir()
+    (tmp_path / "stringshaped" / "results.json").write_text(json.dumps("nope"))
+    _session(tmp_path, "ok", False, True)
+    out = load_capture_sessions(tmp_path)
+    assert [s.session_id for s in out] == ["ok"]
+
+
+def test_non_numeric_frame_count_is_skipped_not_fatal(tmp_path):
+    d = tmp_path / "badcount"
+    d.mkdir()
+    (d / "results.json").write_text(json.dumps({
+        "session_id": "badcount", "swapped": False, "frame_count": "many",
+        "scan": {"verdict": "LIVE"},
+        "decision": {"approved": True, "reason": "approved"},
+    }))
+    _session(tmp_path, "ok", False, True)
+    out = load_capture_sessions(tmp_path)
+    assert [s.session_id for s in out] == ["ok"]
+
+
 def test_a_skipped_session_is_reported_not_swallowed(tmp_path, caplog):
     """442 sessions, of which exactly 5 are the fraud that matters. A session
-    dropped in silence could be one of the 5 and nobody would know."""
+    dropped in silence could be one of the 5 and nobody would know.
+
+    Neither assertion below can be satisfied by the JSONDecodeError message
+    alone: that message ("Expecting property name enclosed in double quotes:
+    line 1 column 2 (char 1)") contains the digit "1" three times over on its
+    own, so a bare `"1" in caplog.text` would pass even if the skip count
+    were never computed at all. Asserting the literal phrase the summary log
+    line emits (`"skipped 1"`) ties the check to the actual count. Likewise,
+    "broken" only survives here because the session name is threaded through
+    real tracking state (the `skipped` list) into the logged text, not
+    because it happens to appear in the parse-error string — verified by
+    stripping the name out of both log format strings, which makes this
+    assertion fail as expected.
+    """
     (tmp_path / "broken").mkdir()
     (tmp_path / "broken" / "results.json").write_text("{not json")
     _session(tmp_path, "ok", False, True)
     with caplog.at_level(logging.WARNING):
         load_capture_sessions(tmp_path)
     assert "broken" in caplog.text
-    assert "1" in caplog.text
+    assert "skipped 1" in caplog.text
 
 
 @pytest.mark.parametrize("frame_count", [0, 1, 37, 900])

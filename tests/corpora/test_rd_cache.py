@@ -74,3 +74,28 @@ def test_missing_models_key_does_not_crash(tmp_path):
     (d / "result.json").write_text(json.dumps({"verdict": "AUTHENTIC", "score": 0.01}))
     out = load_rd_cache(tmp_path)
     assert out[0].model_scores == {}
+
+
+def test_wrong_shape_result_is_skipped_not_fatal(tmp_path):
+    """A result.json that parses fine but is a list, not an object, must not
+    take the rest of the 24-entry cache down with it."""
+    d = tmp_path / "listshaped"
+    d.mkdir()
+    (d / "result.json").write_text(json.dumps([1, 2, 3]))
+    _write(tmp_path, "ok", "AUTHENTIC", 0.01,
+           [{"name": "m1", "verdict": "AUTHENTIC", "score": 0.01}])
+    out = load_rd_cache(tmp_path)
+    assert [r.cache_key for r in out] == ["ok"]
+
+
+def test_non_numeric_score_is_skipped_not_fatal(tmp_path):
+    d = tmp_path / "badscore"
+    d.mkdir()
+    (d / "result.json").write_text(json.dumps({
+        "verdict": "MANIPULATED", "score": "high",
+        "models": [{"name": "m1", "verdict": "MANIPULATED", "score": 0.99}],
+    }))
+    _write(tmp_path, "ok", "AUTHENTIC", 0.01,
+           [{"name": "m1", "verdict": "AUTHENTIC", "score": 0.01}])
+    out = load_rd_cache(tmp_path)
+    assert [r.cache_key for r in out] == ["ok"]
