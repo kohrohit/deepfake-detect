@@ -1,0 +1,3 @@
+# Every dataset and weight file used anywhere in this repo must appear here.
+# Fails closed: unregistered == non-commercial. See spec §11.
+assets: {}
