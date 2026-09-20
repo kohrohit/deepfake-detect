@@ -1879,7 +1879,16 @@ def fuse(evidence, n_frames: int = 1, ess: float | None = None) -> FusedResult:
     # observations, not with frame count.
     if n_frames > 1:
         eff = ess if ess is not None else 1.0
-        total *= math.sqrt(max(1.0, eff) / float(n_frames))
+        # LINEAR in ESS, not sqrt. Log-likelihood ratios ADD for independent
+        # evidence, so n observations worth `eff` independent ones carry
+        # eff * per_frame_llr -- a factor of eff/n. sqrt scaling belongs to
+        # standard errors, not additive evidence. Under sqrt, 900 identical
+        # frames still yielded 30.0, saturating the cap and reproducing the
+        # very "confidently wrong" failure this discount exists to prevent.
+        # NOTE: this applies ONLY when `evidence` is one entry PER FRAME.
+        # Detectors in this repo aggregate internally (probs.mean()), so their
+        # Evidence is already whole-sample -- call with n_frames=1 and no discount.
+        total *= max(1.0, eff) / float(n_frames)
 
     total = max(-MAX_TOTAL_LLR, min(MAX_TOTAL_LLR, total))
 
