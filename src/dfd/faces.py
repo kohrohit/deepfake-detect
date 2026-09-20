@@ -1,19 +1,29 @@
 """Face detection and alignment via OpenCV YuNet (MIT, see assets/manifest.yaml).
 
-Fails soft: a missing weight file yields zero faces with a stated reason, never
-an exception and never a fabricated detection. This keeps CI hermetic and keeps
-the whole pipeline honest about what it could not measure.
+Fails soft when the weight file is absent: yields zero faces with a stated reason,
+never an exception and never a fabricated detection. This keeps CI hermetic and
+keeps the whole pipeline honest about what it could not measure.
+
+A corrupted (present but unparseable) model file will raise cv2.error, which is
+not caught — silently treating corruption as absence would hide deployment failures.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, overload
 
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 WEIGHTS_ABSENT = "weights_absent"
 OK = "ok"
+
+# YuNet's conventional default confidence threshold. Unvalidated against our data.
+DEFAULT_SCORE_THRESHOLD = 0.7
 
 DEFAULT_MODEL = Path("assets/models/face_detection_yunet_2023mar.onnx")
 
@@ -24,19 +34,46 @@ class FaceBox:
     y: int
     w: int
     h: int
-    landmarks: np.ndarray  # (5, 2): right eye, left eye, nose, right mouth, left mouth
+    landmarks: np.ndarray  # (5, 2) landmark points. YuNet's documented order is believed to be
+    # right eye, left eye, nose, right mouth corner, left mouth corner — but this
+    # has NOT been verified against real model output in this repo (no weights on
+    # disk). Only inter-ocular DISTANCE is consumed today, which is symmetric and
+    # therefore insensitive to the order. Verify before any consumer needs eye
+    # identity (roll correction, gaze).
     score: float
+
+
+@overload
+def detect_faces(
+    frame: np.ndarray,
+    model_path: str | Path = DEFAULT_MODEL,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
+    with_reason: Literal[False] = False,
+) -> list[FaceBox]: ...
+
+
+@overload
+def detect_faces(
+    frame: np.ndarray,
+    model_path: str | Path = DEFAULT_MODEL,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
+    with_reason: Literal[True] = ...,
+) -> tuple[list[FaceBox], str]: ...
 
 
 def detect_faces(
     frame: np.ndarray,
     model_path: str | Path = DEFAULT_MODEL,
-    score_threshold: float = 0.7,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     with_reason: bool = False,
-):
-    """Detect faces. Returns [] (and a reason) when the model file is absent."""
+) -> list[FaceBox] | tuple[list[FaceBox], str]:
+    """Detect faces. Returns [] (and a reason) when the model file is absent.
+
+    May raise cv2.error if the model file is present but corrupt.
+    """
     path = Path(model_path)
     if not path.exists():
+        logger.warning(f"Face detector weights absent at {path}")
         return ([], WEIGHTS_ABSENT) if with_reason else []
 
     h, w = frame.shape[:2]
@@ -49,7 +86,9 @@ def detect_faces(
         for f in faces:
             x, y, bw, bh = (int(v) for v in f[:4])
             lms = np.array(f[4:14], dtype=np.float64).reshape(5, 2)
+            lms.setflags(write=False)
             out.append(FaceBox(x=x, y=y, w=bw, h=bh, landmarks=lms, score=float(f[14])))
+    logger.debug(f"Detected {len(out)} faces")
     return (out, OK) if with_reason else out
 
 
