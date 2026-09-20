@@ -416,6 +416,14 @@ explicit guard:
    giveaway. *Guard:* one detector, one alignment, applied blind to label.
 5. **Threshold selected on test set.** *Guard:* operating points frozen on
    validation, applied untouched.
+6. **Demographic blindness.** An aggregate TPR@FPR conceals a detector whose
+   false-positive rate differs by skin tone, age or gender. A genuine applicant
+   rejected because the detector was calibrated on lighter-skinned Western faces
+   is a discrimination finding with a regulator attached, not a tuning issue —
+   and aggregate metrics hide it perfectly. *Guard:* report FPR and TPR **per
+   demographic stratum as a spread, never a mean**, and fail the run when the
+   inter-stratum FPR ratio exceeds a configured ceiling. Candidate corpus:
+   AI-Face (CVPR 2025), a million-scale demographically annotated forgery set.
 
 ### 8.3 Metrics
 
@@ -634,6 +642,10 @@ mistake that let a 96% score with 40% internal dissent look like a win.
 10. Every benchmark run is reproducible from a recorded seed, dataset manifest
     hash and model-version set, so results remain auditable and comparable
     across the decay loop.
+11. **Per-stratum FPR parity reported as a spread**, with the inter-stratum FPR
+    ratio surfaced as a headline number rather than buried. A system that
+    rejects one demographic group at multiple times the rate of another is not
+    shippable in BFSI regardless of its aggregate TPR.
 
 ---
 

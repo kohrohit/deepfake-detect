@@ -2096,7 +2096,7 @@ git commit -m "feat: fraud-relevant metrics with group-wise bootstrap CIs"
 
 ---
 
-### Task 12: The five evaluation-hygiene guards
+### Task 12: The six evaluation-hygiene guards
 
 **Files:**
 - Create: `bench/guards.py`
@@ -2104,7 +2104,7 @@ git commit -m "feat: fraud-relevant metrics with group-wise bootstrap CIs"
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `GuardViolation`, `check_identity_disjoint(train_ids, test_ids, embeddings, threshold) -> IdentityReport`, `check_video_level(sample_ids, groups)`, `check_compression_coverage(records, required)`, `check_uniform_preprocessing(records)`, `check_threshold_provenance(threshold_source)`
+- Produces: `GuardViolation`, `IdentityReport`, `ParityReport`, `check_identity_disjoint(train_ids, test_ids, embeddings, threshold) -> IdentityReport`, `check_video_level(sample_ids, groups)`, `check_compression_coverage(records, required)`, `check_uniform_preprocessing(records)`, `check_threshold_provenance(threshold_source)`, `check_demographic_parity(scores, labels, strata, threshold, max_fpr_ratio) -> ParityReport`
 
 Spec §8.2. **These are the difference between a real benchmark and a flattering one.** Each guard raises rather than warns — a benchmark that can be silently run dirty will be.
 
@@ -2115,8 +2115,9 @@ Spec §8.2. **These are the difference between a real benchmark and a flattering
 import numpy as np
 import pytest
 from bench.guards import (
-    GuardViolation, check_compression_coverage, check_identity_disjoint,
-    check_threshold_provenance, check_uniform_preprocessing, check_video_level,
+    GuardViolation, check_compression_coverage, check_demographic_parity,
+    check_identity_disjoint, check_threshold_provenance,
+    check_uniform_preprocessing, check_video_level,
 )
 
 
@@ -2184,6 +2185,46 @@ def test_threshold_from_test_set_is_rejected():
 
 def test_threshold_from_validation_is_accepted():
     check_threshold_provenance("validation")
+
+
+def test_demographic_parity_reports_a_spread_not_a_mean():
+    """Guard 6: an aggregate FPR hides a group rejected three times as often."""
+    scores = [0.1, 0.2, 0.9, 0.95] * 5
+    labels = [0, 0, 0, 0] * 5
+    strata = (["A"] * 2 + ["B"] * 2) * 5
+    rep = check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                   max_fpr_ratio=100.0)
+    assert set(rep.fpr_by_stratum) == {"A", "B"}
+    assert rep.fpr_by_stratum["B"] > rep.fpr_by_stratum["A"]
+
+
+def test_demographic_parity_raises_when_the_ratio_exceeds_the_ceiling():
+    scores = [0.1, 0.1, 0.9, 0.9] * 5
+    labels = [0, 0, 0, 0] * 5
+    strata = (["A"] * 2 + ["B"] * 2) * 5
+    with pytest.raises(GuardViolation) as exc:
+        check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                 max_fpr_ratio=2.0)
+    assert "fpr" in str(exc.value).lower()
+
+
+def test_demographic_parity_passes_when_groups_are_treated_alike():
+    scores = [0.1, 0.9, 0.1, 0.9] * 5
+    labels = [0, 0, 0, 0] * 5
+    strata = (["A"] * 2 + ["B"] * 2) * 5
+    rep = check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                   max_fpr_ratio=2.0)
+    assert rep.max_fpr_ratio == pytest.approx(1.0)
+
+
+def test_demographic_parity_ignores_strata_with_no_negatives():
+    """A stratum with no genuine samples has no measurable FPR; do not divide by zero."""
+    scores = [0.1, 0.9, 0.9, 0.9]
+    labels = [0, 0, 1, 1]
+    strata = ["A", "A", "B", "B"]
+    rep = check_demographic_parity(scores, labels, strata, threshold=0.5,
+                                   max_fpr_ratio=2.0)
+    assert "B" not in rep.fpr_by_stratum
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2195,7 +2236,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.guards'`
 
 ```python
 # bench/guards.py
-"""The five evaluation-hygiene guards (spec §8.2).
+"""The six evaluation-hygiene guards (spec §8.2).
 
 Each raises rather than warns. A benchmark that can be silently run dirty will
 be run dirty, and every one of these failures inflates results in the flattering
@@ -2301,18 +2342,73 @@ def check_threshold_provenance(source: str) -> None:
     if source != "validation":
         raise GuardViolation(
             f"threshold source must be 'validation', got {source!r}")
+
+
+@dataclass(frozen=True)
+class ParityReport:
+    fpr_by_stratum: dict
+    tpr_by_stratum: dict
+    max_fpr_ratio: float
+    ceiling: float
+
+
+def check_demographic_parity(scores, labels, strata, threshold: float,
+                             max_fpr_ratio: float = 2.0) -> ParityReport:
+    """Guard 6 — per-stratum error parity (spec §8.2 guard 6).
+
+    An aggregate FPR of 1% is compatible with 0.3% on one group and 4% on
+    another. The applicants wrongly rejected are not distributed evenly, and
+    the aggregate is precisely the statistic that conceals it.
+
+    Reports the spread and fails when the inter-stratum FPR ratio exceeds the
+    ceiling. Strata with no genuine (negative) samples have no measurable FPR
+    and are excluded rather than assumed clean.
+    """
+    s = np.asarray(scores, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    g = np.asarray(strata)
+
+    fpr: dict[str, float] = {}
+    tpr: dict[str, float] = {}
+    for stratum in np.unique(g):
+        m = g == stratum
+        neg = m & (y == 0)
+        pos = m & (y == 1)
+        if neg.sum() > 0:
+            fpr[str(stratum)] = float((s[neg] > threshold).mean())
+        if pos.sum() > 0:
+            tpr[str(stratum)] = float((s[pos] > threshold).mean())
+
+    ratio = 1.0
+    if len(fpr) >= 2:
+        values = [v for v in fpr.values()]
+        lo = min(values)
+        hi = max(values)
+        # An absolute floor keeps a 0%-vs-0.5% difference from reading as infinite.
+        ratio = hi / max(lo, 1e-3)
+
+    report = ParityReport(fpr_by_stratum=fpr, tpr_by_stratum=tpr,
+                          max_fpr_ratio=float(ratio), ceiling=max_fpr_ratio)
+    if ratio > max_fpr_ratio:
+        worst = max(fpr, key=fpr.get)
+        best = min(fpr, key=fpr.get)
+        raise GuardViolation(
+            f"demographic FPR disparity {ratio:.2f}x exceeds ceiling "
+            f"{max_fpr_ratio:.2f}x: {worst}={fpr[worst]:.4f} vs "
+            f"{best}={fpr[best]:.4f}")
+    return report
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/bench/test_guards.py -v`
-Expected: PASS, 11 tests
+Expected: PASS, 15 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add bench/guards.py tests/bench/test_guards.py
-git commit -m "feat: five evaluation-hygiene guards that raise rather than warn"
+git commit -m "feat: six evaluation-hygiene guards that raise rather than warn"
 ```
 
 ---
@@ -3468,7 +3564,7 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 
 ## Self-Review
 
-**Spec coverage.** §5.1 Sample abstraction → Task 1. §5.2 LLR currency → Tasks 9, 10. §5.3 quality gate → Tasks 3, 6. §6 portfolio (slots A, C, E) → Tasks 7, 8. §7.1 calibration → Task 9. §7 four verdicts + disagreement → Tasks 1, 10. §8.1 LOGO → Task 13. §8.2 five guards → Task 12. §8.3 metrics and robustness → Tasks 11, 14. §8.4 head-to-head → Tasks 16, 17. §9.5 ESS discount → Task 10. §11 manifest → Tasks 2, 4, 7, 8. §3A adversarial → Task 15. Principle 9 randomisation → Task 6 `select_subset`. Principle 10 reconstructability → Task 17.
+**Spec coverage.** §5.1 Sample abstraction → Task 1. §5.2 LLR currency → Tasks 9, 10. §5.3 quality gate → Tasks 3, 6. §6 portfolio (slots A, C, E) → Tasks 7, 8. §7.1 calibration → Task 9. §7 four verdicts + disagreement → Tasks 1, 10. §8.1 LOGO → Task 13. §8.2 six guards (incl. demographic parity) → Task 12. §8.3 metrics and robustness → Tasks 11, 14. §8.4 head-to-head → Tasks 16, 17. §9.5 ESS discount → Task 10. §11 manifest → Tasks 2, 4, 7, 8. §3A adversarial → Task 15. Principle 9 randomisation → Task 6 `select_subset`. Principle 10 reconstructability → Task 17.
 
 **Known gaps, deliberately deferred and recorded here so they are not forgotten:**
 
