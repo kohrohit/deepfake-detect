@@ -2776,21 +2776,63 @@ git commit -m "feat: leave-one-generator-out split construction"
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `PERTURBATIONS: dict[str, Callable]`, `apply_perturbation(img, name, **kw) -> np.ndarray`, `robustness_sweep(img) -> dict[str, np.ndarray]`
+- Produces: `PERTURBATIONS: dict[str, Callable]`, `JPEG_QUALITIES`, `apply_perturbation(img, name, **kw) -> np.ndarray`, `robustness_sweep(img) -> dict[str, np.ndarray]`
 
 Spec §8.3 and acceptance criterion 9. **Screenshot-of-screen and print-recapture are the cheapest laundering steps available to any adversary** and are routinely skipped in published evaluations.
+
+**Two things this task must get right, both measured rather than assumed.**
+
+*The sweep is a curve, not a point.* Spec §8.3 asks for a "JPEG quality sweep". One JPEG at one quality cannot show where a detector falls off, which is the only thing the sweep is for. `robustness_sweep` emits one entry per quality in `JPEG_QUALITIES`.
+
+*Each perturbation is asserted to do the thing its name claims.* Shape-and-dtype assertions pass against a stub that does no work — a defect class this codebase has shipped repeatedly. The mechanism here is high-frequency energy, because that is the evidence NPR and every frequency-domain detector depends on. Measured on a structured 128×128 test image (Laplacian mean, ratio to clean, min/max over five jittered draws):
+
+| perturbation | ratio | assertion |
+|---|---|---|
+| `resize` | 0.231–0.233 | `< 0.5` |
+| `blur` | 0.130–0.131 | `< 0.3` |
+| `noise` | 1.018–1.022 | `> 1.0` — noise **adds** high frequency |
+| `screenshot_recapture` | 0.360–0.364 | `< 0.6` |
+| `print_recapture` | 0.307–0.309 | `< 0.6` |
+
+**JPEG is deliberately absent from that table.** Its blocking artefacts add edges at block boundaries, so high-frequency energy across q=90→10 runs 0.97, 0.98, 0.97, 0.95, 1.00 — flat and non-monotonic. JPEG is asserted on *distortion* instead, which is monotonic over the same sweep (mean |diff| 14.77, 14.82, 15.24, 17.32, 19.08). Do not "fix" the JPEG case by moving it into the energy table.
+
+The fixture is a structured image — gradients, a block edge, fine scanlines — not uniform noise. On uniform noise JPEG *raises* high-frequency energy (1.10×), so any mechanism assertion written against a noise fixture measures the fixture.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_robustness.py
+import cv2
 import numpy as np
 import pytest
-from bench.robustness import PERTURBATIONS, apply_perturbation, robustness_sweep
+
+from bench.robustness import (
+    JPEG_QUALITIES, PERTURBATIONS, apply_perturbation, robustness_sweep,
+)
 
 
 def _img(h=128, w=128):
-    return np.random.default_rng(0).integers(0, 255, (h, w, 3), dtype=np.uint8)
+    """Structured: two gradients, a hard block edge, and fine scanlines.
+
+    Uniform noise is the wrong fixture here — JPEG raises high-frequency
+    energy on it, so mechanism assertions would measure the fixture.
+    """
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, :, 0] = np.linspace(0, 255, w, dtype=np.uint8)[None, :]
+    img[:, :, 1] = np.linspace(0, 255, h, dtype=np.uint8)[:, None]
+    img[h // 4:3 * h // 4, w // 4:3 * w // 4] = 220
+    img[::4, :] = 40
+    return img
+
+
+def _hf_energy(img):
+    """Mean |Laplacian| — the high-frequency evidence detectors depend on."""
+    grey = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    return float(np.abs(cv2.Laplacian(grey, cv2.CV_32F)).mean())
+
+
+def _distortion(a, b):
+    return float(np.abs(a.astype(np.int32) - b.astype(np.int32)).mean())
 
 
 def test_every_perturbation_preserves_shape_and_dtype():
@@ -2804,40 +2846,72 @@ def test_every_perturbation_preserves_shape_and_dtype():
 def test_every_perturbation_actually_changes_the_image():
     img = _img()
     for name in PERTURBATIONS:
-        out = apply_perturbation(img, name)
-        assert not np.array_equal(out, img), f"{name} was a no-op"
+        assert not np.array_equal(apply_perturbation(img, name), img), name
 
 
-def test_jpeg_quality_is_monotonic_in_degradation():
+@pytest.mark.parametrize("name,limit", [
+    ("resize", 0.5), ("blur", 0.3),
+    ("screenshot_recapture", 0.6), ("print_recapture", 0.6),
+])
+def test_perturbation_destroys_high_frequency_evidence(name, limit):
+    """The mechanism, not just 'the pixels changed'. Measured ratios are
+    0.23, 0.13, 0.36 and 0.31 — these limits carry real margin."""
     img = _img()
-    hi = apply_perturbation(img, "jpeg", quality=95)
-    lo = apply_perturbation(img, "jpeg", quality=20)
-    assert np.abs(lo.astype(int) - img).mean() > np.abs(hi.astype(int) - img).mean()
+    assert _hf_energy(apply_perturbation(img, name)) < limit * _hf_energy(img)
 
 
-def test_screenshot_recapture_is_present():
-    """The cheapest laundering step an adversary has. Must be measured."""
-    assert "screenshot_recapture" in PERTURBATIONS
+def test_noise_adds_high_frequency_rather_than_removing_it():
+    """Asserting every perturbation lowers HF energy would be wrong."""
+    img = _img()
+    assert _hf_energy(apply_perturbation(img, "noise")) > _hf_energy(img)
 
 
-def test_print_recapture_is_present():
-    assert "print_recapture" in PERTURBATIONS
+def test_jpeg_distortion_rises_monotonically_as_quality_falls():
+    """JPEG is asserted on distortion, not high-frequency energy: its
+    blocking artefacts ADD edges, so HF energy is flat and non-monotonic
+    across the sweep."""
+    img = _img()
+    qualities = sorted(JPEG_QUALITIES, reverse=True)
+    d = [_distortion(apply_perturbation(img, "jpeg", quality=q), img)
+         for q in qualities]
+    assert d == sorted(d), dict(zip(qualities, d))
+    assert d[-1] > d[0]
 
 
-def test_sweep_returns_one_entry_per_perturbation_plus_clean():
+def test_sweep_covers_the_whole_jpeg_quality_curve():
+    """Spec §8.3 asks for a sweep. One point is not a curve."""
+    out = robustness_sweep(_img())
+    for q in JPEG_QUALITIES:
+        assert f"jpeg_q{q}" in out
+    assert len(JPEG_QUALITIES) >= 4
+
+
+def test_sweep_returns_clean_plus_every_non_jpeg_perturbation():
     out = robustness_sweep(_img())
     assert "clean" in out
-    assert set(PERTURBATIONS).issubset(set(out))
+    assert np.array_equal(out["clean"], _img())
+    for name in PERTURBATIONS:
+        if name != "jpeg":
+            assert name in out, name
 
 
-def test_unknown_perturbation_raises():
-    with pytest.raises(KeyError):
+def test_sweep_is_deterministic():
+    """The harness's whole value is reproducibility; two perturbations draw
+    from RNGs and nothing else pins them."""
+    a, b = robustness_sweep(_img()), robustness_sweep(_img())
+    assert set(a) == set(b)
+    for k in a:
+        assert np.array_equal(a[k], b[k]), k
+
+
+def test_unknown_perturbation_raises_naming_the_unknown_name():
+    with pytest.raises(KeyError, match="teleport"):
         apply_perturbation(_img(), "teleport")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/bench/test_robustness.py -v`
+Run: `python3 -m pytest tests/bench/test_robustness.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'bench.robustness'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2848,13 +2922,21 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.robustness'`
 
 Includes the two physical re-capture paths that published evaluations usually
 skip and that any adversary can perform for free: photographing a screen, and
-printing then re-photographing. Both destroy the high-frequency evidence most
-detectors depend on.
+printing then re-photographing. Both destroy roughly two thirds of the image's
+high-frequency energy, which is the evidence most detectors depend on.
+
+Every perturbation here is a pure function of its input: the two that draw
+noise take an explicit seed with a fixed default, so a sweep is reproducible.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import cv2
 import numpy as np
+
+#: The JPEG quality curve. Spec §8.3 asks for a sweep; one point is not a curve.
+JPEG_QUALITIES = (90, 70, 50, 30, 10)
 
 
 def _jpeg(img: np.ndarray, quality: int = 50) -> np.ndarray:
@@ -2882,8 +2964,12 @@ def _noise(img: np.ndarray, sigma: float = 8.0, seed: int = 0) -> np.ndarray:
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def _screenshot_recapture(img: np.ndarray, seed: int = 0) -> np.ndarray:
-    """Simulate photographing a screen: resample, moiré, glare, recompress."""
+def _screenshot_recapture(img: np.ndarray) -> np.ndarray:
+    """Photographing a screen: resample, moiré, glare gradient, recompress.
+
+    Deterministic by construction — the moiré and glare are analytic, so this
+    takes no seed.
+    """
     out = _resize(img, 0.7)
     h, w = out.shape[:2]
     yy = np.arange(h)[:, None]
@@ -2895,16 +2981,16 @@ def _screenshot_recapture(img: np.ndarray, seed: int = 0) -> np.ndarray:
 
 
 def _print_recapture(img: np.ndarray, seed: int = 1) -> np.ndarray:
-    """Simulate print-then-photograph: halftone, gamut loss, paper texture, blur."""
+    """Print then photograph: soft focus, gamut loss, halftone, paper grain."""
     out = _blur(img, 3).astype(np.float32)
-    out = np.clip((out - 16.0) * (255.0 / (235.0 - 16.0)), 0, 255)  # gamut compression
-    out = (np.round(out / 16.0) * 16.0)                              # halftone quantise
+    out = np.clip((out - 16.0) * (255.0 / (235.0 - 16.0)), 0, 255)  # gamut
+    out = np.round(out / 16.0) * 16.0                               # halftone
     rng = np.random.default_rng(seed)
-    out = out + rng.normal(0, 4.0, out.shape)                        # paper texture
+    out = out + rng.normal(0, 4.0, out.shape)                       # paper grain
     return _jpeg(np.clip(out, 0, 255).astype(np.uint8), quality=75)
 
 
-PERTURBATIONS = {
+PERTURBATIONS: dict[str, Callable[..., np.ndarray]] = {
     "jpeg": _jpeg,
     "resize": _resize,
     "blur": _blur,
@@ -2916,23 +3002,37 @@ PERTURBATIONS = {
 
 def apply_perturbation(img: np.ndarray, name: str, **kwargs) -> np.ndarray:
     if name not in PERTURBATIONS:
-        raise KeyError(f"unknown perturbation: {name!r}")
+        raise KeyError(
+            f"unknown perturbation: {name!r}; known: {sorted(PERTURBATIONS)}")
     return PERTURBATIONS[name](img, **kwargs)
 
 
 def robustness_sweep(img: np.ndarray) -> dict[str, np.ndarray]:
-    out = {"clean": img}
-    for name in PERTURBATIONS:
-        out[name] = apply_perturbation(img, name)
+    """Clean, the full JPEG quality curve, and one entry per other perturbation.
+
+    JPEG is expanded over `JPEG_QUALITIES` rather than sampled once, because a
+    single quality cannot show where a detector falls off.
+    """
+    out: dict[str, np.ndarray] = {"clean": img}
+    for quality in JPEG_QUALITIES:
+        out[f"jpeg_q{quality}"] = _jpeg(img, quality=quality)
+    for name, fn in PERTURBATIONS.items():
+        if name == "jpeg":
+            continue
+        out[name] = fn(img)
     return out
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/bench/test_robustness.py -v`
-Expected: PASS, 7 tests
+Run: `python3 -m pytest tests/bench/test_robustness.py -v`
+Expected: PASS, 12 tests (the parametrised mechanism test runs four times).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the mechanism assertions can fail**
+
+The mechanism tests are the ones carrying this task's claim. Prove they fire: temporarily make `_screenshot_recapture` and `_print_recapture` return `img` unchanged, run `pytest tests/bench/test_robustness.py -k high_frequency`, and confirm BOTH fail. Restore and confirm they pass. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/robustness.py tests/bench/test_robustness.py
