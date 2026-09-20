@@ -771,3 +771,1058 @@ because it sits in the codebase as evidence of diligence.
 === SESSION BOUNDARY — context exhausted at Task 12 of 22 ===
 RESUME AT: Task 13 (leave-one-generator-out splits). BASE = HEAD of p0-evidence-core.
 Briefs for Tasks 13-22 are already staged in this workspace.
+
+=== SESSION 2 — resumed at Task 13. BASE = 88fb27d, 154 tests green, branch pushed. ===
+
+Pre-flight scan of Tasks 13-22 (rows I checked, not a verdict):
+
+| Pair / task | produces -> consumes | finding |
+|---|---|---|
+| T13 -> T17 | `Split`, `logo_splits` -> runner | T17 never calls logo_splits; LOGO folds are not yet wired into the runner. Recorded as a gap, not fixed here — see ruling 5. |
+| T12 -> T17 | `check_video_level(sample_ids, groups)` | T17 reads `r["source_id"]` (corrected last session) but its fixture never set the key -> guaranteed KeyError on first run. FIXED. |
+| T12 -> T17 | `check_compression_coverage` | consistent, fixture carries `compression`. |
+| T13 internal | its tests vs its code | identity test VACUOUS against its own code: fixture gave every fake a unique subject, so the leak the code produces was untestable. FIXED. |
+| T17 internal | `_observation` vs the guard it feeds | aliased `source_id=record["sample_id"]`, the exact thing the corrected comment 10 lines above forbids. FIXED. |
+| T17 internal | `dataset_hash` vs record schema | omitted `source_id`; two corpora differing only in source grouping hashed identically, so the Task 20 audit record could not tell them apart. FIXED. |
+| T17 internal | known-gaps item 4 vs its own code | still described the vacuous call as "correct for image records". FIXED. |
+| T16 -> T13 | `load_rd_cache`/`load_capture_sessions` -> records | T16 produces RDResult/CaptureSession, not split records. No adapter task exists. Recorded, see ruling 5. |
+| T14, T15, T18-T22 | pairwise file/interface overlap | no contradictions found. |
+
+Ruling: LOGO splits partition SUBJECTS, not records, and drop the fakes whose
+generator wants one side while their subject sits on the other. The plan's
+version partitioned only reals and assigned fakes by generator alone. Measured
+on a fixture where five subjects are each faked by 2-3 generators: identity
+leaked in 3/3 splits, 4 subjects per split — spec 8.2 guard 1 violated by
+construction, while the task's own test passed because its fixture gave every
+fake a unique subject. Spec 8.2 guard 1 (identity disjointness) binds over
+"use every available fake", so the conflict resolves toward dropping. Drops are
+counted in `Split.dropped_for_identity` and asserted non-empty, because on a
+corpus where every subject is faked by every generator roughly half the fakes
+fall out of each fold and a reader who cannot see that number will over-read
+the fold. — Cost if wrong: folds are smaller than the corpus suggests, and the
+drop count must be reported alongside every LOGO number.
+
+Ruling: `logo_splits` REFUSES a corpus it cannot measure rather than emitting a
+degenerate split. The plan's version, given one real subject, produced a split
+with zero reals in test — an unmeasurable FPR presented as a fold. Same for a
+single-generator corpus (zero train fakes) and a fake with `generator=None`
+(silently joined the training side of every split, the one place it can never
+be measured). All three now raise with a message naming the missing side.
+— Cost if wrong: small or single-generator corpora need an explicit exemption
+rather than working by accident.
+
+Ruling: the seed test must prove the seed is CONSUMED, not merely that the
+function is deterministic. The plan compared seed=5 against seed=5, which an
+implementation ignoring `seed` entirely also passes — the same open-interval
+class of vacuity the ledger already records. Added a test asserting the
+partition differs across seeds. — Cost if wrong: none; it is strictly stronger.
+
+Ruling: Task 17's `source_id` contract is repaired at the plan level now rather
+than when Task 17 runs. It read `r["source_id"]` while its fixture never set the
+key, so the runner would have KeyError'd on first execution; `_observation`
+still aliased `sample_id`; and `dataset_hash` omitted the field so the Task 20
+audit record could not distinguish two corpora differing only in source
+grouping. Fixing at dispatch time would have cost a fix round. — Cost if wrong:
+Task 17's fixture shape changes, and its implementer must follow the brief over
+any memory of the older schema.
+
+Ruling: the two gaps the scan found are RECORDED, not fixed. (a) No task wires
+`logo_splits` into `run_benchmark` — Task 17 evaluates one flat record list, so
+the LOGO number spec 8.1 calls "the only number that predicts field
+performance" is computed by nothing. (b) No adapter turns Task 16's RDResult /
+CaptureSession into split records. Both are new work, not defects in an
+existing task, and inventing tasks mid-execution is how plans silently double.
+They surface to the user at the end. — Cost if wrong: P0 ships a protocol
+module and a runner that never meet, which is exactly the failure mode the
+final review must catch.
+
+Plan corrections committed as c114822.
+Task 13: dispatched (sonnet). BASE c114822.
+
+Pre-flight scan of Task 14 (done while Task 13 was in flight; plan edit deferred
+until Task 13's implementer has committed, to avoid interleaving on the branch).
+
+Measured against the planned code, Laplacian mean as the high-frequency-energy
+proxy, on a STRUCTURED image (gradient + edges + 4px scanlines) and on the
+plan's own white-noise fixture:
+
+  perturbation           structured        white noise (plan's fixture)
+  clean                    100.59                181.20
+  jpeg                      97.77  (0.97x)       199.05  (1.10x RAISES)
+  resize                    25.13  (0.25x)        16.39  (0.09x)
+  blur                      13.93  (0.14x)        11.41  (0.06x)
+  noise                    106.29  (1.06x)       181.80  (1.00x)
+  screenshot_recapture      39.38  (0.39x)        34.16  (0.19x)
+  print_recapture           35.08  (0.35x)        31.52  (0.17x)
+
+GOOD NEWS: the module's central claim is TRUE and measurable. Both re-capture
+paths destroy ~2/3 of high-frequency energy, which is exactly the evidence NPR
+and most frequency-domain detectors depend on. Nothing in the task tests it.
+
+Finding 14-A (Important): spec 8.3 asks for a "JPEG quality sweep". The planned
+`robustness_sweep` emits exactly ONE jpeg point, at the default quality=50. One
+point is not a curve and cannot show where a detector falls off.
+
+Finding 14-B (Important): the fixture is uniform white noise, on which JPEG
+RAISES high-frequency energy (1.10x) rather than lowering it. Any mechanism
+assertion written against that fixture is measuring an artefact of the fixture.
+Structured images are also the only ones on which "print re-capture" means
+anything.
+
+Finding 14-C (Important): nothing asserts the sweep is DETERMINISTIC. It is
+(verified identical across two calls), but two perturbations draw from RNGs and
+a later edit reaching for fresh entropy would silently destroy reproducibility
+of the whole benchmark. For a harness whose value IS reproducibility this must
+be pinned.
+
+Finding 14-D (Important): `test_unknown_perturbation_raises` uses
+`pytest.raises(KeyError)` with no `match=` — the exact vacuity class already
+recorded twice in this ledger. Passes on any KeyError from anywhere.
+
+Finding 14-E (Minor): `test_every_perturbation_preserves_shape_and_dtype` is the
+shape/dtype-only class; a stub returning `img + 1` passes it and the
+"actually changes" test together. Mechanism assertions replace it.
+
+Finding 14-F (Minor): `_screenshot_recapture(img, seed=0)` never uses `seed`;
+its moire and glare are deterministic by construction. Dead parameter.
+
+Ruling (to apply when Task 14 is dispatched): jpeg becomes a real sweep over
+several qualities; the fixture becomes structured; determinism, per-perturbation
+mechanism, and `match=` assertions are added; the dead seed parameter goes. A
+blanket "all perturbations reduce HF energy" assertion would be WRONG — `noise`
+correctly raises it (1.06x) — so the mechanism test must be per-perturbation.
+— Cost if wrong: the robustness surface reports a curve where the plan reported
+a point, which is more output to render in Task 17.
+
+NOTE: the live ledger is gitignored. Its durable copy is
+docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md (committed 88fb27d)
+and is now STALE. Sync it before the session ends.
+
+Pre-flight scan of Task 15 (white-box PGD baseline). Plan edit deferred to
+dispatch time, same reason as Task 14.
+
+Finding 15-A (CRITICAL): the task's ONLY end-to-end assertion is vacuous in two
+independent ways at once, and it is the assertion that carries acceptance
+criterion 8 — "what makes the state-sponsored threat model real rather than
+decorative". Measured against the planned code and the planned fixture:
+
+  clean TPR@FPR=0.1                      = 1.0
+  attacked TPR, real PGD  (eps=0.3)      = 1.0
+  attacked TPR, NO-OP attack (eps=0.3)   = 1.0
+  the assertion `attacked <= clean`      : PASSES in all three cases
+
+  (1) Bound saturation, the class this ledger already records twice: with a
+      no-op attack, attacked == clean, and `<=` still holds. An unimplemented
+      pgd_attack passes.
+  (2) The fixture cannot be attacked anyway. Positives sit at mean pixel 0.80,
+      negatives at 0.20, eps=0.3. The attack moves positives the full 0.3 to
+      0.50 — attacked-positive score 0.5000 vs clean-negative score 0.3543 —
+      so the ranking never flips and TPR stays 1.0 with a PERFECTLY WORKING
+      attack. The number the task exists to produce cannot move.
+
+Finding 15-B (Important): `seed` is dead code and its test cannot fail. The
+planned PGD has no random start, so it is fully deterministic regardless of
+seed: verified seed=3 and seed=999 produce identical tensors. `torch.manual_seed`
+is called and nothing reads from the RNG. Separately, PGD without a random start
+is BIM, not PGD — the random start is what the name denotes and it makes the
+attack strictly stronger, which is what a *baseline* wants.
+
+Ruling: the fixture becomes negatives 0.45 / positives 0.55 with eps=0.2, and
+the assertion becomes exact rather than an inequality. Verified on that fixture:
+clean = 1.0, real PGD = 0.0, no-op attack = 1.0. The test now separates a
+working attack from a broken one, which the planned one never could. A margin
+assertion (`attacked < clean - delta`) would also work, but an exact collapse to
+0.0 against an exact clean 1.0 is legible in a way a margin is not, and this
+number ends up in the report. — Cost if wrong: the fixture is tuned so the
+attack succeeds completely, so it proves the attack CAN collapse a detector,
+not how much eps a realistic detector survives. That is the right thing for a
+unit test; the eps sweep against real weights is Task 18's job.
+
+Ruling: `pgd_attack` gains a real random start inside the eps-ball, drawn from
+an explicit `torch.Generator` seeded by `seed`, rather than calling the global
+`torch.manual_seed`. Verified: seed=3 twice is identical, seed=3 vs seed=999
+differs, the eps-ball bound still holds exactly (0.100000 <= 0.1) and output
+stays in [0,1]. A seeded local generator also avoids perturbing global torch RNG
+state for every other test in the suite, which the planned `torch.manual_seed`
+call does. — Cost if wrong: adversarial numbers shift slightly between seeds,
+so the report must name the seed it used.
+
+Pre-flight scan of Task 20 (immutable audit record — the restored spec 7.2
+requirement). Plan edit deferred to dispatch time. All three verified by running
+the planned code.
+
+Finding 20-A (Important): `test_record_is_immutable` uses
+`pytest.raises(Exception)` — the broadest catch there is. An AttributeError from
+a typo in the test satisfies it. Must be `dataclasses.FrozenInstanceError`.
+
+Finding 20-B (Important): `test_record_never_contains_image_bytes` is vacuous.
+It searches the JSON for the raw string `\x89PNG` — seven literal characters,
+not PNG magic bytes — which no implementation ever inserts. Verified: a record
+with a whole 64x64x3 image smuggled through `model_versions` serialises without
+that substring, so the test PASSES on a record carrying image data. The cause is
+`json.dumps(..., default=str)`, which silently stringifies anything
+non-serialisable rather than refusing it. For a record whose digest is the
+tamper-evidence, silently absorbing an unexpected type is the wrong failure
+direction. Ruling: drop `default=str`, let serialisation raise, and test that a
+non-JSON value is REFUSED rather than absorbed.
+
+Finding 20-C (Important): `record_digest` excludes `created_at`, so backdating a
+decision is invisible to the tamper-evidence. Verified: moving created_at from
+2026-09-20 to 1999-01-01 leaves the digest identical. The exclusion exists only
+so that `test_digest_is_stable_for_identical_records` can call `_record()` twice
+and get matching digests — the guarantee was weakened to fit the test, and the
+neighbouring test is then named `test_digest_changes_when_any_field_changes`
+while checking one field. For an audit record defended to a regulator, the
+timestamp is among the most attack-relevant fields there is. Ruling: `created_at`
+becomes an injectable parameter defaulting to now, so two genuinely identical
+records are identical, and the digest covers it. — Cost if wrong: callers that
+want a fresh timestamp keep the default and nothing changes for them.
+
+Finding 20-D (Important): `frozen=True` is shallow, so the "immutable" record is
+not. Verified: `r.model_versions["npr"] = "tampered"` raises nothing and CHANGES
+the digest — a record can be altered after the fact and re-digested to match.
+`test_record_is_immutable` only tries to rebind `.verdict` and never looks at the
+mutable containers. Ruling: freeze the containers (MappingProxyType for the dict,
+tuple for evidence rows) and assert mutation raises for each.
+
+These three are the same shape: the record is called immutable and
+tamper-evident, and neither property is true or tested. Spec 7.2 is the one
+requirement whose whole purpose is surviving hostile scrutiny.
+
+Task 14 ruling REFINED before dispatch, after measuring threshold stability.
+High-frequency energy is the right mechanism probe for four of the five
+perturbations but the WRONG one for JPEG: blocking artefacts ADD edges at block
+boundaries, so HF ratio across q=90..10 is 0.97, 0.98, 0.97, 0.95, 1.00 — flat
+and non-monotonic. Mean absolute distortion from clean IS monotonic over the
+same sweep (14.77, 14.82, 15.24, 17.32, 19.08), so the plan's original
+`test_jpeg_quality_is_monotonic_in_degradation` was right and stays; it becomes
+an all-adjacent-pairs assertion over the sweep rather than a two-point check.
+Had I applied the blanket "assert each perturbation lowers HF energy" ruling as
+first written, the JPEG case would have been wrong.
+
+Thresholds pinned from measured ratios over 5 jittered structured images
+(min/max across seeds, so the margins are real, not one lucky draw):
+  resize               0.231-0.233   -> assert < 0.5
+  blur                 0.130-0.131   -> assert < 0.3
+  noise                1.018-1.022   -> assert > 1.0  (noise ADDS high frequency)
+  screenshot_recapture 0.360-0.364   -> assert < 0.6
+  print_recapture      0.307-0.309   -> assert < 0.6
+Task 13: implemented b9e55d6 (58 new tests, 212 total green, ruff+mypy clean).
+Task 13: review found 4 Important, 0 Critical. Three of the four are defects I
+wrote into the brief; the reviewer verified each by probe rather than by reading.
+
+Ruling: review finding 1 (the vanishing-subject repair is one-directional) is
+LOAD-BEARING and enters the fix round. The implementer correctly found that a
+test-slated subject with no real record and no fake by the held-out generator
+places nothing and vanishes; it moved such subjects to train. The exact mirror
+— a train-slated subject with no real whose fakes are ALL by the held-out
+generator — is unhandled, and those are precisely the held-out fakes TPR is
+computed from. Reviewer demonstrated a corpus with a valid zero-drop split for
+both folds that `logo_splits` REFUSES at all 8 seeds. The symmetric move is
+Pareto-improving by the same argument as the existing one. — Cost if wrong:
+folds place more fakes than a conservative reading would, so the drop counts
+fall; they remain reported.
+
+Ruling: `Split` gains the per-fold subject partition (`train_subjects`,
+`test_subjects` as frozensets). This is scope I am adding beyond the brief, and
+I am adding it because the reviewer identified it as the root of the whole
+episode: the brief's test could observe a subject's side ONLY by looking for it
+in `s.test`, so a subject that placed zero records read as a train subject, and
+the implementer changed production placement to satisfy an oracle that was
+simply blind. With the partition exposed, the test asserts against the intended
+side directly, and the drop counts become interpretable to the Task 17 reporter.
+— Cost if wrong: two more fields on a dataclass consumers may ignore.
+
+Ruling: review findings 2 and 3 are plan-mandated — I wrote both tests — and
+both are defects, so both enter the fix round. The plan's authorship does not
+excuse them. (2) `test_no_source_video_straddles_the_split` cannot fail: my
+`rec()` helper defaults `source_id` to `sample_id`, so no two fixture records
+ever share a source and the assertion restates sample-level disjointness. The
+guard-2 dimension the spec actually describes — several frames sharing one
+source video — is exercised nowhere on the passing path. My own fixture commits
+the aliasing the module forbids. (3) `match="train fakes"` discriminates
+nothing: `_require_measurable` embeds the full counts dict in the message and
+that dict always contains the literal `'train fakes'`, so the regex matches any
+failure of that function. This is a new variant worth recording — a `match=`
+that is present, looks specific, and matches unconditionally because the message
+interpolates a structure containing every key.
+
+Ruling: two findings the reviewer classed Minor are promoted into the fix round
+because they contradict the module's stated contract rather than merely
+polishing it: a record with `label=2` is silently treated as a fake (it is not
+caught by `_validate`, which only tests `label == 1`, nor counted by
+`_require_measurable`, which counts only 0 and 1), and a REAL carrying a
+generator string passes validation and can then trigger a confusing
+source-straddle rejection for an unrelated reason. A module whose job is
+refusing corpora it cannot measure should not have a silent third label.
+— Cost if wrong: two more rejections callers must satisfy.
+
+Task 13: remaining minors DEFERRED to final review — duplicate
+`match="missing required"` in the two missing-key tests (neither verifies the
+specific key is named); determinism test compares only `test_ids()`, not train
+or dropped; `frozen=True` on a dataclass holding the caller's mutable dicts buys
+nothing; `cut = max(1, len//2)` gives the test side the larger half on odd
+subject counts, unstated; `Split` imported only to be noqa'd.
+Task 13: fix round 1/5 dispatched — FIX_BASE b9e55d6.
+Task 14: corrected section staged and VERIFIED before dispatch (scratchpad):
+extracted its own code and test blocks, ran them — 12 passed, matching the
+section's stated expectation. Then ran the Step 5 proof-by-deletion myself:
+neutering both re-capture functions to no-ops fails exactly the two mechanism
+tests (screenshot_recapture and print_recapture at the 0.6 limit) and restoring
+returns 12/12. So the proof I am asking the implementer to perform is known
+achievable, and the reference implementation does not fail its own tests — the
+failure mode Task 13 hit.
+Task 15: corrected section staged and VERIFIED before dispatch (scratchpad, with
+the real bench/metrics.py): 11 tests pass. Ran the Step 5 proof-by-deletion
+myself — making pgd_attack return its input unchanged fails
+test_attack_collapses_tpr_to_zero with "1.0 where 0.0 expected", and restoring
+returns 11/11. That is precisely what the planned `assert attacked <= clean`
+could never do, since a no-op attack satisfies it.
+Task 13: fix round 1 complete (1a3032b, 92 protocol tests, 246 total green);
+implementer added an UNREQUESTED real-subject rebalance because the symmetric
+move alone still failed 3/8 seeds — flagged to the re-reviewer as unreviewed
+production logic.
+Task 13: fix round 1/5 (6 addressed, 0 open; commits b9e55d6..1a3032b)
+Task 13: complete (commits c114822..1a3032b, review clean, 92 protocol tests,
+246 total green)
+
+Re-review independently REPLAYED every claim rather than accepting the report:
+ran the reviewer's 4-record corpus against the shipped module (8 seeds, both
+folds, zero drops); fuzzed 898 accepted corpora to confirm the exposed partition
+matches actual placement (0 mismatches); replayed both move-deletions and
+matched the reported failure counts exactly (6/8 and 7/8 seeds); and built a
+rebalance-free copy to confirm the unrequested rebalance is genuinely
+load-bearing (seeds 1,2,3 raise without it). Compared with/without across 6000
+random corpora: 154 rescued, 0 newly refused, 0 with increased drops — strictly
+Pareto-improving on that sample.
+
+KEY MEASUREMENT worth carrying forward: identity-disjoint LOGO folds DROP a
+large fraction of fakes on corpora where subjects are faked by several
+generators — measured at 6-8 of 12 fakes per fold on the task fixture. Any LOGO
+number must be reported with its drop count or it will be over-read.
+
+Task 13: minors DEFERRED to final review (from both review rounds):
+ - tests/bench/test_protocol.py:222-226 docstring MISATTRIBUTES its coverage:
+   it now also guards the real-subject rebalance, but names only the symmetric
+   move and a 'no test fakes' failure, whereas deleting the rebalance fails it
+   with 'no test reals'/'no train reals'. A future reader deleting the rebalance
+   is actively misdirected. Cheapest real fix in this list.
+ - bench/protocol.py:132-146 the real-subject rebalance has no test naming it
+   and no proof-by-deletion in the report (it IS covered implicitly).
+ - tests/bench/test_protocol.py:193 match="label" and :205 match="generator"
+   are loose; "generator" also appears in the unattributed-fake and
+   source-straddle messages, so it does not discriminate which rejection fired.
+ - bench/protocol.py:139-146 always moving the alphabetically-first real subject
+   makes the rescued partition seed-independent in the collapsed case, reducing
+   seed-to-seed variation on small corpora.
+ - duplicate match="missing required" in the two missing-key tests.
+ - determinism test compares only test_ids(), not train or dropped.
+ - frozen=True on a dataclass holding the caller's mutable dicts buys nothing.
+ - cut = max(1, len//2) gives the test side the larger half on odd counts.
+ - Split imported in the test only to be noqa'd.
+ - bench/guards.py carries 8 PRE-EXISTING F541 ruff findings (f-string with no
+   placeholders combined with %-formatting, e.g. line 80). Not from this task,
+   but they will fail the Task 22 ruff gate — fix there or before.
+Task 20: corrected section staged and VERIFIED before dispatch — and it FAILED
+its own tests on the first run, 15 of 25. Root cause: `dataclasses.asdict()`
+deep-copies every field value and a `MappingProxyType` cannot be deep-copied
+("TypeError: cannot pickle 'mappingproxy' object"). So the deep-freeze that
+Finding 20-D requires is incompatible with the obvious serialisation route.
+Fixed by walking `dataclasses.fields()` explicitly instead of `asdict()`, with
+the reason recorded in the docstring so nobody reinstates it. 25/25 after.
+
+This is the second reference implementation I have written that failed its own
+tests (Task 13 was the first, caught by its implementer). Verifying each staged
+section by running it is now standard for the rest of this plan, not optional.
+
+Both Step 5 proofs verified achievable: dropping `created_at` from the digest
+fails EXACTLY the created_at parametrisation while the other 11 field cases
+still pass (so the test discriminates rather than collapsing), and replacing
+`_freeze(dict(...))` with `dict(...)` fails the in-place mutation test.
+Restoring returns 25/25.
+Task 14: implemented 6ef3196 (12 new tests, 258 total green, ruff clean).
+
+Ruling: Task 14's implementer flagged that `mypy --strict` fails on
+bench/robustness.py and left it, following house style. I VERIFIED the claim
+rather than accepting it — bare `np.ndarray` annotations fail --strict
+repo-wide: bench/robustness.py 10 errors, bench/metrics.py 7,
+src/dfd/calibration.py 8. bench/protocol.py passes only because it happens to
+annotate `list[dict[str, Any]]` and never a bare array. There is NO [tool.mypy]
+section in pyproject.toml, so nothing has ever enforced this. The implementer
+made the right call: inventing a local fix would have diverged one file from
+the other five. — Cost if wrong: nothing now, but see the gap below.
+
+GAP for Task 22 (CI gates), recorded because its brief does not currently
+account for it: "mypy --strict" cannot be switched on as a gate without first
+either parameterising every array annotation across bench/ and src/dfd/
+(npt.NDArray[np.uint8] and friends) or configuring mypy to permit bare
+generics. That is real work in at least four modules and is not in Task 22's
+scope as written. Whoever runs Task 22 must size it before promising the gate.
+Task 14: review found 1 CRITICAL, 1 Important. The Critical is MY defect and it
+is the sharpest lesson of this session so far.
+
+`_screenshot_recapture` crashes on ANY non-square image. `yy = np.arange(h)[:, None]`
+has shape (h,1), which numpy left-pads to (1,h,1) against an (h,w,3) array — it
+broadcasts only when h == w. Verified on the shipped module:
+  (128,128,3)  all six perturbations OK
+  (100,150,3)  screenshot_recapture ValueError
+  (720,1280,3) screenshot_recapture ValueError
+  robustness_sweep on a 720x1280 frame — ValueError
+So one of the two capabilities this task exists to deliver (acceptance
+criterion 9) cannot run on a realistic video frame, and all 12 tests pass.
+
+The bug was in the ORIGINAL plan and SURVIVED my correction, because my
+structured fixture is 128x128 — square, like the white-noise fixture it
+replaced. I rewrote this task specifically to kill the untested-dimension
+defect class, wrote the class into the reviewer's briefing myself, verified the
+section by running it, ran its proof-by-deletion — and every one of those
+checks used a single square shape. Verifying a section by running it is
+necessary and is NOT sufficient: it proves the code passes the fixtures I
+thought of, which is precisely the blind spot the class describes.
+
+Ruling: image shape becomes a PARAMETRISED DIMENSION across this file's tests,
+not one extra case bolted on. Square, portrait, landscape, and odd-sized, over
+every perturbation. A single non-square test would fix this instance and leave
+the class alive. — Cost if wrong: the test file grows by a parametrize
+decorator.
+
+Ruling: the Important finding stands — one-sided HF bounds
+(`hf(out) < limit * hf(clean)`) are also satisfied by a `return
+np.zeros_like(img)` stub, which has ~zero high-frequency energy and also passes
+the shape, dtype and "actually changes" tests. Companion assertion measured
+rather than guessed: correlation with the clean image discriminates cleanly —
+jpeg 0.998, noise 0.997, print_recapture 0.877-0.882, blur 0.801-0.804,
+resize 0.785-0.788, all across three shapes, against EXACTLY 0.0 for a
+zeros_like stub. Threshold 0.5 carries huge margin. — Cost if wrong: one more
+assertion per perturbation.
+Task 14: fix round 1/5 dispatched — FIX_BASE 6ef3196 (re-review will diff from
+dcbe6c8, excluding the two plan-correction commits made while the review ran).
+
+Pre-flight scan of Tasks 16-22 (pattern sweep for the tracked defect classes,
+then a full read of the one that lit up). Hits: T16 0, T17 1, T18 0, T19 1,
+T21 5, T22 0.
+
+Finding 21-A (CRITICAL): Task 21's resource limits DO NOT DEFEND AGAINST THE
+ATTACK THEY NAME, and the task contradicts itself in its own text. Its opening
+says "Limits must be enforced BEFORE allocation, not after" and its module
+docstring says "Checks run on metadata, before allocation" — but the wiring
+instruction reads: "in src/dfd/ingest/image.py, call check_file_size(path)
+before cv2.imread, and check_frame_dims(rgb.shape[1], rgb.shape[0]) AFTER
+decode." `rgb` only exists once cv2.imread has already allocated. The check runs
+after the harm.
+
+The file-size check does not cover for it, because bypassing file size is the
+definition of a decompression bomb. Measured: a 12000x12000 uniform PNG is
+161,331 bytes on disk — 0.15 MB — and decodes to 0.40 GB. It sails through the
+256 MB default. The task's own headline example, 50000x50000, is roughly 2.8 MB
+on disk and 7.5 GB decoded.
+
+Ruling: dimensions must be read from the image HEADER before any decode.
+Pillow is already available in this environment and does exactly this — verified
+`Image.open(path).size` returns (12000, 12000) in 0.007s without decoding.
+check_frame_dims then runs on those header dims, and only a frame that passes is
+decoded. Pillow also carries its own MAX_IMAGE_PIXELS bomb guard, which should
+be set from our Limits rather than left at the library default so there is one
+source of truth. — Cost if wrong: Pillow becomes a hard dependency of the ingest
+path, alongside OpenCV which is already there.
+
+Finding 21-B (Important): `test_limits_are_a_frozen_value_object` uses
+`pytest.raises(Exception)` — the same broadest-possible catch already ruled on
+in Task 20. Must be `dataclasses.FrozenInstanceError`.
+
+Finding 21-C (Important): three of the remaining four raises assert only the
+BASE class. `test_zero_or_negative_dimensions_are_rejected` and
+`test_missing_file_raises_a_typed_error` both accept any `DfdError`, and
+`ResourceLimitExceeded` IS a `DfdError` — so an implementation that raised
+"resource limit exceeded" for a missing file or a zero dimension passes. Those
+are InvalidInput conditions and the tests must say so, with `match=`.
+`test_decode_bomb_dimensions_are_rejected` has no `match=` at all.
+
+Finding 21-D (Important): `test_defaults_are_documented_constants` asserts only
+`> 0` for all three constants, so `max_pixels = 1` passes a test whose name
+claims it documents them. Assert the actual values, so changing a limit is a
+deliberate edit to a test rather than a silent drift.
+
+Finding 21-E (Important): untested dimension — every bomb case is SQUARE
+(50000x50000). A degenerate strip such as 1 x 10**10 or 10**10 x 1 has the same
+pixel count and is the shape an attacker reaches for when a naive check tests
+each side against a max dimension instead of the product. Parametrise the shape.
+(This is the same class that just shipped a Critical in Task 14, from a fixture
+that was square in every test.)
+
+Finding 21-F (Important): nothing tests that the limits are WIRED IN. Task 21
+modifies ingest/image.py and ingest/video.py, but every test calls
+check_file_size / check_frame_dims directly, so both could be enforced nowhere
+and the suite stays green — the "guard that ships vacuous" failure this plan
+already hit once with check_video_level. Needs a test that drives a bomb through
+the real `load_image` and asserts it raises before allocating.
+Task 14: fix round 1/5 (3 addressed, 0 open; commits 6ef3196..82a4185)
+Task 14: complete (commits f04041e..82a4185, review clean, 58 robustness tests,
+304 total green)
+
+Re-review verified the RED count arithmetically against the parametrisation
+actually in the diff (7 shape-parametrised tests x 3 non-square shapes = 21,
+square exempt since h==w) rather than trusting the number, and confirmed the
+odd shape (97,131) genuinely exercises _resize's truncation path. It also chased
+the nan question properly: `nan > 0.5` is a clean False so the assertion raises
+a normal AssertionError, and running the real suite under
+`-W error::RuntimeWarning` showed zero warnings — np.corrcoef only emits
+"invalid value encountered in divide" for a constant array, which exists solely
+in the reverted mutation.
+
+Task 14: minor DEFERRED — tests/bench/test_robustness.py:89 `_correlation`
+docstring still says "exactly 0.0 for a zeros_like stub"; the measured value is
+nan. The implementer reported the discrepancy honestly in its report but did not
+update the docstring. Cosmetic; both compare False.
+
+Task 21: corrected section staged and verified — 25/25, but only after a second
+failure of my own: my `context` fixture invented `Context(source=..., captured_at=...)`
+and the real dataclass takes subject_id/generator/compression/label/meta. Two of
+25 errored. That is the third staged section of mine to fail its own tests
+(Task 13's placement bug, Task 20's mappingproxy/asdict clash, now this).
+Pattern worth naming: every one was an assumption about code I had not opened —
+I keep writing against a remembered interface instead of reading the real one.
+Task 21: correction committed 9221ec4, brief regenerated, both Step 5 proofs
+verified achievable (ordering: moving the checks after a decode fails the
+"cv2.imread was called" assertion; wiring: deleting the call from load_image
+fails the loader test). 25/25 restored.
+
+GAP for Task 22, second one: pyproject.toml declares NO dependencies at all —
+no [project.dependencies] key exists. numpy, opencv, torch and now Pillow are
+all imported and none is declared. CI cannot install this project from
+pyproject as it stands, so the Task 22 gate work includes writing the
+dependency list, not just wiring the gates. Combined with the mypy gap already
+recorded, Task 22 is larger than its brief implies and should be re-scoped
+before dispatch.
+
+Pre-flight scan of Task 17 (benchmark runner) — the most consequential findings
+in this plan so far.
+
+Finding 17-A (CRITICAL, structural): THE HARNESS NEVER COMPUTES THE LOGO NUMBER.
+Task 17 contains no mention of `logo_splits`, `protocol`, `Split` or `held_out`
+— grepped, zero hits. `run_benchmark` takes ONE flat record list and computes a
+single `auc` over all of it. That is in-dataset AUC, which the design spec
+describes in Task 13's own words as measuring MEMORISATION, and spec 8.1 calls
+leave-one-generator-out "the only number that predicts field performance".
+So Task 13 builds the splitter, and nothing in the plan consumes it: the
+benchmark measures the number the spec calls meaningless and does not measure
+the one it calls essential. I flagged this in the session's first pre-flight as
+a gap and deferred it as "new work"; having now read Task 17 properly, that was
+too generous. It is a defect in the plan's core deliverable, not a missing
+enhancement.
+
+Finding 17-B (Important, precise): the runner guards a property and then
+violates it eleven lines later. The comment at the top of `run_benchmark` reads
+"`groups` MUST identify the SOURCE VIDEO, never the sample id" and passes
+`source_id` to check_video_level — then line 266 sets
+`groups = np.array([r["sample_id"] for r in records])`, and THAT is what
+`bootstrap_ci_by_group` resamples over. Scope of the harm, stated accurately:
+`check_video_level` enforces one sample per source, so while guards are on the
+two are 1:1 and the numbers agree. But `enforce_guards=False` is an explicitly
+supported, explicitly tested option, and on that path a multi-frame corpus
+bootstraps over frames. Task 11 measured what that costs: group CI 0.751 vs row
+CI 0.063, 11.9x narrower. The waiver path is exactly where an honest interval
+matters most.
+
+Finding 17-C (Important): `assert p95_latency_ms >= 0.0` — satisfied by a stub
+that never measures anything and returns 0.0. Bound-saturation class.
+
+Finding 17-D (Important): `test_abstention_rate_is_reported` has the docstring
+"A detector that abstains on everything must be visible as such", registers a
+detector with min_quality_band="high" to force exactly that, and then asserts
+only `0.0 <= rate <= 1.0`. The open-interval class, with the intended assertion
+written out in prose directly above the one that does not test it. A detector
+abstaining on everything should assert rate == 1.0.
+
+Finding 17-E (Important): `test_guards_run_by_default_and_fail_the_run` uses
+`pytest.raises(GuardViolation)` with no match=. Six guards can raise it; the
+test intends compression coverage specifically and would pass if an unrelated
+guard fired for an unrelated reason.
+
+Finding 17-F (Minor): `test_dataset_hash_is_stable_and_content_sensitive`
+mutates only `sample_id`. The hash now covers six fields; parametrise, as Task
+20's digest test now does.
+
+Finding 17-G (Minor): every fixture image is 64x64 — square and uniform. That
+is the shape assumption that just produced a Critical in Task 14.
+
+Ruling deferred on 17-A until Tasks 15-16 land, because the fix has real scope
+and I want it shaped once rather than twice. The direction: `run_benchmark`
+should evaluate per LOGO fold and report the held-out-generator number as the
+headline, with any whole-corpus AUC labelled in the output as in-dataset
+memorisation rather than presented beside it as an equal. Recording now so it
+cannot be lost if this session ends.
+
+Pre-flight scan of Task 16 (corpus loaders). Its pattern sweep came back clean;
+reading it found two real defects, one of them environmental and invisible to
+any pattern.
+
+Finding 16-A (CRITICAL, plan-mandated): Task 16 creates a top-level package
+named `datasets/` at the repo root. HuggingFace `datasets` 3.0.1 IS INSTALLED in
+this environment (alongside transformers 4.41.2 and huggingface_hub 0.36.2,
+which this project already uses for the dima806 ViT). pytest is configured with
+`pythonpath = ["src", "."]`, so the repo root is prepended to sys.path and our
+package WINS. Proven by construction:
+
+  import datasets -> <repo>/datasets/__init__.py
+  has HF load_dataset? False
+  from datasets import load_dataset -> ImportError: cannot import name
+      'load_dataset' from 'datasets'
+
+So creating this package silently breaks every HuggingFace dataset import in the
+project. That matters beyond tidiness: FF++, Celeb-DF and DFDC — the corpora on
+the critical path — are routinely loaded through HF `datasets`, and Task 22's CI
+would inherit the breakage. This is the same shadowing failure the project
+already hit once, when a stray tests/bench/__init__.py shadowed the real bench/
+package; that one was caught by an import error, this one would be caught by
+someone's HF loader failing much later with a confusing message.
+
+Ruling: the package is named `corpora/`, not `datasets/`. Module paths become
+corpora/rd_cache.py and corpora/captures.py, tests tests/corpora/. — Cost if
+wrong: one directory name differs from the plan's text, and Task 17's imports
+must follow.
+
+Finding 16-B (Important): `aggregate_is_max_like` is only ever asserted True
+(line 56 of the task, `assert aggregate_is_max_like(results, tolerance=0.2) is
+True`, the sole call site in the tests). A constant `return True` implementation
+passes the suite. This function encodes one of the three headline measurements
+in the handoff — that Reality Defender's aggregate tracks the MAXIMUM of its
+members, which is why its false-positive rate approximates the union of theirs —
+so a function that cannot distinguish max-like from mean-like is worse than
+absent: it launders the claim. Needs a negative case built from an ensemble
+whose aggregate tracks the mean, asserted False.
+
+Finding 16-C (Minor): `load_capture_sessions` silently skips malformed sessions
+(`test_malformed_session_is_skipped_not_fatal`). Across 442 sessions of which
+exactly 5 are the fraud that matters, a silently dropped session could be one of
+the 5 and nobody would know. The loader should return or log a skip count.
+
+Finding 16-D (Minor): every fixture session writes `frame_count: 1`. Untested
+dimension, same class as Task 14's square-image fixture.
+Task 15: implemented 48a6830 + 130d91f (12 tests, 316 total green).
+Task 15: review found 0 Critical, 2 Important — both tests that cannot fail for
+the reason they name, both demonstrated by mutation rather than argued.
+
+The reviewer mutation-tested the attack's numerics before looking at anything
+else, which is the right order for a routine whose correctness is invisible from
+a green suite: gradient direction (descent mutant fails 2 tests), projection
+against the ORIGINAL x rather than the iterate (mutant drifts to 0.08 with
+eps=0.03), grad.sign() load-bearing (mutant fails 3), local Generator genuinely
+isolating global RNG, and alpha fidelity. All correct. It also noticed
+unprompted that using torch.autograd.grad rather than loss.backward() leaves
+model .grad buffers untouched, so repeated attacks cannot corrupt a caller's
+training state.
+
+Ruling: review finding 1 enters the fix round. `test_negatives_are_left_clean`
+asserts the CALLER's tensor is unmutated, but `adversarial_tpr` does
+`adv = x.clone()` and writes only into `adv`, so x is never mutated no matter
+which rows are attacked. Reviewer replaced the function with one attacking the
+ENTIRE batch and all 12 tests still passed — the collapse test included, because
+attacking negatives lifts them 0.45->0.65 while positives fall to 0.35, so TPR
+is still 0.0. Positives-only is the spec-load-bearing choice (attacking
+negatives moves the threshold and understates the detector, which is what the
+3A.4 demotion rides on) and it was entirely unguarded. The implementer's report
+claimed the opposite — that the test "would catch adversarial_tpr accidentally
+attacking the whole batch". It does not. Decision: assert on what the model is
+actually SCORED on, via a spy module, not on the caller's tensor; keep the old
+test as a no-in-place-mutation guard under an honest name. — Cost if wrong: one
+more test double in the file.
+
+Ruling: review finding 2 enters the fix round. The in-loop [0,1] clamp is
+untested — deleting it leaves all 12 green. `test_pgd_output_stays_in_valid_pixel_range`
+uses x=0.99 with y=1, and ascending the loss on class 1 drives pixels DOWNWARD
+for this model, so the iterate walks away from 1.0 and only the initialisation
+clamp is exercised. Decision: flip the label so the attack pushes INTO the
+bound (x=0.99 with y=0; reviewer verified the shipped code passes and the
+clamp-removed mutant fails at max=1.09), and mirror it at x=0.01 with y=1.
+— Cost if wrong: none, strictly stronger.
+
+Resolved the reviewer's warning myself, as the controller holds the cross-task
+view it lacks: `adversarial_tpr` having no caller outside its own tests is a
+KNOWN, DELIBERATE deferral, not an oversight. The plan's own known-gaps list
+records it — the runner wires `adversarial_tpr_at_1pct=None` because attacking
+requires a differentiable model with real weights, and every P0 detector
+abstains without weights. There is nothing to attack yet. It is wired when real
+weights land, and the handoff's critical path (dataset EULAs, then training or
+fine-tuning) is what unblocks that. NOT a Task 15 finding.
+
+Task 15: minors DEFERRED — `test_zero_epsilon_is_the_identity` passes with the
+eps==0 early return deleted (behaviourally identical, so not a correctness
+risk); the random start's ball containment is unpinned and only observable at
+steps=0, since the first projection repairs it; `torch.rand` uses the default
+dtype so a float16/float64 input comes back in a different dtype than it was
+handed (pass dtype=x.dtype); the `alpha = max(eps/4, 1e-4)` default is a real
+design choice undocumented in its docstring. The reviewer also checked the
+clamp ORDER and correctly found it is not a live risk — for x in [0,1] the two
+clamps commute, so a swapped-order mutant is behaviourally identical rather
+than merely undetected. Recorded because it was asked and answered.
+Task 15: fix round 1/5 dispatched — FIX_BASE 130d91f.
+Task 15: fix round 1/5 (2 addressed, 0 open; commits 130d91f..e67422f)
+Task 15: complete (commits 9221ec4..e67422f, review clean, 14 adversarial
+tests, 318 total green)
+
+Both findings were fixed by changing TESTS ONLY — bench/adversarial.py was not
+modified, because the implementation was already correct and the tests simply
+failed to pin it. The re-reviewer confirmed that rather than accepting it:
+checked the diff touches only the test file, then traced the new spy test
+against the production code to confirm `seen[-1]` is the final whole-batch
+SCORING pass and not one of pgd_attack's ten internal forward calls — the
+specific doubt I asked it to chase, since a spy capturing an intermediate pass
+would assert the wrong tensor and still look like it worked. It also re-derived
+the gradient direction from the model's logits (logit0 = -mean(x)+0.5,
+logit1 = mean(x)-0.5) to confirm y=0 drives pixels UP into the 1.0 bound and
+y=1 drives them DOWN into 0.0, which is why the original fixture never
+exercised the clamp.
+
+Task 15: minor DEFERRED — a PytestDeprecationWarning about
+asyncio_default_fixture_loop_scope appears when running a single test file
+directly (pytest-asyncio plugin config). Pre-existing infra noise, absent from
+full-suite runs. Belongs with the Task 22 CI work.
+Task 16: dispatched (sonnet). BASE e67422f.
+
+Ruling on Finding 17-A, the deferred one: Task 17 now computes LOGO. Committed
+d49de40. run_benchmark evaluates per held-out generator, reports the WORST fold
+as headline, and the report labels the whole-corpus table "memorisation, not
+field performance". Scoring runs once per detector and folds slice it, since a
+record's score does not depend on its fold. — Cost if wrong: RunRecord carries
+one more field and the report has one more table; the in-dataset number is
+still there, just demoted.
+
+Recorded in the plan as a known gap rather than papered over: this is NOT a
+trained LOGO protocol. P0 detectors are not trained, so each fold's TRAIN side
+is unused. It becomes load-bearing when calibration lands, and is where the
+operating threshold must be frozen to make spec 8.2 guard 5 real instead of the
+string check on config.threshold_source that it is today.
+
+THE FIXTURE FINDING, which I did not predict and only found by running it:
+Task 17's 64x64 fixture images measure quality band "reject", below
+SyntheticDetector's "low" floor, so EVERY detector abstained on EVERY record.
+AUC, CI, TPR and ECE were nan throughout, meaning the runner's entire metric
+path was never exercised by any test. Two of its tests passed only because of
+that (`p95_latency_ms >= 0.0` and `0.0 <= abstention_rate <= 1.0`), and
+test_run_is_reproducible_given_a_seed compared nan == nan — so Task 17 would
+have FAILED its own test the moment it was dispatched. Fixture is now >=128px
+short side, non-square, varying.
+
+Measured band by size, for anyone choosing fixture dimensions later:
+  64x64 reject | 48x64 reject | 64x88 reject | 128x128 low | 112x144 low
+  160x224 medium
+
+Proof-by-deletion: removing the LOGO wiring fails 5 tests. It initially failed
+only 3 — two tests iterated `rec.logo_results.values()` and an empty dict never
+enters the loop, so they passed vacuously under the very mutation they existed
+to catch. Both now assert the fold count first. That is the same empty-iteration
+vacuity in a new costume, caught only because I ran the mutation rather than
+assuming the tests covered it.
+Task 16: implemented 9af0af4 (16 tests, 334 total green, ruff clean).
+Task 16: review found 0 Critical, 2 Important — both plan-mandated, both mine.
+
+Ruling: review finding 1 enters the fix round. Both loaders catch only
+`(json.JSONDecodeError, OSError)`, so a file that is VALID JSON of the wrong
+shape sails past the guard and then crashes on use. Verified — six distinct
+malformations each kill the entire load rather than skipping one session:
+  captures, a JSON list          AttributeError: 'list' object has no attribute 'get'
+  captures, a JSON string        AttributeError: 'str' object has no attribute 'get'
+  captures, frame_count "many"   ValueError: invalid literal for int()
+  rd_cache, a JSON list          AttributeError: 'list' object has no attribute 'get'
+  rd_cache, score "high"         ValueError: could not convert string to float
+  rd_cache, model without score  KeyError: 'score'
+This directly contradicts the comment I wrote three lines above it — "Never
+silent: a dropped session may be one of the five that are the actual fraud" —
+because the failure is not silent, it is fatal: one malformed session out of 442
+takes the whole corpus down, including the five that matter. Decision: validate
+the parsed object is a dict and wrap the per-field coercions, so a
+malformed-but-valid-JSON file is skipped and logged exactly like a decode
+failure, with a test per loader. — Cost if wrong: the loaders tolerate more
+garbage, and the skip log is where you look to find out.
+
+Ruling: review finding 2 enters the fix round. `"1" in caplog.text` is not
+merely weak — it cannot fail. Verified the JSONDecodeError message is
+'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)',
+which contains "1" three times on its own, so the assertion passes on the error
+text regardless of whether the skip COUNT is right or the counting logic exists
+at all. The implementer flagged it as weak and left it because the brief
+specified it verbatim; the brief was mine and it was wrong. Decision: assert the
+literal count phrase the format string actually produces ("skipped 1"), or read
+caplog.records structurally. — Cost if wrong: none.
+
+Task 16: minors DEFERRED — test_tolerance_is_load_bearing never probes the exact
+mean(diffs) == tolerance boundary, so a `<` vs `<=` inversion survives; no
+empty-directory test for captures specifically (rd_cache covers the mechanism);
+test_loads_results_and_skips_quota_file's name overstates what it verifies,
+since the skip is an artifact of the */result.json glob rather than any
+quota-aware code path.
+Task 16: fix round 1/5 dispatched — FIX_BASE 9af0af4.
+
+Pre-flight scan of Task 18, corrected and committed 8b6ae6a. Three defects,
+plus one process bug of my own.
+
+18-A: the fixture omits `source_id`, which the corrected run_benchmark now
+reads. Task 18 would have KeyError'd on dispatch.
+18-B: 64x64 images again — quality band "reject", so every detector abstains
+and the robustness surface this task exists to produce is nan in every cell
+while its tests pass on key presence alone. Same root cause as Task 17's, which
+I only found by running it; here I found it by knowing to look.
+18-C: single generator, leaving LOGO undefined for its corpus.
+18-D, mine: correcting Task 14 to emit a real JPEG quality curve replaced the
+single "jpeg" sweep key with jpeg_q90..q10, so Task 18's
+`set(PERTURBATIONS).issubset(set(got))` became FALSE — PERTURBATIONS keeps a
+bare "jpeg" the sweep no longer emits. A correction in one task silently broke
+a downstream task's assertion, which is exactly what the cross-task scan at the
+start of this session was supposed to catch and did not, because I made the
+change after the scan and never re-ran it.
+
+LESSON, recorded because it will recur: correcting a task's INTERFACE obliges a
+re-scan of every task downstream of it. I have now corrected Tasks 13, 14, 15,
+16, 17, 18, 20 and 21; the only reason 18-D surfaced is that I happened to read
+Task 18 before dispatching it.
+
+PROCESS BUG, mine: my splices introduced duplicate `### Task` headers for 17
+and 18, because `sed -n '/^### Task N/,/^### Task N+1/p'` includes the trailing
+header and I inserted that before the real one. Fixed both; the splice now
+strips trailing headers and asserts uniqueness afterwards. Worth noting that
+this was invisible to every test — only a structural check on the plan found it.
+
+Verified Task 18 by applying its described edits to the already-verified Task 17
+runner and running the whole bench suite: 35 passed (29 + 6), and the
+robustness surface comes back finite in every cell:
+  clean 0.000 | blur 0.067 | jpeg_q10 0.133 | jpeg_q30 0.067 | jpeg_q50 0.133
+  jpeg_q70 0.000 | jpeg_q90 0.000 | noise 0.000 | print_recapture 0.200
+  resize 0.067 | screenshot_recapture 0.000
+(The synthetic detector is a payload hash, so these are near-random by design —
+what is being verified is that the pipeline produces real numbers, not that the
+stand-in detector is any good.)
+
+Re-scan of Tasks 19 and 22 against every interface I have changed this session
+(the discipline Task 18 taught me). Task 19: no references to any changed
+interface — clean. Task 22: two real problems.
+
+Finding 22-A (Important): Task 22's mypy gate FAILS ON DAY ONE, and its own
+tests cannot tell. Ran mypy under the exact config the task ships
+(strict = True, warn_unreachable = True, files = src/dfd): 22 errors in 7 files.
+  19x Missing type parameters for generic type "ndarray"  [type-arg]
+   2x Unused "type: ignore" comment                        [unused-ignore]
+   1x Returning Any from a function declared to return ndarray [no-any-return]
+  faces.py 5 | types.py 4 | quality.py 3 | detectors/npr.py 3 |
+  calibration.py 3 | fusion.py 2 | detectors/effnet.py 2
+
+The task's own test is `assert "strict = True" in (ROOT/"mypy.ini").read_text()`
+— it asserts the CONFIG FILE CONTAINS A STRING, not that mypy passes. So Task 22
+would go green locally while CI goes red on the first push. That is a new
+variant of the tracked class worth naming: a gate test that asserts the gate is
+CONFIGURED rather than that it PASSES. The same shape applies to the ruff test
+(`"E722" in cfg`) and the asset-gate test (`"assert_all_assets_registered" in ci`).
+
+Note this also narrows my earlier recorded gap: `files = src/dfd` means bench/
+and corpora/ are NOT type-checked, so bench/metrics.py's and robustness.py's
+bare-ndarray errors do not block the gate. Only src/dfd's 22 do. That is a
+smaller job than I first recorded — parameterising ~19 annotations across 7
+files — but it is real work that Task 22's brief does not mention.
+
+Ruling: Task 22 must (a) fix the 22 errors so the gate passes, and (b) replace
+its config-text assertions with tests that RUN the gates and assert they exit
+zero. A gate asserted by the presence of a string in a config file is exactly
+the "enforced by intention" failure the task's own rationale warns about.
+— Cost if wrong: Task 22 is larger than planned; the alternative is shipping a
+CI file that has never been observed to pass.
+
+Finding 22-B (Minor): requirements-dev.txt IS created by the task (its Step 3
+prose, line 151) though it is missing from the task's Files header. Its list —
+pytest, pytest-cov, ruff, mypy, numpy, opencv-python-headless, scikit-learn,
+pyyaml, torch — now needs Pillow, which Task 21's header-probe defence depends
+on. pyproject.toml still declares no [project.dependencies] at all; that is
+separate and still open.
+Task 16: fix round 1/5 (2 addressed, 1 NEW Important in the fix diff; commits
+9af0af4..47ad28a)
+
+Ruling: the new finding enters fix round 2 rather than being parked. The
+widened `except` now wraps RECORD CONSTRUCTION, not just parsing and shape
+validation, and TypeError/ValueError/KeyError/AttributeError are precisely what
+a coding mistake in that construction would raise — a typo'd keyword, a missing
+field, `m["nam"]` for `m["name"]`. Such a bug fires on every entry and is
+swallowed identically to malformed input. It is materially worse in
+rd_cache.py, which logs NOTHING on skip: a construction bug there would silently
+drop all 24 cached results with zero signal, where before this fix it would have
+crashed loudly. That is a REGRESSION in failure visibility introduced by a fix
+for failure visibility.
+
+This also runs straight into the plan's own Global Constraint — "a swallowed
+error in a fraud detector is an approved fraud" — which Task 22 encodes as a
+ruff ban on blind excepts. Decision: narrow the try to parse-and-validate, and
+construct the record outside it, so malformed input is skipped while a defect in
+our own code still raises. And give rd_cache the same per-skip logging captures
+has; its silence is what makes the same latent bug invisible there and merely
+misreported here. — Cost if wrong: two more lines of structure in each loader.
+
+The reviewer was right to call this latent rather than live (it inspected both
+constructors and found no current typo), and right to raise it anyway: the
+property wanted is structural, not "true by inspection today".
+Task 16: fix round 2/5 dispatched — FIX_BASE 47ad28a.
+
+Pre-flight scan of Task 19 (asset enumeration — "make the release gate
+non-vacuous").
+
+Finding 19-A (CRITICAL): TASK 19 REPRODUCES, ONE LEVEL UP, THE EXACT VACUITY IT
+EXISTS TO ELIMINATE — and it is worst in CI, the only place it runs
+automatically.
+
+Its own rationale: "`assert_release_clean` can only judge assets it is handed.
+Passing it an empty list returns cleanly — a vacuous pass." Its fix supplies the
+list from the filesystem. But `assert_all_assets_registered` is
+
+    assert_release_clean(load_manifest(manifest_path), discover_assets(root))
+
+and `assert_release_clean` iterates `asset_ids`, so an EMPTY discovery still
+returns cleanly. The vacuity moved from "a human forgot to pass the list" to
+"the scan found nothing", which is strictly harder to notice.
+
+And on a fresh checkout the scan finds nothing, always. Verified: of everything
+under assets/, git tracks exactly ONE file — assets/manifest.yaml. The weights
+are untracked, and .gitignore carries *.onnx, *.pth and models/. So in CI:
+
+    discover_assets(root)                  -> []
+    assert_release_clean(manifest, [])     -> no bad ids, returns cleanly
+    the gate                               -> PASSES, unconditionally, forever
+
+Task 22 wires this into CI as the enforcement of spec 12.1 criterion 6. As
+written, that criterion would be certified green by a check that has never
+examined a single file.
+
+Ruling: an empty scan must be a loud, explicit condition, not a pass.
+`assert_all_assets_registered` gains `allow_empty: bool = False` and raises when
+it discovers nothing, with a message naming the root it searched and the
+suffixes it looked for. CI must then either provide the assets or opt into
+emptiness deliberately, which is a decision someone makes rather than a silence
+nobody notices. Its test must assert the raise, not merely that
+`discover_assets` returns [] — the current
+test_empty_tree_is_not_treated_as_success_by_accident checks the scanner and
+never calls the gate, so it tests the one function that was never the problem.
+— Cost if wrong: CI needs an explicit flag, and someone has to decide what the
+gate means in an environment with no weights. That decision is the point.
+
+Finding 19-B (Important): `assert_release_clean` reports an UNREGISTERED asset
+through `NonCommercialAsset` with the message "assets not cleared for commercial
+release". Those are different failures — "I have never heard of this file" is not
+"this file's licence forbids commercial use" — and the message actively
+misdescribes the first. A reader debugging a red gate is told a licensing story
+about a file whose only sin is being absent from the manifest. Decision: keep
+one exception type if the hierarchy is not worth expanding, but the message must
+distinguish the two lists.
+
+Finding 19-C (Minor): `pytest.raises(NonCommercialAsset) as exc` has no
+`match=`, though the following line asserts "sneaky_weights" in the message, so
+it is not vacuous — just less direct than `match=` would be.
+
+Finding 19-D (Minor): ASSET_SUFFIXES covers .onnx .pt .pth .safetensors .tflite
+.bin .npz, but .gitignore lists only *.onnx and *.pth (plus models/). A
+committed .safetensors or .bin would be discovered by the scan and is not
+ignored by git — worth a note, since the dima806 weights on this machine are
+.safetensors and sit untracked only because assets/models/dima806/ was never
+added.
+Task 16: fix round 2/5 (1 addressed, 0 open; commits 47ad28a..b9f1136)
+Task 16: complete (commits e67422f..b9f1136, review clean, 339 total green)
+
+Re-review traced EVERY untrusted field access to its side of the try boundary
+by name in both loaders, rather than accepting "narrowed" as a claim, and
+confirmed none was left split across it. It also checked the injected-defect
+proof was genuinely construction-side rather than validation-side (both
+injections add an unexpected keyword to the dataclass call AFTER the except
+block), and noted the rd_cache trace is discriminating: the malformed entry
+still logs a skip while the injected defect on the GOOD entry propagates
+uncaught. That is the structural property, demonstrated rather than asserted.
+
+Task 16: minor DEFERRED — rd_cache's except tuple omits AttributeError while
+captures' includes it. Pre-existing asymmetry, not introduced by either fix
+round; likely unreachable given the isinstance(m, dict) guard, but the
+asymmetry itself is worth removing for the reader.
+Task 19: correction committed 7a32698. Verified 13 passed; Step 5 proof
+confirmed — restoring the plan's original one-line body fails exactly the two
+empty-scan tests.
+Task 17: dispatched (sonnet). BASE 7a32698.
+Task 22: correction committed 50f2ef5. Every remaining task section (13-22) has
+now been corrected and verified before dispatch.
+
+Ruling on 22-A: the gate tests now RUN ruff and mypy as subprocesses and assert
+exit zero, and the task clears both gates as part of its own work. Measured
+before deciding to run them in-suite: ruff 0.04s, mypy ~1s warm / ~41s cold.
+Turning a gate on without clearing it ships a red pipeline; clearing it without
+turning it on ships a standard nobody enforces. — Cost if wrong: the suite gains
+~1s warm, and Task 22 is meaningfully larger than its brief implied.
+
+Correcting my own earlier count: the ruff backlog is 11 F541 findings, not 8 —
+8 in bench/guards.py plus 3 in src/dfd/detectors/loading.py, which I had not
+looked at when I first recorded it. All auto-fixable.
+
+Ruling on 22-B: requirements-dev.txt gains Pillow (Task 21's decode-bomb defence
+imports it, so CI would have installed a tree that cannot import dfd.limits),
+and pyproject.toml gains [project.dependencies], which it had never had at all
+despite the package importing numpy, opencv, Pillow and torch. torch and
+scikit-learn stay OUT of the runtime set deliberately: the detectors needing
+them abstain cleanly when absent, so a caller wanting only the NPR physics
+detector and the evidence core should not be forced to install a GPU stack.
+They stay in requirements-dev.txt, which is what CI installs. — Cost if wrong:
+a caller who wants the torch detectors must install torch explicitly, which the
+abstention message should say.
+Task 17: implemented 8c339f9 (29 tests, 368 total green).
+Task 17: review found 0 Critical, 4 Important, 14 Minor. ALL FOUR Importants are
+defects in my corrected section, not the implementer's execution.
+
+The reviewer verified the computation before judging it: traced that fold
+slicing aligns (position maps sample_id to its index in the same list
+observations was built from), confirmed abstentions are filtered before metrics
+with groups sliced in lockstep, and ran an all-abstaining detector end to end to
+confirm the degenerate path prints n/a rather than a flattering number.
+
+Ruling: finding 2 is the most important and enters the fix round first. NO TEST
+CAN FAIL IF `groups` REGRESSES from source_id to sample_id — the single wiring
+decision I corrected this task for, and the one with a measured cost (11.9x too
+narrow). The fixture gives every record its own source_id, so the two groupings
+are the same partition. Reviewer confirmed empirically: bootstrap_ci_by_group
+with groups=source_id and groups=sample_id returns BIT-IDENTICAL bounds
+(0.20697727272727273, 0.5342249855407751), and all 21 runner tests stay green
+under the regression. check_video_level does not cover it — different arguments,
+and skipped entirely under enforce_guards=False, which is the path the runner's
+own comment calls out as where an honest interval matters most. I fixed the
+wiring and left it unguarded, which is the same shape of error as the guards
+this plan keeps finding. — Cost if wrong: one test needs a multi-sample-source
+corpus, necessarily with guards off.
+
+Ruling: finding 1 enters. `dataset_hash` omits `face_detector` and `align`,
+though check_uniform_preprocessing treats varying them as grounds to ABORT the
+run and they sit on the same record dicts. Two runs over one corpus aligned
+yunet/v1 vs retinaface/v2 hash identically and produce different metrics,
+breaking the audit tie acceptance criterion 10 exists to create. Worse, my
+test_dataset_hash_is_sensitive_to_every_identifying_field asserts a COMPLETENESS
+property while enumerating exactly the six fields the implementation already
+covers — a test that cannot discover the omission it is named for. The reviewer
+also checked whether a per-sample content hash exists to fold in and found none,
+so pixel content is genuinely unavailable — correctly not raised.
+
+Ruling: finding 3 enters. LOGO folds pass `latencies=[]` and `abstentions=0`
+literally, so every fold reports abstention_rate=0.0 and p95_latency_ms=0.0
+regardless of what happened. Verified: with an all-abstaining detector both
+folds returned auc=nan alongside abst_rate=0.0, which is false for every row.
+"0% abstained" beside an unmeasurable AUC invites precisely the wrong reading.
+Decision: compute fold abstentions from the slice, and report nan for a latency
+not measured per fold so the unmeasured field is visibly unmeasured.
+
+Ruling: finding 4 enters. Per-fold `dropped_for_identity` is discarded. Task 13
+surfaces it specifically so identity-conflicted fakes are "dropped and reported
+rather than silently leaked", and the runner reads only test_ids(). The fixture
+drops nothing, so no test notices — but on a real corpus where a subject is
+faked by several generators, drops are routine (measured at 6-8 of 12 on Task
+13's own fixture), and the headline LOGO AUC would be computed over a silently
+reduced test set. A reader sees n=23 and cannot tell whether 2 or 20 records
+were removed. This is the SAME defect I flagged at the start of this session —
+a number that must be reported alongside LOGO or the fold gets over-read — and
+I then failed to wire it through.
+
+Promoted from Minor into the fix round, because each is one line and each is
+fail-closed posture the module already claims: report.py raises KeyError where
+worst_logo_auc defends against the identical case (a detector absent from a
+fold renders a bold worst-AUC then crashes building the same row); duplicate
+sample_ids silently collapse in the `position` dict so a fold scores one row
+twice and omits another with no error; and no report test asserts the seed's
+VALUE, so a renderer emitting seed 0 ships green against criterion 10's own
+artifact.
+Task 17: fix round 1/5 dispatched — FIX_BASE 8c339f9.
