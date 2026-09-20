@@ -52,7 +52,7 @@ def _screenshot_recapture(img: np.ndarray) -> np.ndarray:
     """
     out = _resize(img, 0.7)
     h, w = out.shape[:2]
-    yy = np.arange(h)[:, None]
+    yy = np.arange(h)[:, None, None]
     moire = (8.0 * np.sin(2 * np.pi * yy / 3.0)).astype(np.float32)
     out = np.clip(out.astype(np.float32) + moire, 0, 255).astype(np.uint8)
     glare = np.linspace(1.0, 1.12, w, dtype=np.float32)[None, :, None]
