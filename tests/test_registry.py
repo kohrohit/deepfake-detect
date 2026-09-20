@@ -1,0 +1,146 @@
+import numpy as np
+import pytest
+from dfd.detectors.base import SyntheticDetector, abstain
+from dfd.detectors.registry import Registry
+from dfd.types import Modality, Observation, Quality
+
+
+def _obs(band="high") -> Observation:
+    q = Quality(inter_ocular_px=100, blur_var=200, yaw_deg=0,
+                pitch_deg=0, exposure=0.5, band=band)
+    return Observation(t=0.0, payload=np.zeros((64, 64, 3), np.uint8),
+                       roi=(0, 0, 64, 64), quality=q, source_id="s1")
+
+
+def test_abstain_helper_produces_zero_information_rawscore():
+    r = abstain("npr", "0.1.0", "weights_absent")
+    assert r.abstained and r.score is None and r.reason == "weights_absent"
+
+
+def test_synthetic_detector_is_deterministic():
+    """Must fail if detector returns constant, so verify both determinism AND variation."""
+    d = SyntheticDetector(name="synth", seed=7)
+
+    # Same payload with same seed produces same score (determinism)
+    a = d.score([_obs()])
+    b = d.score([_obs()])
+    assert a.score == b.score, "Same payload should produce same score"
+    assert a.score is not None, "Score should not be None"
+
+    # Different payloads produce different scores (not constant)
+    obs_different = Observation(
+        t=0.0,
+        payload=np.ones((64, 64, 3), np.uint8),  # Different from zeros
+        roi=(0, 0, 64, 64),
+        quality=Quality(inter_ocular_px=100, blur_var=200, yaw_deg=0,
+                       pitch_deg=0, exposure=0.5, band="high"),
+        source_id="s2"
+    )
+    c = d.score([obs_different])
+    assert c.score is not None, "Score should not be None for different payload"
+    assert a.score != c.score, "Different payloads must produce different scores"
+
+
+def test_detector_abstains_below_its_quality_floor():
+    """Detector below its quality floor reports below_quality_floor, not quality_not_measured."""
+    d = SyntheticDetector(name="synth", seed=7, min_quality_band="high")
+    r = d.score([_obs(band="low")])
+    assert r.abstained, "Should abstain when below quality floor"
+    assert r.reason == "below_quality_floor", f"Expected 'below_quality_floor', got '{r.reason}'"
+    assert r.score is None, "Abstained score should be None"
+
+
+def test_detector_abstains_when_quality_not_measured():
+    """Detector abstains with quality_not_measured when obs has quality=None."""
+    d = SyntheticDetector(name="synth", seed=7, min_quality_band="low")
+
+    # Observation with quality=None
+    obs_no_quality = Observation(
+        t=0.0,
+        payload=np.zeros((64, 64, 3), np.uint8),
+        roi=(0, 0, 64, 64),
+        quality=None,  # No quality measured
+        source_id="s1"
+    )
+    r = d.score([obs_no_quality])
+    assert r.abstained, "Should abstain when quality not measured"
+    assert r.reason == "quality_not_measured", f"Expected 'quality_not_measured', got '{r.reason}'"
+    assert r.score is None, "Abstained score should be None"
+
+
+def test_detector_abstains_reasons_are_distinct():
+    """Verify below_quality_floor and quality_not_measured are distinct outcomes."""
+    d = SyntheticDetector(name="synth", seed=7, min_quality_band="high")
+
+    # Case 1: quality measured but below floor
+    r_below_floor = d.score([_obs(band="low")])
+
+    # Case 2: quality not measured
+    obs_no_quality = Observation(
+        t=0.0,
+        payload=np.zeros((64, 64, 3), np.uint8),
+        roi=(0, 0, 64, 64),
+        quality=None,
+        source_id="s1"
+    )
+    r_no_quality = d.score([obs_no_quality])
+
+    # Both abstain but for different reasons
+    assert r_below_floor.abstained and r_below_floor.reason == "below_quality_floor"
+    assert r_no_quality.abstained and r_no_quality.reason == "quality_not_measured"
+    assert r_below_floor.reason != r_no_quality.reason
+
+
+def test_registry_round_trips():
+    """Must fail against stub registry that stores nothing."""
+    reg = Registry()
+    d1 = SyntheticDetector(name="synth1", seed=1)
+    d2 = SyntheticDetector(name="synth2", seed=2)
+
+    reg.register(d1)
+    reg.register(d2)
+
+    # Identity check: exact same object retrieved
+    assert reg.get("synth1") is d1, "Should retrieve exact same detector object"
+    assert reg.get("synth2") is d2, "Should retrieve exact same detector object"
+
+    # Names list check: both detectors present and sorted
+    names = reg.names()
+    assert "synth1" in names, "synth1 should be in names list"
+    assert "synth2" in names, "synth2 should be in names list"
+    assert len(names) == 2, "Should have exactly 2 detectors"
+    assert names == ["synth1", "synth2"], "Names should be sorted"
+
+
+def test_registry_rejects_duplicate_names():
+    reg = Registry()
+    reg.register(SyntheticDetector(name="synth", seed=1))
+    with pytest.raises(ValueError):
+        reg.register(SyntheticDetector(name="synth", seed=2))
+
+
+def test_subset_selection_is_seeded_and_reproducible():
+    reg = Registry()
+    for i in range(5):
+        reg.register(SyntheticDetector(name=f"d{i}", seed=i))
+
+    # Deterministic assertion: verify exact expected subsets for each seed
+    # (prevents flaking when selecting 3 of 5 items)
+    a = reg.select_subset(k=3, seed=99)
+    b = reg.select_subset(k=3, seed=99)
+    c = reg.select_subset(k=3, seed=100)
+
+    # Primary assertion: exact expected subsets (verified empirically)
+    assert a == ["d2", "d3", "d4"], f"Expected ['d2', 'd3', 'd4'], got {a}"
+    assert b == ["d2", "d3", "d4"], f"Expected ['d2', 'd3', 'd4'], got {b}"
+    assert c == ["d0", "d2", "d3"], f"Expected ['d0', 'd2', 'd3'], got {c}"
+
+    # Secondary assertion: same seed gives same subset, different seeds differ
+    assert a == b, "Same seed should produce identical subsets"
+    assert a != c, "Different seeds should produce different subsets"
+
+
+def test_subset_selection_caps_at_registry_size():
+    reg = Registry()
+    reg.register(SyntheticDetector(name="only", seed=1))
+    assert reg.select_subset(k=10, seed=1) == ["only"]
