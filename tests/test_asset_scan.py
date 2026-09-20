@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 from dfd.asset_scan import (
-    ASSET_SUFFIXES, AssetScanEmpty, assert_all_assets_registered,
-    discover_assets,
+    ASSET_SUFFIXES, AssetScanEmpty, DuplicateAssetClaim,
+    assert_all_assets_registered, discover_assets,
 )
 from dfd.manifest import NonCommercialAsset, assert_release_clean, load_manifest
 
@@ -169,3 +171,92 @@ def test_symlinked_file_is_not_admitted_as_an_asset(tmp_path):
     link = tmp_path / "assets" / "models" / "linked.onnx"
     link.symlink_to(target)
     assert discover_assets(tmp_path) == []
+
+
+_DUP_FIELDS = """
+    source: "s"
+    license: "L"
+    evidence_url: "u"
+    date_checked: "2026-09-20"
+    checked_by: "k"
+"""
+
+DUP_MANIFEST_UNCLEARED_FIRST = f"""
+assets:
+  uncleared:
+    commercial_use: false
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+  cleared:
+    commercial_use: true
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+"""
+
+DUP_MANIFEST_CLEARED_FIRST = f"""
+assets:
+  cleared:
+    commercial_use: true
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+  uncleared:
+    commercial_use: false
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+"""
+
+
+@pytest.mark.parametrize(
+    "manifest_text", [DUP_MANIFEST_UNCLEARED_FIRST, DUP_MANIFEST_CLEARED_FIRST],
+    ids=["uncleared_declared_first", "cleared_declared_first"])
+def test_duplicate_claim_raises_regardless_of_declaration_order(tmp_path, manifest_text):
+    """A file claimed by two entries with conflicting licence verdicts must
+    raise no matter which entry the YAML author happened to write last —
+    the whole defect is that the old code let declaration order decide.
+    """
+    _tree(tmp_path, "dup.onnx")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(manifest_text)
+    with pytest.raises(DuplicateAssetClaim, match="dup.onnx"):
+        assert_all_assets_registered(tmp_path, mp)
+
+
+def test_duplicate_claim_with_identical_clearance_also_raises(tmp_path):
+    """Two entries claiming the same file are a manifest authoring error even
+    when they happen to agree on commercial_use today: agreement is not a
+    guarantee, and a later edit to one copy without the other would then
+    diverge silently. Duplicate provenance is the bug, not disagreement."""
+    _tree(tmp_path, "dup.onnx")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(f"""
+assets:
+  first_copy:
+    commercial_use: true
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+  second_copy:
+    commercial_use: true
+{_DUP_FIELDS}
+    files:
+      - "assets/models/dup.onnx"
+""")
+    with pytest.raises(DuplicateAssetClaim, match="dup.onnx"):
+        assert_all_assets_registered(tmp_path, mp)
+
+
+def test_real_manifest_has_no_duplicate_claims(tmp_path):
+    """The shipped manifest must not trip its own new integrity check.
+
+    Scans an empty directory with allow_empty=True so this exercises the
+    manifest's internal consistency (does any path appear under two ids?)
+    through the real public entry point, independent of which weight files
+    happen to be checked out on this machine.
+    """
+    root = Path(__file__).resolve().parents[1]
+    manifest_path = root / "assets" / "manifest.yaml"
+    assert assert_all_assets_registered(tmp_path, manifest_path, allow_empty=True) is None

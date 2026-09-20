@@ -50,6 +50,42 @@ class AssetScanEmpty(Exception):
     """
 
 
+class DuplicateAssetClaim(Exception):
+    """More than one manifest entry declares the same file.
+
+    Two records for one file mean at least one of them is wrong — a human
+    recorded that file's provenance twice, possibly with different licence
+    verdicts. Silently keeping the stricter record would hide that authoring
+    error rather than surface it, and would make the gate's verdict depend on
+    a reconciliation rule nobody reading the manifest can see. This is raised
+    even when the two records happen to agree today: agreement is
+    coincidental, not a guarantee, and a later edit to one copy without the
+    other would then diverge undetected.
+    """
+
+
+def _build_claims(manifest: dict[str, AssetRecord]) -> dict[str, str]:
+    """Map each manifest-declared file path to the single id that claims it.
+
+    Raises DuplicateAssetClaim if any path is declared by more than one id.
+    This runs over every declaration in the manifest, not just paths that
+    happen to be discovered on disk right now: a manifest with a duplicate
+    claim is malformed regardless of what is currently checked out.
+    """
+    claimants: dict[str, list[str]] = {}
+    for asset_id, rec in manifest.items():
+        for f in rec.files:
+            claimants.setdefault(f, []).append(asset_id)
+    duplicates = {f: ids for f, ids in claimants.items() if len(ids) > 1}
+    if duplicates:
+        parts = [f"{f!r} claimed by {', '.join(sorted(ids))}"
+                 for f, ids in sorted(duplicates.items())]
+        raise DuplicateAssetClaim(
+            "manifest declares the same file under more than one id: "
+            + "; ".join(parts))
+    return {f: ids[0] for f, ids in claimants.items()}
+
+
 def _resolve_ids(manifest: dict[str, AssetRecord], discovered: list[str]) -> list[str]:
     """Map each discovered path to the manifest id whose `files` claims it.
 
@@ -59,10 +95,7 @@ def _resolve_ids(manifest: dict[str, AssetRecord], discovered: list[str]) -> lis
     unregistered — by the path that was actually found on disk, which is more
     useful than a bare stem when two files share one.
     """
-    claims: dict[str, str] = {}
-    for asset_id, rec in manifest.items():
-        for f in rec.files:
-            claims[f] = asset_id
+    claims = _build_claims(manifest)
     return [claims.get(path, path) for path in discovered]
 
 
@@ -78,6 +111,9 @@ def assert_all_assets_registered(root: str | Path,
             remove, one level up. On a fresh checkout this is the normal case,
             because weight files are gitignored, so the caller must opt into
             it deliberately rather than inherit it by silence.
+        DuplicateAssetClaim: the manifest declares the same file under more
+            than one id — an authoring error that must be fixed by hand, not
+            silently resolved in either direction.
         NonCommercialAsset: a discovered path is claimed by no manifest entry,
             or claimed by one without commercial clearance.
     """
