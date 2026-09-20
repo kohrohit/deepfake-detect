@@ -55,22 +55,47 @@ def test_effective_sample_size_approaches_n_for_independent_frames():
     assert ess > 100
 
 
-def test_correlated_frames_do_not_produce_runaway_confidence():
-    """900 correlated frames must not yield 900x the evidence of one frame.
+def test_aggregated_detector_path_undiscounted():
+    """Real case: single Evidence with n_frames=1 (detector aggregated internally).
 
-    With per-frame llr=1.0, n_frames=900, ess=20:
-    Expected total = 1.0 * (20/900) = 0.0222 (linear discount formula).
+    All detectors in this repo compute probs.mean() over frames before emitting
+    a score. Calibration was fitted on the aggregated score. The llr is already
+    whole-sample. No discount applies.
     """
-    one = fuse([_ev(1.0, "a")], n_frames=1, ess=1.0)
-    many = fuse([_ev(1.0, "a")], n_frames=900, ess=20.0)
-    assert one.llr_total == pytest.approx(1.0)
-    # Discount should give exactly ess/n_frames = 20/900
-    expected = 1.0 * (20.0 / 900.0)
-    assert many.llr_total == pytest.approx(expected, rel=1e-3)
-    # Sanity: not runaway
-    assert many.llr_total < one.llr_total * 900
-    # And that fixture holds: ess < n_frames (to avoid vacuity if numbers change)
+    r = fuse([_ev(2.0)], n_frames=1)
+    assert r.llr_total == pytest.approx(2.0)
+    assert r.n_contributing == 1
+
+
+def test_per_frame_evidence_with_ess_discount():
+    """Per-frame evidence list with ESS discount.
+
+    Contract: evidence list contains one entry per frame. Naive sum = 900.0.
+    With ess=20, discount factor = 20/900. Result = 900 * (20/900) = 20.0.
+    """
+    per_frame = [_ev(1.0, f"f{i}") for i in range(900)]
+    r = fuse(per_frame, n_frames=900, ess=20.0)
+    # Naive sum is 900
+    assert sum(e.llr for e in per_frame) == 900.0
+    # Discounted by ess/n_frames = 20/900
+    expected = 900.0 * (20.0 / 900.0)
+    assert r.llr_total == pytest.approx(expected, rel=1e-3)
+    # Result is exactly ESS frames' worth
+    assert r.llr_total == pytest.approx(20.0)
+    # Fixture: ess < n_frames (to catch vacuity if numbers change)
     assert 20.0 < 900
+
+
+def test_per_frame_evidence_with_ess_equals_one():
+    """Pathological case: per-frame list with ess=1 (perfectly correlated).
+
+    900 identical frames, per-frame llr=1.0, ess=1.0 (maximum correlation).
+    Naive sum = 900. Discount = 1/900. Result = 1.0 (exactly one frame's worth).
+    """
+    identical = [_ev(1.0, f"f{i}") for i in range(900)]
+    r = fuse(identical, n_frames=900, ess=1.0)
+    assert r.llr_total == pytest.approx(1.0)
+    assert r.n_contributing == 900
 
 
 _MAX_TOTAL = 20.0

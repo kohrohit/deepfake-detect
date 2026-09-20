@@ -94,16 +94,35 @@ def effective_sample_size(series: np.ndarray | list[float]) -> float:
 def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) -> FusedResult:
     """Combine Evidence into a single verdict.
 
-    Abstentions are filtered out before aggregation. LLRs are summed, then
-    discounted by (ESS / n_frames) to account for frame-to-frame correlation.
-    The total is capped at ±MAX_TOTAL_LLR. Disagreement (min of positive and
-    negative evidence streams) triggers OUT_OF_DISTRIBUTION if ≥ DISAGREEMENT_OOD.
+    CONTRACT (critical): This function assumes one of two mutually exclusive patterns:
+
+    1. **Per-frame evidence** (n_frames > 1): evidence list contains ONE Evidence per frame.
+       The list sum equals (n_frames × per-frame_llr). The ESS discount applies here:
+       total = naive_sum × (ESS / n_frames). Useful only when a caller explicitly
+       breaks down a sample into per-frame evidence before fusion.
+
+    2. **Aggregated evidence** (n_frames = 1): evidence list contains ONE Evidence per
+       detector, where each Evidence.llr is already whole-sample (the detector aggregated
+       internally). No discount is applied; Evidence passes through untouched.
+       This is the normal path: all detectors in this repo aggregate over frames before
+       emitting a score, and calibration was fitted on the aggregated score.
+
+    Misuse: Passing n_frames=900 with a single Evidence (whole-sample llr) triggers the
+    discount, destroying the evidence. A WARNING is logged when n_frames > 1 and
+    len(evidence) < n_frames, indicating likely misuse.
+
+    Abstentions are filtered out before aggregation. LLRs are summed, then optionally
+    discounted. The total is capped at ±MAX_TOTAL_LLR. Disagreement (min of positive
+    and negative evidence streams) triggers OUT_OF_DISTRIBUTION if ≥ DISAGREEMENT_OOD.
 
     Args:
-        evidence: Detectors' calibrated log-likelihood ratios.
-        n_frames: Number of frames in the sample (>1 triggers ESS discount).
-        ess: Effective sample size. If None and n_frames > 1, defaults to 1.0
-             (max discount; conservative for missing correlation data).
+        evidence: Detectors' log-likelihood ratios. Per-frame if n_frames > 1,
+                  aggregated if n_frames = 1.
+        n_frames: Number of frames in the sample. Use n_frames=1 for detectors that
+                  aggregate internally (the normal case). Use n_frames > 1 only if
+                  evidence list contains one entry per frame.
+        ess: Effective sample size for discount. Applied only when n_frames > 1.
+             If None and n_frames > 1, defaults to 1.0 (maximum discount; conservative).
 
     Returns:
         FusedResult with verdict, aggregate LLR, posterior, disagreement, counts.
@@ -123,11 +142,16 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
     llrs = np.array([e.llr for e in contributing], dtype=float)
     total = float(llrs.sum())
 
-    # Discount for temporal correlation: evidence scales with independent
-    # observations, not with frame count. LLRs are additive; if n correlated
-    # observations are worth ESS independent ones, total = naive_sum × (ESS/n).
-    # Linear scaling (not square-root) preserves additive semantics. Spec §9.5.
+    # Discount for temporal correlation (per-frame evidence only). Evidence scales with
+    # independent observations, not with frame count. If n_frames correlated observations
+    # are worth ESS independent ones, total = naive_sum × (ESS / n_frames).
+    # This applies ONLY when evidence list contains one entry per frame.
+    # When detectors aggregate internally (n_frames=1), no discount applies.
     if n_frames > 1:
+        if len(contributing) < n_frames:
+            logger.warning("ESS discount: n_frames=%d but only %d evidence entries. "
+                          "If evidence is aggregated (not per-frame), use n_frames=1.",
+                          n_frames, len(contributing))
         eff = ess if ess is not None else 1.0
         if ess is None:
             logger.warning("Fusion ran with n_frames=%d and no ESS data; max-discounting to 1.0", n_frames)
