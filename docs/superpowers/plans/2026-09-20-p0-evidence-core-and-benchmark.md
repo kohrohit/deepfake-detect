@@ -29,6 +29,20 @@ Copied verbatim from the spec. Every task's requirements implicitly include this
 - **Python 3.10 typing.** Use `X | None`, not `Optional[X]`. Dataclasses are `frozen=True` unless mutation is required.
 - **Ensemble diversity must be in the physics, not the architecture** (spec §6). The three P0 detectors are deliberately three different physics.
 
+### Production engineering standards (raised 2026-09-20, binding on all tasks from Task 3's fix round onward)
+
+This is production code for a BFSI fraud control, not a research prototype. Every task must additionally satisfy:
+
+- **No silent failures.** Never `except:` or `except Exception: pass`. Catch the narrowest exception that can occur, and either handle it with a stated reason or let it propagate. A swallowed error in a fraud detector is a fraud that was approved.
+- **Validate at boundaries.** Every public function validates its inputs and raises a typed, named exception with an actionable message. Internal helpers may assume validated input; the boundary is where the check lives.
+- **Typed exceptions, not bare ones.** Define a module exception hierarchy rooted at `DfdError`. `ValueError`/`KeyError` are acceptable only where they are the semantically correct answer (a malformed record IS a programming error).
+- **Structured logging, never `print`.** Use the stdlib `logging` module with module-level loggers. Log the abstention reason, never the applicant's image data or any PII.
+- **Resource limits at every decode boundary.** Media arrives from an adversary (spec §3A). Cap decoded dimensions, frame counts, file sizes and durations, and reject beyond them rather than allocating.
+- **Every public callable has complete type hints** and a docstring stating what it does, what it raises, and any non-obvious invariant.
+- **Determinism is declared.** Any function whose output depends on randomness takes an explicit `seed`. No implicit global RNG.
+- **No hardcoded magic numbers in logic.** Thresholds are module-level named constants with a comment recording their provenance.
+- **Lint and type checks must pass**: `ruff check` clean, `mypy --strict` clean on `src/dfd`.
+
 ---
 
 ## File Structure
