@@ -108,8 +108,6 @@ model has never seen the distribution and therefore answers confidently wrong.
 
 ---
 
----
-
 ## 2. First principles: what a deepfake physically is
 
 A real frame ends a physical chain: photons → lens → Bayer sensor → demosaic →
