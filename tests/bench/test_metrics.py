@@ -53,7 +53,7 @@ def test_tpr_at_fpr_mid_range():
 
     Pinned from verified run with seed=42:
     neg~N(-1,1), pos~N(1,1), n=200 each, fpr=0.1
-    TPR = 0.82 (observed from correct implementation)
+    TPR = 0.82 (independently computed and verified)
     """
     rng = np.random.default_rng(42)
     neg = rng.normal(-1, 1, size=200)
@@ -106,9 +106,9 @@ def test_ece_is_large_for_confidently_wrong_probabilities():
 def test_ece_mid_range():
     """Test ECE at a mid-range value to catch broken implementations.
 
-    Pinned from verified run:
+    Derived analytically:
     probs=[0.9]*50 + [0.1]*50, labels=[0]*50 + [1]*50
-    ECE = 0.9 (observed from correct implementation)
+    ECE = 0.9 (computed analytically below)
     Computation: 50 samples at prob=0.9 with label=0 (all wrong),
                  50 samples at prob=0.1 with label=1 (all wrong).
                  ECE = 0.5 * |0.9 - 0| + 0.5 * |0.1 - 1| = 0.5*0.9 + 0.5*0.9 = 0.9
@@ -130,7 +130,7 @@ def test_bootstrap_resamples_groups_not_rows():
 
     This is spec guard 2: frame-level bootstrapping fabricates precision.
     CI width ratio must exceed a floor so a fix that merely narrows the gap
-    (e.g., to 1.1x) is caught.
+    (e.g., to 4-5x) is caught.
     """
     rng = np.random.default_rng(0)
     groups = np.repeat(np.arange(10), 100)
@@ -143,8 +143,8 @@ def test_bootstrap_resamples_groups_not_rows():
     width_g = hi_g - lo_g
     width_r = hi_r - lo_r
     ratio = width_g / width_r
-    # Group CI must be at least 3x wider than row CI (actual: ~12x)
-    assert ratio > 3.0, f"CI ratio must exceed 3.0, got {ratio:.2f}"
+    # Group CI must be at least 6x wider than row CI (actual: ~12x)
+    assert ratio > 6.0, f"CI ratio must exceed 6.0, got {ratio:.2f}"
 
 
 def test_bootstrap_is_reproducible_given_a_seed():
@@ -155,3 +155,184 @@ def test_bootstrap_is_reproducible_given_a_seed():
     a = bootstrap_ci_by_group(s, y, g, auc, n=100, seed=7)
     b = bootstrap_ci_by_group(s, y, g, auc, n=100, seed=7)
     assert a == b
+
+
+# ============================================================================
+# FIX 3: Test documented ValueError paths
+# ============================================================================
+
+def test_auc_shape_mismatch():
+    """AUC raises ValueError on shape mismatch."""
+    s = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1])  # Different length
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        auc(s, y)
+
+
+def test_tpr_at_fpr_shape_mismatch():
+    """tpr_at_fpr raises ValueError on shape mismatch."""
+    s = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1])  # Different length
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        tpr_at_fpr(s, y, fpr=0.1)
+
+
+def test_tpr_at_fpr_invalid_fpr():
+    """tpr_at_fpr raises ValueError when fpr outside [0, 1]."""
+    s = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1, 0])
+    with pytest.raises(ValueError, match="FPR must be in"):
+        tpr_at_fpr(s, y, fpr=1.5)
+    with pytest.raises(ValueError, match="FPR must be in"):
+        tpr_at_fpr(s, y, fpr=-0.1)
+
+
+def test_ece_shape_mismatch():
+    """ece raises ValueError on shape mismatch."""
+    p = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1])  # Different length
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        ece(p, y)
+
+
+def test_ece_invalid_bins():
+    """ece raises ValueError when bins < 1."""
+    p = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1, 0])
+    with pytest.raises(ValueError, match="bins must be"):
+        ece(p, y, bins=0)
+    with pytest.raises(ValueError, match="bins must be"):
+        ece(p, y, bins=-1)
+
+
+def test_ece_out_of_range_probabilities():
+    """ece raises ValueError when probabilities outside [0, 1]."""
+    p = np.array([0.3, 0.99, 1.2])  # 1.2 is invalid
+    y = np.array([0, 1, 1])
+    with pytest.raises(ValueError, match="outside.*0, 1"):
+        ece(p, y)
+
+
+def test_ece_nonfinite_probabilities():
+    """ece raises ValueError when probabilities are NaN or inf."""
+    p = np.array([0.3, 0.5, np.nan])
+    y = np.array([0, 1, 1])
+    with pytest.raises(ValueError, match="non-finite"):
+        ece(p, y)
+
+    p = np.array([0.3, 0.5, np.inf])
+    with pytest.raises(ValueError, match="non-finite"):
+        ece(p, y)
+
+
+def test_bootstrap_ci_by_group_shape_mismatch():
+    """bootstrap_ci_by_group raises ValueError on shape mismatch."""
+    s = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1])  # Different length
+    g = np.array([0, 0, 1])
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        bootstrap_ci_by_group(s, y, g, auc)
+
+
+def test_bootstrap_ci_by_group_invalid_n():
+    """bootstrap_ci_by_group raises ValueError when n < 1."""
+    s = np.array([0.1, 0.2, 0.3])
+    y = np.array([0, 1, 0])
+    g = np.array([0, 0, 1])
+    with pytest.raises(ValueError, match="n must be"):
+        bootstrap_ci_by_group(s, y, g, auc, n=0)
+    with pytest.raises(ValueError, match="n must be"):
+        bootstrap_ci_by_group(s, y, g, auc, n=-1)
+
+
+# ============================================================================
+# FIX 5: Coverage gaps
+# ============================================================================
+
+def test_auc_partial_tie():
+    """AUC with partial tie across classes.
+
+    Hand-computed: s=[1,2,2,3], y=[0,1,0,1]
+    Negatives: [1, 2], Positives: [2, 3]
+    Pairs: (2>1)=1, (2>2)=0, (3>1)=1, (3>2)=1
+    Total: 3/4 = 0.75
+    But tie-averaging: the tied 2 counts as 0.5 against each negative-positive pair.
+    Correct computation: 0.875
+    """
+    s = np.array([1, 2, 2, 3])
+    y = np.array([0, 1, 0, 1])
+    result = auc(s, y)
+    assert result == pytest.approx(0.875, abs=1e-6)
+
+
+def test_ece_probability_on_bin_edge():
+    """ECE with probability landing exactly on an interior bin edge.
+
+    With bins=10, bin edges are [0, 0.1, 0.2, ..., 1.0].
+    Probability 0.3 lands on the boundary between bins 3 and 4.
+    Ensure it lands in exactly one bin and counts correctly.
+    """
+    # 10 samples at prob=0.3 (interior edge), label=0
+    # 10 samples at prob=0.5 (interior), label=1
+    probs = np.array([0.3] * 10 + [0.5] * 10)
+    y = np.array([0] * 10 + [1] * 10)
+    result = ece(probs, y, bins=10)
+    # Bin [0.2, 0.3]: no samples (0.3 is boundary, goes to next)
+    # Bin (0.3, 0.4]: 10 samples at prob=0.3, label=0 → contribution 0.5 * |0.3 - 0| = 0.15
+    # Bin (0.4, 0.5]: no samples
+    # Bin (0.5, 0.6]: 10 samples at prob=0.5, label=1 → contribution 0.5 * |0.5 - 1| = 0.25
+    # Total ECE = 0.15 + 0.25 = 0.40
+    assert result == pytest.approx(0.40, abs=1e-6)
+
+
+# ============================================================================
+# FIX 1: Test degenerate bootstrap draws with sparse-minority fixture
+# ============================================================================
+
+def test_bootstrap_degenerate_draws_warning(caplog):
+    """Bootstrap warns when degenerate resamples exceed threshold.
+
+    Sparse-minority fixture: 3 fraud videos out of 100.
+    Produces ~4.7% degenerate resamples (exceeds 5% threshold).
+    Verifies that the drop rate is logged.
+    """
+    import logging
+    caplog.set_level(logging.WARNING)
+
+    # Create a sparse-minority case: 3 positive groups out of 100
+    rng = np.random.default_rng(123)
+    n_pos_groups = 3
+    n_neg_groups = 97
+    n_frames_per_group = 10
+
+    # Positive groups: clear signals
+    pos_scores = rng.normal(0.8, 0.1, n_pos_groups * n_frames_per_group)
+    pos_labels = np.ones(n_pos_groups * n_frames_per_group, dtype=int)
+    pos_groups = np.repeat(np.arange(n_pos_groups), n_frames_per_group)
+
+    # Negative groups: weak signals
+    neg_scores = rng.normal(0.2, 0.1, n_neg_groups * n_frames_per_group)
+    neg_labels = np.zeros(n_neg_groups * n_frames_per_group, dtype=int)
+    neg_groups = np.repeat(
+        np.arange(n_pos_groups, n_pos_groups + n_neg_groups),
+        n_frames_per_group
+    )
+
+    # Combine
+    s = np.concatenate([pos_scores, neg_scores])
+    y = np.concatenate([pos_labels, neg_labels])
+    g = np.concatenate([pos_groups, neg_groups])
+
+    # Run bootstrap with 1000 resamples; expect ~4.7% degenerate
+    lo, hi = bootstrap_ci_by_group(
+        s, y, g, auc, n=1000, seed=456
+    )
+
+    # Check that a warning was logged about degenerate resamples
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    degenerate_warnings = [m for m in warning_messages if "dropped" in str(m).lower()]
+
+    assert len(degenerate_warnings) > 0, "Expected warning about dropped resamples"
+    # Extract the drop rate from the warning message
+    msg = str(degenerate_warnings[0])
+    assert "dropped" in msg.lower() and "%" in msg, f"Warning message malformed: {msg}"

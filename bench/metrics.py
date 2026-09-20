@@ -13,6 +13,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Threshold for warning when bootstrap drops degenerate draws.
+# Above ~5% drop rate, the CI is conditioned on well-behaved draws and reads optimistic.
+# This matters most in low-fraud regimes where positive groups are sparse and fragile.
+MAX_DEGENERATE_FRACTION = 0.05
+
 
 def auc(scores: np.ndarray, labels: np.ndarray) -> float:
     """Area under ROC curve via Mann-Whitney U statistic.
@@ -69,10 +74,15 @@ def tpr_at_fpr(
     Operationally: if we can tolerate flipping 1 in 100 real transactions,
     how many frauds will we catch?
 
+    Caveat: with tied or saturated negative scores, the achieved FPR can fall
+    short of the requested value. The error is conservative (TPR is never
+    overstated). This quantization matches Reality Defender's observed behaviour,
+    making it operationally relevant rather than theoretical.
+
     Args:
         scores: Predicted scores (higher is more likely positive).
         labels: Binary labels (0 for negative, 1 for positive).
-        fpr: Tolerance for false positive rate on negatives (0 to 1).
+        fpr: Tolerance for false positive rate on negatives, in [0, 1].
 
     Returns:
         TPR in [0, 1], or NaN if either class is empty.
@@ -113,15 +123,16 @@ def ece(
     return weighted average by bin size.
 
     Args:
-        probs: Predicted probabilities (should be in [0, 1]).
+        probs: Predicted probabilities (MUST be in [0, 1]; NaN and inf raise ValueError).
         labels: Binary labels (0 or 1).
-        bins: Number of bins to partition [0, 1].
+        bins: Number of bins to partition [0, 1] (default 10: standard histogram).
 
     Returns:
         ECE in [0, 1], or NaN if no samples.
 
     Raises:
-        ValueError: If bins < 1, or shape mismatch.
+        ValueError: If any probability outside [0, 1] or non-finite, bins < 1,
+            or shape mismatch.
     """
     if bins < 1:
         msg = f"bins must be >= 1, got {bins}"
@@ -132,6 +143,24 @@ def ece(
 
     if p.shape[0] != y.shape[0]:
         msg = f"Shape mismatch: probs {p.shape} vs labels {y.shape}"
+        raise ValueError(msg)
+
+    # Validate probability range: no NaN, inf, or out-of-bounds values
+    if not np.all(np.isfinite(p)):
+        bad_idx = np.where(~np.isfinite(p))[0]
+        bad_vals = p[bad_idx]
+        msg = (
+            f"Probability contains non-finite values at indices {bad_idx.tolist()}: "
+            f"{bad_vals.tolist()}"
+        )
+        raise ValueError(msg)
+    if np.any((p < 0.0) | (p > 1.0)):
+        bad_idx = np.where((p < 0.0) | (p > 1.0))[0]
+        bad_vals = p[bad_idx]
+        msg = (
+            f"Probability outside [0, 1] at indices {bad_idx.tolist()}: "
+            f"{bad_vals.tolist()}"
+        )
         raise ValueError(msg)
 
     if len(p) == 0:
@@ -165,6 +194,11 @@ def bootstrap_ci_by_group(
     Resampling rows instead of videos fabricates precision: 10,000 frames from
     100 videos carry 100 videos' worth of information, not 10,000.
 
+    WARNING: Degenerate resamples (those returning NaN or inf from stat_fn) are
+    silently dropped. If >5% of resamples degenerate, the CI is conditioned on
+    well-behaved draws only and reads optimistically. This matters most in low-fraud
+    regimes where positive groups are scarce.
+
     Args:
         scores: Predicted scores (same length as labels and groups).
         labels: Binary labels.
@@ -172,16 +206,18 @@ def bootstrap_ci_by_group(
             the same group are resampled together.
         stat_fn: Statistic to compute on each resample. Must accept (scores, labels)
             and return a scalar float.
-        n: Number of bootstrap resamples.
-        seed: Random seed for reproducibility.
+        n: Number of bootstrap resamples (default 1000: yields ~±3.2% precision at
+            percentile level for a true population median).
+        seed: Random seed for reproducibility (default 0: allows explicit determinism).
         alpha: Significance level; returns (alpha/2, 1-alpha/2) quantiles.
+            (default 0.05: yields 95% confidence interval).
 
     Returns:
         (lo, hi): Lower and upper bounds of confidence interval.
         Returns (NaN, NaN) if no valid statistics were computed.
 
     Raises:
-        ValueError: If groups has different length than scores/labels.
+        ValueError: If groups has different length than scores/labels, or n < 1.
     """
     s = np.asarray(scores, dtype=float)
     y = np.asarray(labels, dtype=int)
@@ -204,6 +240,7 @@ def bootstrap_ci_by_group(
     rng = np.random.default_rng(seed)
 
     stats: list[float] = []
+    degenerate_count = 0
     for _ in range(n):
         # Resample groups (not rows).
         drawn = rng.choice(uniq, size=len(uniq), replace=True)
@@ -212,6 +249,16 @@ def bootstrap_ci_by_group(
         v = stat_fn(s[idx], y[idx])
         if np.isfinite(v):
             stats.append(float(v))
+        else:
+            degenerate_count += 1
+
+    degenerate_fraction = degenerate_count / n if n > 0 else 0.0
+    if degenerate_fraction > MAX_DEGENERATE_FRACTION:
+        logger.warning(
+            "Bootstrap dropped %d/%d resamples (%.1f%%) due to degenerate stat_fn returns. "
+            "CI may read optimistically.",
+            degenerate_count, n, degenerate_fraction * 100
+        )
 
     if not stats:
         logger.warning(
