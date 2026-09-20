@@ -55,16 +55,14 @@ def test_align_clamps_box_to_frame_bounds():
     assert out.mean() > 200
 
 
-def test_landmarks_array_is_read_only():
-    """Mutating landmarks after detection must raise ValueError."""
-    frame = _frame()
-    box = FaceBox(x=100, y=100, w=200, h=200,
-                  landmarks=np.array([[150.0, 160.0], [250.0, 160.0]]),
-                  score=0.99)
-    # Make the landmarks read-only like detect_faces does
-    box.landmarks.setflags(write=False)
+def test_landmarks_are_read_only_on_construction():
+    """A FaceBox is evidence. Nothing may mutate it after the fact.
 
-    # Attempting to mutate should raise ValueError
+    The test must NOT set the flag itself — construction is what enforces it.
+    """
+    lms = np.array([[150.0, 160.0], [250.0, 160.0]])
+    box = FaceBox(x=100, y=100, w=200, h=200, landmarks=lms, score=0.99)
+    # Attempting to mutate should raise ValueError because __post_init__ froze it
     with pytest.raises(ValueError):
         box.landmarks[0, 0] = 999.0
 

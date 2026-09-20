@@ -30,6 +30,12 @@ DEFAULT_MODEL = Path("assets/models/face_detection_yunet_2023mar.onnx")
 
 @dataclass(frozen=True)
 class FaceBox:
+    """Detection result: position, landmarks, and confidence.
+
+    A FaceBox is evidence and immutable. The landmarks array is made read-only
+    at construction, so the array object is frozen even if passed from outside.
+    Callers needing a mutable copy must call .copy() on the landmarks array.
+    """
     x: int
     y: int
     w: int
@@ -41,6 +47,10 @@ class FaceBox:
     # therefore insensitive to the order. Verify before any consumer needs eye
     # identity (roll correction, gaze).
     score: float
+
+    def __post_init__(self) -> None:
+        """Freeze the landmark array: a FaceBox is evidence, not a scratch buffer."""
+        self.landmarks.setflags(write=False)
 
 
 @overload
@@ -73,7 +83,7 @@ def detect_faces(
     """
     path = Path(model_path)
     if not path.exists():
-        logger.warning(f"Face detector weights absent at {path}")
+        logger.warning("Face detector weights absent at %s", path)
         return ([], WEIGHTS_ABSENT) if with_reason else []
 
     h, w = frame.shape[:2]
@@ -86,9 +96,8 @@ def detect_faces(
         for f in faces:
             x, y, bw, bh = (int(v) for v in f[:4])
             lms = np.array(f[4:14], dtype=np.float64).reshape(5, 2)
-            lms.setflags(write=False)
             out.append(FaceBox(x=x, y=y, w=bw, h=bh, landmarks=lms, score=float(f[14])))
-    logger.debug(f"Detected {len(out)} faces")
+    logger.debug("detected %d faces", len(out))
     return (out, OK) if with_reason else out
 
 
