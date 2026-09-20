@@ -42,14 +42,18 @@ def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
             decision = decision if isinstance(decision, dict) else {}
             scan = d.get("scan")
             scan = scan if isinstance(scan, dict) else {}
-            session = CaptureSession(
-                session_id=d.get("session_id", path.parent.name),
-                folder=str(path.parent),
-                swapped=bool(d.get("swapped", False)),
-                approved=bool(decision.get("approved", False)),
-                scan_verdict=scan.get("verdict"),
-                frame_count=int(d.get("frame_count", 0)),
-            )
+            # Validate and coerce every field here, inside the try. Nothing
+            # past this point should be able to raise TypeError/ValueError/
+            # KeyError/AttributeError for reasons unrelated to bad input —
+            # those exceptions must still mean "malformed session", not
+            # "bug in our own field-building code" or "bug in the
+            # constructor call below", which is why CaptureSession(...) is
+            # built outside this block.
+            session_id = d.get("session_id", path.parent.name)
+            swapped = bool(d.get("swapped", False))
+            approved = bool(decision.get("approved", False))
+            scan_verdict = scan.get("verdict")
+            frame_count = int(d.get("frame_count", 0))
         except (json.JSONDecodeError, OSError, TypeError, ValueError,
                 KeyError, AttributeError) as exc:
             # Never silent: a dropped session may be one of the five that are
@@ -61,7 +65,16 @@ def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
                            path.parent.name, exc)
             skipped.append(path.parent.name)
             continue
-        out.append(session)
+        # Outside the try: a typo'd keyword or missing required field here
+        # is a defect in this module, not bad input, and must raise.
+        out.append(CaptureSession(
+            session_id=session_id,
+            folder=str(path.parent),
+            swapped=swapped,
+            approved=approved,
+            scan_verdict=scan_verdict,
+            frame_count=frame_count,
+        ))
     if skipped:
         logger.warning("loaded %d capture sessions, skipped %d: %s",
                        len(out), len(skipped), ", ".join(skipped))

@@ -6,10 +6,13 @@ already paid for. No quota is consumed by reading them.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class RDResult:
 
 def load_rd_cache(root: str | Path) -> list[RDResult]:
     out: list[RDResult] = []
+    skipped: list[str] = []
     for path in sorted(Path(root).glob("*/result.json")):
         try:
             d = json.loads(path.read_text())
@@ -52,21 +56,39 @@ def load_rd_cache(root: str | Path) -> list[RDResult]:
                     raise TypeError("model entry is not a JSON object")
                 model_scores[m["name"]] = float(m["score"])
                 model_verdicts[m["name"]] = m.get("verdict", "")
-            result = RDResult(
-                cache_key=path.parent.name,
-                verdict=d.get("verdict", ""),
-                score=float(d.get("score", float("nan"))),
-                model_scores=model_scores,
-                model_verdicts=model_verdicts,
-            )
+            # Validate and coerce every field here, inside the try. Nothing
+            # past this point should be able to raise TypeError/ValueError/
+            # KeyError for reasons unrelated to bad input — those exceptions
+            # must still mean "malformed result", not "bug in our own
+            # field-building code" or "bug in the constructor call below",
+            # which is why RDResult(...) is built outside this block.
+            cache_key = path.parent.name
+            verdict = d.get("verdict", "")
+            score = float(d.get("score", float("nan")))
         except (json.JSONDecodeError, OSError, TypeError, ValueError,
-                KeyError):
+                KeyError) as exc:
             # Skip a result that parses but is the wrong shape (a list, a
             # string, a non-numeric score, a model entry missing a field)
             # exactly as a decode/IO failure is skipped — one bad cache entry
-            # must not take down the other 23.
+            # must not take down the other 23. A dropped RD result is a
+            # dropped row in the head-to-head comparison, so this is never
+            # silent either.
+            logger.warning("skipping unreadable RD result %s: %s",
+                           path.parent.name, exc)
+            skipped.append(path.parent.name)
             continue
-        out.append(result)
+        # Outside the try: a typo'd keyword or missing required field here
+        # is a defect in this module, not bad input, and must raise.
+        out.append(RDResult(
+            cache_key=cache_key,
+            verdict=verdict,
+            score=score,
+            model_scores=model_scores,
+            model_verdicts=model_verdicts,
+        ))
+    if skipped:
+        logger.warning("loaded %d RD cache results, skipped %d: %s",
+                       len(out), len(skipped), ", ".join(skipped))
     return out
 
 

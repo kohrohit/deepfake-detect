@@ -1,4 +1,6 @@
 import json
+import logging
+
 from corpora.rd_cache import load_rd_cache, aggregate_is_max_like
 
 
@@ -99,3 +101,21 @@ def test_non_numeric_score_is_skipped_not_fatal(tmp_path):
            [{"name": "m1", "verdict": "AUTHENTIC", "score": 0.01}])
     out = load_rd_cache(tmp_path)
     assert [r.cache_key for r in out] == ["ok"]
+
+
+def test_a_skipped_result_is_reported_not_swallowed(tmp_path, caplog):
+    """24 cached results, none of them disposable — a result dropped in
+    silence is a dropped row in the head-to-head comparison. Asserts the
+    literal 'skipped 1' phrase the summary log line emits, not a bare digit
+    that could also come from the JSONDecodeError text (see
+    test_captures.py::test_a_skipped_session_is_reported_not_swallowed for
+    why a bare digit check is not trustworthy here)."""
+    d = tmp_path / "badscore"
+    d.mkdir()
+    (d / "result.json").write_text("{not json")
+    _write(tmp_path, "ok", "AUTHENTIC", 0.01,
+           [{"name": "m1", "verdict": "AUTHENTIC", "score": 0.01}])
+    with caplog.at_level(logging.WARNING):
+        load_rd_cache(tmp_path)
+    assert "badscore" in caplog.text
+    assert "skipped 1" in caplog.text
