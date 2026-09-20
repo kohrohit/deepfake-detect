@@ -72,7 +72,7 @@ bench/
   runner.py             orchestration, seeding, reproducibility record
   report.py             markdown tables, head-to-head vs Reality Defender
 
-datasets/
+corpora/
   rd_cache.py           loads the 24 cached Reality Defender results
   captures.py           loads the 442-session capture corpus
 
@@ -80,7 +80,7 @@ assets/manifest.yaml    the asset manifest
 tests/                  mirrors src/ and bench/
 ```
 
-**Why this split:** `src/dfd` is the shippable engine; `bench/` is the measuring instrument and must never be importable from production paths; `datasets/` holds corpus-specific loaders that will churn as new corpora arrive. Files that change together live together.
+**Why this split:** `src/dfd` is the shippable engine; `bench/` is the measuring instrument and must never be importable from production paths; `corpora/` holds corpus-specific loaders (NOT `datasets/` — that name is taken by the installed HuggingFace package and a repo-root copy shadows it) that will churn as new corpora arrive. Files that change together live together.
 
 ---
 
@@ -3296,22 +3296,24 @@ git commit -m "feat: white-box PGD baseline so the threat model is measured"
 ### Task 16: Corpus loaders for the RD cache and capture sessions
 
 **Files:**
-- Create: `datasets/__init__.py`, `datasets/rd_cache.py`, `datasets/captures.py`
-- Test: `tests/datasets/test_rd_cache.py`, `tests/datasets/test_captures.py`
+- Create: `corpora/__init__.py`, `corpora/rd_cache.py`, `corpora/captures.py`
+- Test: `tests/corpora/test_rd_cache.py`, `tests/corpora/test_captures.py`
 
 **Interfaces:**
 - Consumes: nothing
 - Produces: `load_rd_cache(root) -> list[RDResult]`, `RDResult`, `load_capture_sessions(root) -> list[CaptureSession]`, `CaptureSession`
+
+**The package is `corpora/`, not `datasets/`.** HuggingFace `datasets` 3.0.1 is installed in this environment, alongside `transformers` and `huggingface_hub` which this project already uses. `pyproject.toml` sets `pythonpath = ["src", "."]`, so a repo-root `datasets/` is prepended to `sys.path` and wins. Verified by construction: `import datasets` resolves to the repo package and `from datasets import load_dataset` raises `ImportError: cannot import name 'load_dataset'`. FF++, Celeb-DF and DFDC are routinely loaded through HF `datasets`, so the collision would break the corpora on this project's critical path — and it would surface late, as someone's loader failing for no visible reason, rather than at import. This project has already lost time to exactly this failure once, when a stray `tests/bench/__init__.py` shadowed the real `bench/` package.
 
 These read the two corpora we already own (spec §1.1, §1.2): 24 cached RD responses with per-model breakdowns, and 442 capture sessions of which five are `swapped=true, approved=true` — the fraud that got through.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/datasets/test_rd_cache.py
+# tests/corpora/test_rd_cache.py
 import json
 import pytest
-from datasets.rd_cache import RDResult, load_rd_cache, aggregate_is_max_like
+from corpora.rd_cache import RDResult, load_rd_cache, aggregate_is_max_like
 
 
 def _write(root, name, verdict, score, models):
@@ -3351,6 +3353,35 @@ def test_detects_max_like_aggregation(tmp_path):
     assert aggregate_is_max_like(results, tolerance=0.2) is True
 
 
+def test_a_mean_tracking_ensemble_is_not_max_like(tmp_path):
+    """The negative case. Without it a constant `return True` passes, and this
+    function launders one of the three headline findings in the spec rather
+    than testing it: RD's aggregate tracking the MAX is why its false-positive
+    rate approximates the UNION of its members' FPRs."""
+    for i in range(3):
+        _write(tmp_path, f"m{i}", "MANIPULATED", 0.50,
+               [{"name": "m1", "verdict": "MANIPULATED", "score": 0.99},
+                {"name": "m2", "verdict": "AUTHENTIC", "score": 0.01}])
+    results = load_rd_cache(tmp_path)
+    assert aggregate_is_max_like(results, tolerance=0.2) is False
+
+
+def test_tolerance_is_load_bearing(tmp_path):
+    """Same corpus, two tolerances, two answers — so `tolerance` cannot be
+    silently ignored."""
+    for i in range(3):
+        _write(tmp_path, f"m{i}", "MANIPULATED", 0.50,
+               [{"name": "m1", "verdict": "MANIPULATED", "score": 0.99},
+                {"name": "m2", "verdict": "AUTHENTIC", "score": 0.01}])
+    results = load_rd_cache(tmp_path)
+    assert aggregate_is_max_like(results, tolerance=0.4) is False
+    assert aggregate_is_max_like(results, tolerance=0.6) is True
+
+
+def test_an_empty_corpus_is_not_reported_as_max_like(tmp_path):
+    assert aggregate_is_max_like(load_rd_cache(tmp_path)) is False
+
+
 def test_missing_models_key_does_not_crash(tmp_path):
     d = tmp_path / "bbb"
     d.mkdir()
@@ -3360,10 +3391,12 @@ def test_missing_models_key_does_not_crash(tmp_path):
 ```
 
 ```python
-# tests/datasets/test_captures.py
+# tests/corpora/test_captures.py
 import json
+import logging
+
 import pytest
-from datasets.captures import CaptureSession, load_capture_sessions, missed_attacks
+from corpora.captures import CaptureSession, load_capture_sessions, missed_attacks
 
 
 def _session(root, name, swapped, approved, verdict="LIVE"):
@@ -3404,22 +3437,46 @@ def test_malformed_session_is_skipped_not_fatal(tmp_path):
     (tmp_path / "broken" / "results.json").write_text("{not json")
     _session(tmp_path, "ok", False, True)
     assert len(load_capture_sessions(tmp_path)) == 1
+
+
+def test_a_skipped_session_is_reported_not_swallowed(tmp_path, caplog):
+    """442 sessions, of which exactly 5 are the fraud that matters. A session
+    dropped in silence could be one of the 5 and nobody would know."""
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "results.json").write_text("{not json")
+    _session(tmp_path, "ok", False, True)
+    with caplog.at_level(logging.WARNING):
+        load_capture_sessions(tmp_path)
+    assert "broken" in caplog.text
+    assert "1" in caplog.text
+
+
+@pytest.mark.parametrize("frame_count", [0, 1, 37, 900])
+def test_frame_count_is_preserved(tmp_path, frame_count):
+    d = tmp_path / "s1"
+    d.mkdir()
+    (d / "results.json").write_text(json.dumps({
+        "session_id": "s1", "swapped": False, "frame_count": frame_count,
+        "scan": {"verdict": "LIVE"},
+        "decision": {"approved": True, "reason": "approved"},
+    }))
+    assert load_capture_sessions(tmp_path)[0].frame_count == frame_count
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/datasets -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'datasets.rd_cache'`
+Run: `python -m pytest tests/corpora -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'corpora.rd_cache'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# datasets/__init__.py
+# corpora/__init__.py
 """Corpus loaders. One module per corpus; they churn as corpora arrive."""
 ```
 
 ```python
-# datasets/rd_cache.py
+# corpora/rd_cache.py
 """Loader for cached Reality Defender responses (spec §1.2).
 
 These are the free head-to-head data: 24 results with per-model breakdowns,
@@ -3487,7 +3544,7 @@ def aggregate_is_max_like(results: list[RDResult], tolerance: float = 0.2) -> bo
 ```
 
 ```python
-# datasets/captures.py
+# corpora/captures.py
 """Loader for the 442-session v-CIP capture corpus (spec §1.1).
 
 Five of these sessions are swapped=true and approved=true. They are the actual
@@ -3497,8 +3554,11 @@ aggregate accuracy over 442 sessions would hide all five.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -3518,10 +3578,16 @@ class CaptureSession:
 
 def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
     out: list[CaptureSession] = []
+    skipped: list[str] = []
     for path in sorted(Path(root).glob("*/results.json")):
         try:
             d = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            # Never silent: a dropped session may be one of the five that are
+            # the actual fraud, and aggregate counts would not reveal it.
+            logger.warning("skipping unreadable session %s: %s",
+                           path.parent.name, exc)
+            skipped.append(path.parent.name)
             continue
         out.append(CaptureSession(
             session_id=d.get("session_id", path.parent.name),
@@ -3531,6 +3597,9 @@ def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
             scan_verdict=(d.get("scan") or {}).get("verdict"),
             frame_count=int(d.get("frame_count", 0)),
         ))
+    if skipped:
+        logger.warning("loaded %d capture sessions, skipped %d: %s",
+                       len(out), len(skipped), ", ".join(skipped))
     return out
 
 
@@ -3541,18 +3610,23 @@ def missed_attacks(sessions: list[CaptureSession]) -> list[CaptureSession]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/datasets -v`
-Expected: PASS, 8 tests
+Run: `python -m pytest tests/corpora -v`
+Expected: PASS, 16 tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the max-like tests can fail**
+
+`aggregate_is_max_like` encodes a headline claim from the spec, and the version this task replaced asserted only the `True` case — a constant `return True` passed it. Prove the new tests discriminate: temporarily replace the function body with `return True`, run `pytest tests/corpora/test_rd_cache.py -k max_like or tolerance or empty_corpus`, and confirm the mean-tracking, tolerance and empty-corpus tests FAIL while `test_detects_max_like_aggregation` still passes. Then try `return False` and confirm the reverse. Restore and confirm all 16 pass. Record each output in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add datasets tests/datasets
+git add corpora tests/corpora
 git commit -m "feat: loaders for the RD cache and the v-CIP capture corpus"
 ```
 
 ---
 
+### Task 17: Benchmark runner and head-to-head report
 ### Task 17: Benchmark runner and head-to-head report
 
 **Files:**
