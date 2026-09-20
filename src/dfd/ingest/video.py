@@ -6,7 +6,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..limits import DEFAULT_LIMITS, Limits, check_file_size
+from ..errors import ResourceLimitExceeded
+from ..limits import DEFAULT_LIMITS, Limits, check_file_size, check_frame_dims
 from ..types import Context, Modality, Observation, Sample
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,30 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
     stratified sampling. If frame-count metadata is unavailable or unreliable,
     falls back to sequential read of the first max_frames.
 
-    The file size is gated against `limits` before the container is opened
-    (spec §3A, §10), and the requested frame count is clamped to
-    `limits.max_frames` regardless of what the caller asked for, so a caller
-    cannot reintroduce unbounded frame extraction by passing a large
-    `max_frames`.
+    Every gate here reads container metadata before a frame is decoded (spec
+    §3A, §10) — the same header-before-decode discipline `check_image_before_
+    decode` uses for images, applied to what `VideoCapture` exposes at open
+    time:
+
+    - `check_file_size` runs before the container is opened at all.
+    - The container's own declared frame width/height (`CAP_PROP_FRAME_
+      WIDTH`/`HEIGHT`, populated at open, before any `cap.read()`) is
+      checked against `limits.max_pixels` before the read loop starts. A
+      container declaring 0x0 is refused rather than read unguarded.
+    - The container's declared duration (`CAP_PROP_FRAME_COUNT / fps`, also
+      read before the loop) is checked against `limits.max_duration_s`
+      before the loop starts, so a well-compressed multi-hour file that
+      passes the byte-size cap is still refused before a single frame
+      decodes.
+    - The requested `max_frames` is clamped to `limits.max_frames`, and the
+      decode loop itself stops as soon as every needed frame has been
+      retained — it does not keep decoding to the end of the stream after
+      the quota is met. The clamp bounds decode work, not merely how many
+      observations are kept.
+
+    When frame-count metadata is unusable (`total <= 0`), duration cannot be
+    computed from it, so only the dimension gate and the `max_frames` cutoff
+    apply in that fallback path.
 
     Args:
         path: Path to video file.
@@ -56,8 +76,11 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
         Sample with Observation per extracted frame, ordered by timestamp.
 
     Raises:
-        InvalidInput: If the path is unreadable.
-        ResourceLimitExceeded: If the file exceeds `limits.max_file_bytes`.
+        InvalidInput: If the path is unreadable, or the container declares
+            non-positive frame dimensions.
+        ResourceLimitExceeded: If the file exceeds `limits.max_file_bytes`,
+            the declared frame dimensions exceed `limits.max_pixels`, or the
+            declared duration exceeds `limits.max_duration_s`.
         ValueError: If video cannot be opened or decoding yields zero frames.
     """
     path = Path(path)
@@ -67,20 +90,30 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
     if not cap.isOpened():
         raise ValueError(f"could not open video: {path}")
 
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
-
-    # Determine which frames to extract.
-    if total <= 0:
-        logger.warning("frame-count metadata unusable for %s; falling back to sequential read", path)
-        wanted = None  # Will read sequentially and keep first max_frames
-    else:
-        wanted = set(sample_indices(total, max_frames, seed))
-
-    sample_id = path.stem
-    obs: list[Observation] = []
-    i = 0
     try:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        check_frame_dims(width, height, limits)
+
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or DEFAULT_FPS
+
+        # Determine which frames to extract.
+        if total <= 0:
+            logger.warning("frame-count metadata unusable for %s; falling back to sequential read", path)
+            wanted = None  # Will read sequentially and keep first max_frames
+        else:
+            duration_s = total / fps
+            if duration_s > limits.max_duration_s:
+                raise ResourceLimitExceeded(
+                    f"video {path.name} declares {duration_s:.1f}s, "
+                    f"exceeds limit {limits.max_duration_s}s")
+            wanted = set(sample_indices(total, max_frames, seed))
+
+        sample_id = path.stem
+        obs: list[Observation] = []
+        i = 0
+        needed = max_frames if wanted is None else len(wanted)
         while True:
             ok, bgr = cap.read()
             if not ok:
@@ -92,6 +125,8 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
                 obs.append(Observation(t=i / fps, payload=rgb, roi=None,
                                        quality=None, source_id=sample_id))
             i += 1
+            if len(obs) >= needed:
+                break
     finally:
         cap.release()
 

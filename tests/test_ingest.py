@@ -99,6 +99,10 @@ def test_video_with_unusable_frame_count_still_yields_observations(mp4):
                 return 0  # Simulate unusable metadata
             elif prop == cv2.CAP_PROP_FPS:
                 return 10.0
+            elif prop in (cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT):
+                # Realistic: a codec that fails to report frame count still
+                # reports dimensions. Matches the mp4 fixture's 128x128 frames.
+                return 128.0
             return 0
         mock_get.side_effect = get_side_effect
 
