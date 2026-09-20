@@ -4475,13 +4475,18 @@ git commit -m "feat: measure the robustness surface in the benchmark runner"
 
 **Files:**
 - Create: `src/dfd/asset_scan.py`
+- Modify: `src/dfd/manifest.py` (distinguish unregistered from non-commercial in the failure message)
 - Test: `tests/test_asset_scan.py`
 
 **Interfaces:**
 - Consumes: `load_manifest`, `assert_release_clean`, `NonCommercialAsset` (Task 2)
-- Produces: `discover_assets(root) -> list[str]`, `assert_all_assets_registered(root, manifest_path)`
+- Produces: `ASSET_SUFFIXES`, `AssetScanEmpty`, `discover_assets(root) -> list[str]`, `assert_all_assets_registered(root, manifest_path, allow_empty=False)`
 
 **Why this task exists:** Task 2's `assert_release_clean(manifest, asset_ids)` can only judge assets it is *handed*. Passing it an empty list returns cleanly — a vacuous pass. Nothing in the repo enumerates what assets are actually in use, so the gate currently guarantees nothing about a real release: forget to list a weight file and it ships unchecked, which is precisely the false confidence Task 2 exists to prevent. Spec §12.1 criterion 6 ("asset manifest covering every dataset and weight file in use") is unverifiable without this.
+
+**An empty scan is a failure, not a pass — and this is the whole difficulty.** The obvious implementation is `assert_release_clean(load_manifest(path), discover_assets(root))`, which simply moves the vacuity rather than removing it: `assert_release_clean` iterates the ids it is handed, so discovering *nothing* returns cleanly exactly as passing `[]` did. That is not hypothetical here. Of everything under `assets/`, git tracks exactly one file — `assets/manifest.yaml` — and `.gitignore` carries `*.onnx`, `*.pth` and `models/`. So on a fresh CI checkout the scan finds nothing and the gate passes unconditionally, forever, while Task 22 reports it as the enforcement of criterion 6. A check that has never examined a file would be certifying the property.
+
+So `assert_all_assets_registered` refuses an empty scan unless the caller says `allow_empty=True` in as many words. CI then either provides the assets or opts into emptiness deliberately — a decision someone makes, rather than a silence nobody notices.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4489,9 +4494,10 @@ git commit -m "feat: measure the robustness surface in the benchmark runner"
 # tests/test_asset_scan.py
 import pytest
 from dfd.asset_scan import (
-    ASSET_SUFFIXES, assert_all_assets_registered, discover_assets,
+    ASSET_SUFFIXES, AssetScanEmpty, assert_all_assets_registered,
+    discover_assets,
 )
-from dfd.manifest import NonCommercialAsset
+from dfd.manifest import NonCommercialAsset, assert_release_clean, load_manifest
 
 MANIFEST = """
 assets:
@@ -4538,15 +4544,58 @@ def test_raises_on_an_asset_present_on_disk_but_absent_from_the_manifest(tmp_pat
     _tree(tmp_path, "good_weights.onnx", "sneaky_weights.pt")
     mp = tmp_path / "manifest.yaml"
     mp.write_text(MANIFEST)
-    with pytest.raises(NonCommercialAsset) as exc:
+    with pytest.raises(NonCommercialAsset, match="sneaky_weights"):
         assert_all_assets_registered(tmp_path, mp)
-    assert "sneaky_weights" in str(exc.value)
 
 
-def test_empty_tree_is_not_treated_as_success_by_accident(tmp_path):
-    """An empty scan must be visibly empty, not a silent pass."""
+def test_an_empty_scan_fails_the_gate(tmp_path):
+    """The defect this task exists to remove, at the level it actually bites.
+
+    Handing `assert_release_clean` an empty list returns cleanly, so a scan
+    that finds nothing would certify a clean release having examined no files.
+    On a fresh checkout that is the normal case: weight files are gitignored.
+    """
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(AssetScanEmpty, match="found no assets"):
+        assert_all_assets_registered(tmp_path, mp)
+
+
+def test_the_empty_scan_message_names_where_it_looked(tmp_path):
+    """A gate that fails must say enough to be fixed or waived deliberately."""
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(AssetScanEmpty) as exc:
+        assert_all_assets_registered(tmp_path, mp)
+    assert str(tmp_path) in str(exc.value)
+    assert ".onnx" in str(exc.value)
+
+
+def test_an_empty_scan_can_be_waived_only_explicitly(tmp_path):
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    assert assert_all_assets_registered(tmp_path, mp, allow_empty=True) is None
+
+
+def test_empty_tree_discovers_nothing(tmp_path):
     (tmp_path / "assets").mkdir()
     assert discover_assets(tmp_path) == []
+
+
+def test_unregistered_and_non_commercial_are_reported_distinctly(tmp_path):
+    """"I have never heard of this file" is not "this file's licence forbids
+    commercial use", and a reader debugging a red gate should not be told a
+    licensing story about a file that is merely absent from the manifest."""
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(NonCommercialAsset) as exc:
+        assert_release_clean(load_manifest(mp), ["nobody_registered_this"])
+    message = str(exc.value)
+    assert "unregistered" in message.lower()
+    assert "nobody_registered_this" in message
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -4583,21 +4632,77 @@ def discover_assets(root: str | Path) -> list[str]:
     return sorted(found)
 
 
+class AssetScanEmpty(Exception):
+    """The scan found no assets, so it can certify nothing.
+
+    Joins the `DfdError` hierarchy when Task 20 introduces it.
+    """
+
+
 def assert_all_assets_registered(root: str | Path,
-                                 manifest_path: str | Path) -> None:
-    """Raise unless every asset on disk is registered and commercially clear."""
-    assert_release_clean(load_manifest(manifest_path), discover_assets(root))
+                                 manifest_path: str | Path,
+                                 allow_empty: bool = False) -> None:
+    """Raise unless every asset on disk is registered and commercially clear.
+
+    Raises:
+        AssetScanEmpty: nothing was discovered and `allow_empty` is False. An
+            empty scan passing `assert_release_clean` would return cleanly
+            having examined no files — the vacuity this module exists to
+            remove, one level up. On a fresh checkout this is the normal case,
+            because weight files are gitignored, so the caller must opt into
+            it deliberately rather than inherit it by silence.
+        NonCommercialAsset: a discovered asset is unregistered, or registered
+            without commercial clearance.
+    """
+    discovered = discover_assets(root)
+    if not discovered and not allow_empty:
+        raise AssetScanEmpty(
+            f"asset scan found no assets under {root} matching "
+            f"{', '.join(ASSET_SUFFIXES)}; a gate that examined nothing cannot "
+            "certify a release. Provide the assets, or pass allow_empty=True "
+            "to record that this environment deliberately has none.")
+    assert_release_clean(load_manifest(manifest_path), discovered)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Then in `src/dfd/manifest.py`, split `assert_release_clean`'s failure into its two distinct causes so the message describes the actual fault:
+
+```python
+    unregistered = [a for a in asset_ids if manifest.get(a) is None]
+    non_commercial = [a for a in asset_ids
+                      if manifest.get(a) is not None
+                      and not manifest[a].commercial_use]
+    if unregistered or non_commercial:
+        parts = []
+        if unregistered:
+            parts.append("unregistered assets (absent from the manifest): "
+                         + ", ".join(sorted(unregistered)))
+        if non_commercial:
+            parts.append("assets not cleared for commercial release: "
+                         + ", ".join(sorted(non_commercial)))
+        raise NonCommercialAsset("; ".join(parts))
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/test_asset_scan.py tests/test_manifest.py -v`
-Expected: PASS — 5 new tests, Task 2's 4 still green
+Expected: PASS — 9 new tests, Task 2's still green
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the empty-scan gate can fail**
+
+This is the defect the task exists to remove, and the version it replaces passed silently. Prove the new test fires: temporarily restore the original one-line body
+
+```python
+    assert_release_clean(load_manifest(manifest_path), discover_assets(root))
+```
+
+run `pytest tests/test_asset_scan.py`, and confirm `test_an_empty_scan_fails_the_gate` and `test_the_empty_scan_message_names_where_it_looked` both FAIL. Restore and confirm all pass. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/dfd/asset_scan.py tests/test_asset_scan.py
+git add src/dfd/asset_scan.py src/dfd/manifest.py tests/test_asset_scan.py
 git commit -m "feat: enumerate assets from disk so the release gate cannot pass vacuously"
 ```
 
