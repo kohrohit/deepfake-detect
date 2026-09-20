@@ -263,9 +263,11 @@ def test_real_manifest_has_no_duplicate_claims(tmp_path):
     assert assert_all_assets_registered(tmp_path, manifest_path, allow_empty=True) is None
 
 
-@pytest.mark.parametrize("exc_type", [AssetScanEmpty, DuplicateAssetClaim])
+@pytest.mark.parametrize("exc_type", [AssetScanEmpty, DuplicateAssetClaim, NonCommercialAsset])
 def test_asset_scan_errors_join_the_dfd_error_hierarchy(exc_type):
     """One catchable root for every error this package raises (Task 20):
-    a caller writing `except DfdError` must not silently miss these two,
-    which predate errors.py and were defined as bare Exception subclasses."""
+    a caller writing `except DfdError` must not silently miss any of these
+    three, which all fire from the same `assert_all_assets_registered` call
+    and two of which predate errors.py and were defined as bare `Exception`
+    subclasses."""
     assert issubclass(exc_type, DfdError)

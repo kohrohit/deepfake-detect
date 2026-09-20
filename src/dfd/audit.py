@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 AUDIT_SCHEMA_VERSION = "1"
 
+# The only leaf types a record is allowed to carry. Anything else (bytes,
+# a numpy array, an arbitrary object) is refused at build time, not merely
+# at serialisation time: a record that never accepted the value cannot leak
+# it via a repr, a log line, or a pickle taken before to_json() is called.
+_SERIALISABLE_LEAF_TYPES = (str, int, float, bool, type(None))
+
 
 def _freeze(value: Any) -> Any:
     """Deep-freeze the containers a record holds."""
@@ -36,6 +42,25 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(v) for v in value)
     return value
+
+
+def _validate_serialisable(value: Any, *, field: str) -> None:
+    """Reject a value this record cannot honestly carry, before it is ever
+    assigned to a field. Mirrors `to_json`'s refusal to stringify, but at
+    the build boundary rather than the serialisation boundary."""
+    if isinstance(value, Mapping):
+        for k, v in value.items():
+            _validate_serialisable(v, field=f"{field}[{k!r}]")
+        return
+    if isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            _validate_serialisable(v, field=f"{field}[{i}]")
+        return
+    if not isinstance(value, _SERIALISABLE_LEAF_TYPES):
+        raise InvalidInput(
+            f"{field} holds a {type(value).__name__}, which this record "
+            "cannot serialise; only str, int, float, bool, and None are "
+            "accepted")
 
 
 def _thaw(value: Any) -> Any:
@@ -70,11 +95,24 @@ class AuditRecord:
         `dataclasses.asdict` is deliberately not used: it deep-copies every
         field value, and a `MappingProxyType` cannot be deep-copied.
 
+        `allow_nan=False`: the default (`True`) emits the bare tokens `NaN` /
+        `Infinity`, which Python's own parser accepts but no conforming JSON
+        parser does. For a record whose entire purpose is to be re-read by
+        someone else's tooling, silently emitting non-conformant JSON is the
+        same wrong failure direction as `default=str` — just for numbers
+        instead of objects.
+
         Raises:
             TypeError: if any field holds a value JSON cannot represent.
+            InvalidInput: if any field holds NaN or +/-Infinity.
         """
         payload = {f.name: _thaw(getattr(self, f.name)) for f in fields(self)}
-        return json.dumps(payload, sort_keys=True)
+        try:
+            return json.dumps(payload, sort_keys=True, allow_nan=False)
+        except ValueError as e:
+            raise InvalidInput(
+                "record contains a non-finite float (NaN or Infinity), "
+                "which is not valid JSON: " + str(e)) from e
 
 
 def build_audit_record(
@@ -97,16 +135,47 @@ def build_audit_record(
     are genuinely identical. It is covered by `record_digest`: a timestamp
     outside the digest makes backdating a decision invisible.
 
+    Every string-typed field is validated to actually be a string rather than
+    relying on the field happening to hold a scalar: `mypy --strict` does not
+    enforce types at runtime, and a caller passing e.g. a list for
+    `quality_band` would otherwise be silently accepted, stay mutable, and
+    change the digest on later mutation — the same defect the brief calls out
+    for `model_versions`, just for a field `_freeze` was never applied to.
+
     Raises:
-        InvalidInput: if `sample_id` is empty or `input_sha256` is not a
-            lowercase 64-character hex digest.
+        InvalidInput: if `sample_id`, `quality_band`, `policy_version`, or
+            `created_at` is not a string (or `sample_id` is empty); if
+            `input_sha256` is not a lowercase 64-character hex digest; if
+            `created_at` is not a valid ISO-8601 timestamp; or if
+            `model_versions` holds a value this record cannot serialise.
     """
-    if not sample_id:
-        raise InvalidInput("sample_id must be a non-empty string")
-    if not _SHA256_RE.match(input_sha256 or ""):
+    if not isinstance(sample_id, str) or not sample_id:
+        raise InvalidInput(f"sample_id must be a non-empty string, got {sample_id!r}")
+    if not isinstance(input_sha256, str) or not _SHA256_RE.match(input_sha256):
         raise InvalidInput(
             "input_sha256 must be 64 lowercase hex characters, got "
             f"{input_sha256!r}")
+    if not isinstance(quality_band, str):
+        raise InvalidInput(
+            f"quality_band must be a string, got {type(quality_band).__name__}")
+    if not isinstance(policy_version, str):
+        raise InvalidInput(
+            f"policy_version must be a string, got {type(policy_version).__name__}")
+
+    _validate_serialisable(model_versions, field="model_versions")
+
+    if created_at is None:
+        created_at = datetime.now(timezone.utc).isoformat()
+    elif not isinstance(created_at, str):
+        raise InvalidInput(
+            f"created_at must be an ISO-8601 string, got {type(created_at).__name__}")
+    else:
+        try:
+            datetime.fromisoformat(created_at)
+        except ValueError as e:
+            raise InvalidInput(
+                f"created_at must be a valid ISO-8601 timestamp, got {created_at!r}"
+            ) from e
 
     rows = tuple(
         MappingProxyType({
@@ -132,7 +201,7 @@ def build_audit_record(
         policy_version=policy_version,
         threshold=float(threshold),
         model_versions=_freeze(dict(model_versions)),
-        created_at=created_at or datetime.now(timezone.utc).isoformat(),
+        created_at=created_at,
     )
     logger.info("audit record built: sample=%s verdict=%s detectors=%d",
                 sample_id, record.verdict, len(rows))

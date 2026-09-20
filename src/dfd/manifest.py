@@ -9,9 +9,17 @@ from pathlib import Path
 
 import yaml
 
+from .errors import DfdError
 
-class NonCommercialAsset(Exception):
-    """Raised when a release bundle references an asset not cleared for commercial use."""
+
+class NonCommercialAsset(DfdError):
+    """Raised when a release bundle references an asset not cleared for commercial use.
+
+    Joins the `DfdError` hierarchy introduced by Task 20: this fires from the
+    same `assert_all_assets_registered` call as `AssetScanEmpty` and
+    `DuplicateAssetClaim`, so `except DfdError` must catch all three or it
+    silently misses the one that fires on an actual licensing violation.
+    """
 
 
 @dataclass(frozen=True)
