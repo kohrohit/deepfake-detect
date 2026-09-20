@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .errors import DfdError
 from .manifest import AssetRecord, assert_release_clean, load_manifest
 
 # Extensions that carry model weights or dataset payloads.
@@ -43,14 +44,14 @@ def discover_assets(root: str | Path) -> list[str]:
     return sorted(found)
 
 
-class AssetScanEmpty(Exception):
+class AssetScanEmpty(DfdError):
     """The scan found no assets, so it can certify nothing.
 
-    Joins the `DfdError` hierarchy when Task 20 introduces it.
+    Joins the `DfdError` hierarchy introduced by Task 20.
     """
 
 
-class DuplicateAssetClaim(Exception):
+class DuplicateAssetClaim(DfdError):
     """More than one manifest entry declares the same file.
 
     Two records for one file mean at least one of them is wrong — a human
@@ -61,6 +62,8 @@ class DuplicateAssetClaim(Exception):
     even when the two records happen to agree today: agreement is
     coincidental, not a guarantee, and a later edit to one copy without the
     other would then diverge undetected.
+
+    Joins the `DfdError` hierarchy introduced by Task 20.
     """
 
 
