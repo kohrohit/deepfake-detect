@@ -434,6 +434,10 @@ def test_detector_cache_invalidation_on_file_replacement(tmp_path, tiny_model_fa
     # Second load should get the new model (not cached)
     r2 = d.score(obs)
     assert not r2.abstained
+    # CRITICAL: assert the score actually changed
+    assert r1.score != r2.score, (
+        "cache served the stale model after the weights file was replaced"
+    )
 
 
 # ============================================================================

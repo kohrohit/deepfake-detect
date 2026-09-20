@@ -267,9 +267,11 @@ class NPRDetector:
            Load full module via unpickle (code execution possible).
            Logs a warning.
 
-        Uses a module-level cache keyed by (resolved_path, mtime_ns, size)
-        to detect file replacement (e.g., a compromised model pushed at the
-        same path). Protected by a lock against concurrent first-load races.
+        Uses a module-level cache keyed by (resolved_path, mtime_ns, size,
+        factory_id, allow_unsafe_load) to detect file replacement and distinguish
+        different load configurations. The same file loaded with different
+        factories or security modes can produce different models and must not
+        share a cache entry. Protected by a lock against concurrent first-load races.
 
         Args:
             path: path to weights file
@@ -284,8 +286,22 @@ class NPRDetector:
         """
         resolved = path.resolve()
         stat = resolved.stat()
-        # Cache key includes mtime_ns and size to detect file replacement
-        cache_key = (str(resolved), stat.st_mtime_ns, stat.st_size)
+
+        # Compute stable identity for the factory
+        if self.model_factory is None:
+            factory_id = "none"
+        else:
+            factory_id = f"{self.model_factory.__module__}.{getattr(self.model_factory, '__qualname__', repr(self.model_factory))}"
+
+        # Cache key includes file metadata, factory identity, and load mode
+        # to ensure same file + different factories/modes don't collide
+        cache_key = (
+            str(resolved),
+            stat.st_mtime_ns,
+            stat.st_size,
+            factory_id,
+            self.allow_unsafe_load,
+        )
 
         with _CACHE_LOCK:
             if cache_key in _MODEL_CACHE:
@@ -312,6 +328,15 @@ class NPRDetector:
                     _MODEL_CACHE[cache_key] = model
                     return model
                 except Exception as e:
+                    # Provide a clear error if the file appears to be a full-module pickle
+                    if isinstance(e, Exception) and "Weights only load failed" in str(e):
+                        raise RuntimeError(
+                            f"the file {resolved} appears to be a full-module pickle, "
+                            f"not a state_dict. model_factory requires a state_dict. "
+                            f"These are mutually exclusive: either (1) provide a state_dict "
+                            f"file with model_factory, or (2) remove model_factory and use "
+                            f"allow_unsafe_load=True for full pickles."
+                        ) from e
                     logger.error(
                         "failed to load state_dict with model_factory: %s",
                         type(e).__name__,
