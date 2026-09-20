@@ -15,3 +15,17 @@ assets:
     evidence_url: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
     date_checked: "2026-09-20"
     checked_by: "kohrohit@gmail.com"
+  sbi_effnetb4_weights:
+    source: "https://github.com/mapooon/SelfBlendedImages"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/mapooon/SelfBlendedImages"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
+  ffpp_effnetb4_weights:
+    source: "https://github.com/SCLBD/DeepfakeBench"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/SCLBD/DeepfakeBench"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
