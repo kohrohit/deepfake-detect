@@ -290,19 +290,36 @@ def test_load_video_rejects_a_container_declaring_excessive_duration(tmp_path, m
 
 @pytest.mark.parametrize("fps,expect_gate_fires", [
     (100.0, False),        # real, usable fps: 60000/100 = 600s, well under the cap
-    (-30.0, True),         # negative: `or DEFAULT_FPS` leaves it truthy, untouched
-    (float("nan"), True),  # NaN: also truthy, also survives a bare `or`
+    (1e-9, True),          # finite and positive -- no fix needed here, but the
+                            # boundary ("small positive still gates correctly")
+                            # is worth pinning rather than leaving implicit
+    (-30.0, True),         # negative: truthy, and `> 0` alone would reject it
+    (float("nan"), True),  # NaN: truthy, and comparisons with NaN are all False
+    (float("inf"), True),  # infinite: truthy AND `> 0` is True -- division
+                            # collapses duration to 0.0, which never exceeds
+                            # the limit unless finiteness is checked too
 ])
 def test_load_video_duration_gate_treats_fps_as_a_domain_not_a_truthiness_check(
         tmp_path, monkeypatch, fps, expect_gate_fires):
-    """fps is adversary-controlled container metadata. `cap.get(...) or
-    DEFAULT_FPS` only substitutes when fps == 0.0 exactly: a negative fps
-    stays truthy (dividing by it yields a negative duration that can never
-    exceed a positive limit) and NaN stays truthy too (NaN compared to
-    anything is False, so the limit check silently never fires). Both must
-    fall back to DEFAULT_FPS instead. The positive case pins that the fix
-    is a domain check, not a fallback taken unconditionally: with a real,
-    usable fps the declared duration is 600s and the gate must NOT fire."""
+    """fps is adversary-controlled container metadata read from the
+    container header. Three distinct degenerate values must all fall back
+    to DEFAULT_FPS instead of being used directly:
+
+    - `0.0` and negative values are truthy, so a bare `cap.get(...) or
+      DEFAULT_FPS` only catches exact zero, not negative -- and negative
+      fps yields a negative duration that can never exceed a positive limit.
+    - NaN is truthy and also survives a plain `> 0` check by luck of being
+      compared to anything and getting False either way; `duration_s > limit`
+      is silently always False.
+    - Infinity is truthy AND satisfies a plain `> 0` check (it IS positive),
+      so a fix that checks only `> 0` and not finiteness lets it through:
+      `total / inf` collapses to `0.0`, which also never exceeds the limit.
+
+    The fallback must therefore be "finite and positive", not just
+    "positive". The positive (100.0) and small-positive (1e-9) cases pin
+    that the fix is a domain check, not a fallback taken unconditionally:
+    with a real, usable fps the gate must NOT fire (100.0) or must still
+    fire correctly because the duration genuinely is enormous (1e-9)."""
     p = tmp_path / "fake.mp4"
     p.write_bytes(b"0" * 100)
 

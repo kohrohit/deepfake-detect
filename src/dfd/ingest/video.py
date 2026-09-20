@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import cv2
@@ -97,12 +98,14 @@ def load_video(path: str | Path, context: Context, max_frames: int = DEFAULT_MAX
 
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         # `or DEFAULT_FPS` would only catch fps == 0.0: a negative fps stays
-        # truthy (yields a negative duration that never exceeds the limit)
-        # and NaN stays truthy too. `> 0` is false for zero, negative, and
-        # NaN alike, so it is the domain check this adversary-controlled
-        # header value needs, not a truthiness check.
+        # truthy (yields a negative duration that never exceeds the limit),
+        # NaN stays truthy too, and infinity stays truthy AND passes `> 0`
+        # (collapsing duration to 0.0, which also never exceeds the limit).
+        # fps is adversary-controlled header metadata, so the fallback must
+        # be "finite and positive", not merely "positive" -- each of those
+        # two words closes a distinct degenerate value.
         raw_fps = cap.get(cv2.CAP_PROP_FPS)
-        fps = raw_fps if raw_fps > 0 else DEFAULT_FPS
+        fps = raw_fps if math.isfinite(raw_fps) and raw_fps > 0 else DEFAULT_FPS
 
         # Determine which frames to extract.
         if total <= 0:
