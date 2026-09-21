@@ -10,11 +10,28 @@ rulings made during the build, each with what it costs if wrong. The spec
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
-python3 -m pytest -q          # 495 passed, 1 warning
+python3 -m pytest -q          # 495 passed
 ```
 
-The 1 warning is deliberate and must not be suppressed: `torch.load` without `weights_only=True`
-in the gated unsafe branch. The warning is the evidence that the unsafe path is unsafe.
+**Corrected 2026-09-21.** A previous version of this handoff said the suite ends in "1 warning"
+that was deliberate and must not be suppressed. That is no longer true, and the reasoning behind it
+was wrong. The warning was torch's `FutureWarning` about `torch.load`'s `weights_only` **default**
+changing — and that default has since flipped to `True` (torch 2.6), which silently turned the
+gated `allow_unsafe_load=True` branch into a no-op re-run of the `weights_only=True` attempt that
+had already failed one branch above. The documented escape hatch did not work on modern torch.
+`weights_only=False` is now explicit, so the warning no longer fires on any torch version. The
+evidence that the unsafe path is unsafe was never that warning; it is the unconditional
+`logger.warning` immediately above the call, which is untouched.
+
+### Environment drift is unguarded
+
+Every dependency in `pyproject.toml` and `requirements-dev.txt` is a floor with no ceiling. Local
+resolves numpy 1.26.4 / opencv 4.x / torch 2.4.1; CI resolved numpy 2.2.6 / opencv 5.0.0 /
+torch 2.14.0. The first CI run failed on `mypy --strict` for this reason alone, and because Types
+runs before Tests, the suite had never executed under the CI resolution at all — which is how the
+`torch.load` defect stayed hidden. **Green locally is not evidence of green in CI.** To reproduce
+what CI sees, build a venv from `requirements-dev.txt` with no local site-packages and run all four
+gates there. Consider pinning ceilings, or this recurs on the next upstream release.
 
 ---
 
