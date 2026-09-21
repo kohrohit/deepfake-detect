@@ -5,11 +5,44 @@ import cv2
 import numpy as np
 import pytest
 
-from dfd.detectors.blend import FEATURE_NAMES, seam_features
+from dfd.detectors.blend import ANNULI, FEATURE_NAMES, seam_features
 
 
 def _flat(size: int = 224) -> np.ndarray:
     return np.full((size, size, 3), 128, dtype=np.uint8)
+
+
+def _four_band_image(size: int = 224) -> np.ndarray:
+    """Four concentric bands with a distinct flat luminance level and a
+    distinct checkerboard texture amplitude each, aligned to `ANNULI`.
+
+    The internal-consistency tests below need the three `lab_l_delta_*` and
+    three `residual_logratio_*` values to be pairwise distinct and mostly
+    non-zero. A fixture where those values happened to coincide (e.g. a
+    single ring on a flat field) would let a swapped feature order pass by
+    accident, so this fixture is built with band levels/amplitudes chosen
+    (and verified, see task-4-report.md) to avoid that coincidence: levels
+    30/70/150/200 give L-mean deltas of -47.5/-82.5/-44.0, and amplitudes
+    0/15/35/60 give residual log-ratios of roughly -2.32/-0.78/-0.48 — all
+    six values distinct and non-zero.
+    """
+    h = w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    ry = (yy - (h - 1) / 2.0) / max(1.0, (h - 1) / 2.0)
+    rx = (xx - (w - 1) / 2.0) / max(1.0, (w - 1) / 2.0)
+    radius = np.sqrt(rx ** 2 + ry ** 2)
+
+    levels = (30.0, 70.0, 150.0, 200.0)
+    amplitudes = (0.0, 15.0, 35.0, 60.0)
+    checker = (((xx + yy) % 2) * 2 - 1).astype(np.float64)
+
+    gray = np.zeros((h, w), dtype=np.float64)
+    for (lo, hi), level, amp in zip(ANNULI, levels, amplitudes):
+        mask = (radius >= lo) & (radius < hi)
+        gray[mask] = level + checker[mask] * amp
+
+    gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+    return np.repeat(gray_u8[:, :, None], 3, axis=2)
 
 
 def _with_ring(size: int = 224) -> np.ndarray:
@@ -80,3 +113,67 @@ def test_a_tiny_image_with_an_empty_annulus_stays_finite() -> None:
     assert np.isfinite(f).all()
     i = FEATURE_NAMES.index("residual_mean_b1")
     assert f[i] == 0.0
+
+
+def test_contrast_features_are_internally_consistent() -> None:
+    """`FEATURE_NAMES` positional alignment is a hope unless something checks
+    it. The contrast values are each defined in terms of other, independently
+    named per-band features, so alignment can be verified without
+    recomputing anything from the image: each `lab_l_delta_bK_bK+1` must
+    equal the difference of the two `lab_l_mean_b*` values it names, and each
+    `residual_logratio_bK_bK+1` must equal the log1p difference of the two
+    `residual_mean_b*` values it names. If `_feature_names()` and
+    `seam_features()` ever generate these two blocks in different orders,
+    this fails; if only one of them is reordered, this also fails.
+
+    This only discriminates because `_four_band_image` was built so the six
+    contrast values are pairwise distinct and non-zero (asserted below) —
+    a fixture where they coincided would let a reordering pass unnoticed.
+    """
+    f = seam_features(_four_band_image())
+    idx = FEATURE_NAMES.index
+
+    deltas: list[float] = []
+    logratios: list[float] = []
+    for b in range(len(ANNULI) - 1):
+        l_lo = f[idx(f"lab_l_mean_b{b}")]
+        l_hi = f[idx(f"lab_l_mean_b{b + 1}")]
+        delta = f[idx(f"lab_l_delta_b{b}_b{b + 1}")]
+        assert float(delta) == pytest.approx(float(l_lo - l_hi), abs=1e-2)
+        deltas.append(float(delta))
+
+        r_lo = f[idx(f"residual_mean_b{b}")]
+        r_hi = f[idx(f"residual_mean_b{b + 1}")]
+        logratio = f[idx(f"residual_logratio_b{b}_b{b + 1}")]
+        expected = np.log1p(float(r_lo)) - np.log1p(float(r_hi))
+        assert float(logratio) == pytest.approx(expected, abs=1e-3)
+        logratios.append(float(logratio))
+
+    assert len({round(d, 3) for d in deltas}) == len(deltas)
+    assert len({round(lr, 3) for lr in logratios}) == len(logratios)
+    assert sum(abs(d) > 1e-3 for d in deltas) >= 2
+    assert sum(abs(lr) > 1e-3 for lr in logratios) >= 2
+
+
+def test_contrast_groups_do_not_swap_wholesale() -> None:
+    """The two contrast blocks must not only be internally aligned (see
+    above) but also appear in the right order and place: every name in the
+    first block is a `residual_logratio_*` and every name in the second is a
+    `lab_l_delta_*`. Offsets are derived from `ANNULI` and the total feature
+    count rather than hardcoded, so this does not silently stop checking
+    anything if the per-band stat count ever changes."""
+    band_count = len(ANNULI)
+    contrast_count = band_count - 1
+    per_band_count = (len(FEATURE_NAMES) - 2 * contrast_count) // band_count
+    assert per_band_count * band_count + 2 * contrast_count == len(FEATURE_NAMES)
+
+    logratio_start = per_band_count * band_count
+    delta_start = logratio_start + contrast_count
+    assert delta_start + contrast_count == len(FEATURE_NAMES)
+
+    logratio_names = FEATURE_NAMES[logratio_start:delta_start]
+    delta_names = FEATURE_NAMES[delta_start:delta_start + contrast_count]
+    assert len(logratio_names) == contrast_count
+    assert len(delta_names) == contrast_count
+    assert all(name.startswith("residual_logratio_") for name in logratio_names)
+    assert all(name.startswith("lab_l_delta_") for name in delta_names)
