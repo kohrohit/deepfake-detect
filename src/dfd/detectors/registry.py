@@ -20,6 +20,14 @@ def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,
     Two distinct physics, per spec §6: NPR's upsampling fingerprint (slot C)
     and EfficientNet-B4's learned appearance (slot E). Both abstain when their
     weights are absent, which is every checkout of this repo.
+
+    Raises:
+        ValueError: from `Registry.register` if a detector with the same
+            name is already registered. Unreachable today: this function
+            registers exactly two detectors under two distinct, hardcoded
+            names ("npr" and "effnet_b4"), which cannot collide with each
+            other. It becomes reachable if a future change adds a third
+            detector or parameterises either name.
     """
     registry = Registry()
     registry.register(NPRDetector(weights_path=npr_weights))
