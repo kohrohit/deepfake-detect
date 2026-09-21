@@ -11,8 +11,9 @@ from dfd.detectors.base import Registry, SyntheticDetector
 from dfd.errors import InvalidInput, ResourceLimitExceeded
 from dfd.faces import FaceBox
 from dfd.limits import Limits
-from dfd.pipeline import (DEGENERATE_BOX, NO_FACE, NO_OBSERVATIONS,
-                          UNMEASURED, _worst_band, decide, normalize)
+from dfd.pipeline import (DEGENERATE_BOX, DETECTOR_ERROR, NO_FACE,
+                          NO_OBSERVATIONS, UNMEASURED, _worst_band, decide,
+                          normalize)
 from dfd.policy import Policy
 from dfd.types import (Context, Modality, Observation, Quality, RawScore,
                        Sample, Verdict)
@@ -362,3 +363,61 @@ def test_the_video_seed_reaches_the_frame_sampler(mp4):
     a, b = score_with(0), score_with(7)
     assert a is not None and b is not None, "the detector must not abstain here"
     assert a != b, "different seeds must sample different frames"
+
+
+@dataclass(frozen=True)
+class _RaisingDetector:
+    """A detector whose weights file is present but corrupt.
+
+    `npr.py` and `effnet.py` both log a load failure and then `raise`, so this
+    is the shape of a real production failure, not an invented one.
+    """
+    name: str = "broken"
+    version: str = "test-1"
+    modalities: frozenset = frozenset({Modality.IMAGE})
+    min_quality_band: str = "low"
+
+    def score(self, obs):
+        raise RuntimeError("corrupt checkpoint: cannot deserialise weights")
+
+
+def test_a_raising_detector_becomes_an_abstention_not_an_outage(png, caplog):
+    """Spec principle 8 — the system must remain useful with every ML slot
+    defeated. Unisolated, one corrupt weights file on a production box means
+    no audit record at all, no evidence from the healthy detector, and a
+    traceback with exit 1. The failing slot must cost its own evidence and
+    nothing else: the record is still produced, the broken detector abstains
+    with `detector_error`, and the healthy detector's evidence still carries
+    the decision to a real verdict.
+    """
+    with caplog.at_level("ERROR"):
+        record = decide(png,
+                        registry=_registry(_RaisingDetector(), _FixedDetector()),
+                        calibrators={"fixed": _fitted_calibrator()},
+                        detect=_detector([_box()]), created_at=FIXED_TIME)
+
+    rows = {row["detector"]: row for row in record.evidence}
+    assert set(rows) == {"broken", "fixed"}
+    assert rows["broken"]["abstained"] is True
+    # The LITERAL, not the imported constant: the reason string travels in the
+    # audit record and downstream consumers match on it, so a test comparing
+    # the constant to itself could not notice it being renamed.
+    assert rows["broken"]["reason"] == "detector_error" == DETECTOR_ERROR
+    assert rows["broken"]["llr"] == 0.0
+    assert rows["fixed"]["abstained"] is False, \
+        "the healthy detector's evidence must survive its neighbour's failure"
+    assert record.verdict == Verdict.FAKE.value
+    assert record.model_versions["broken"] == "test-1"
+    # The traceback must not be swallowed: logger.exception carries exc_info.
+    assert "corrupt checkpoint" in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_every_detector_failing_still_produces_a_record(png):
+    """The degenerate case of the same rule: a decision with no usable
+    evidence is `insufficient_evidence` WITH a record naming why, not an
+    exception with no record at all."""
+    record = decide(png, registry=_registry(_RaisingDetector()),
+                    detect=_detector([_box()]), created_at=FIXED_TIME)
+    assert record.verdict == Verdict.INSUFFICIENT_EVIDENCE.value
+    assert [row["reason"] for row in record.evidence] == ["detector_error"]

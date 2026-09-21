@@ -23,7 +23,7 @@ import numpy.typing as npt
 
 from .audit import AuditRecord, build_audit_record
 from .calibration import Calibrator
-from .detectors.base import Registry
+from .detectors.base import Registry, abstain
 from .errors import InvalidInput
 from .faces import DEFAULT_MODEL, FaceBox, detect_faces
 from .fusion import fuse
@@ -51,6 +51,10 @@ NO_FACE = "no_face"
 #: A box that does not intersect the frame. Reported rather than measured,
 #: because a clamped empty crop would make OpenCV raise.
 DEGENERATE_BOX = "degenerate_box"
+#: A detector raised instead of returning a RawScore. The detector is a plugin
+#: and its failure must not become the system's failure (spec principles 5 and
+#: 8), so it is recorded as that detector's abstention.
+DETECTOR_ERROR = "detector_error"
 NO_OBSERVATIONS = "no_observations"
 MIXED = "mixed"
 OK = "ok"
@@ -273,8 +277,23 @@ def decide(
         a decision.
 
     Raises:
-        InvalidInput: unreadable file, unsupported extension, undecodable file.
+        InvalidInput: unreadable file, unsupported extension, undecodable file,
+            or a value `build_audit_record` refuses to record.
         ResourceLimitExceeded: the input exceeds a decode limit.
+        cv2.error: from `detect_faces` when the face model file is present but
+            corrupt. `faces.py` documents that deliberately — treating
+            corruption as absence would hide a deployment failure — so it is
+            not caught here either. Note the asymmetry with a detector's
+            failure, which IS caught below: the face stage is one fixed,
+            first-party model on which every later stage depends, while a
+            detector is a replaceable plugin whose loss costs one slot.
+
+        A detector that raises does NOT propagate: it is recorded as that
+        detector's abstention with reason `detector_error` and the decision
+        continues on the remaining detectors. Everything outside the
+        per-detector call — ingest, `normalize`, `fuse`, calibration and
+        `build_audit_record` — is first-party code whose exceptions are bugs
+        and still propagate.
     """
     file_path = Path(path)
     input_sha256 = _sha256(file_path)
@@ -288,7 +307,31 @@ def decide(
     for name in registry.names():
         detector = registry.get(name)
         started = time.perf_counter()
-        raw = detector.score(sample.observations)
+        try:
+            raw = detector.score(sample.observations)
+        except Exception:
+            # A BROAD catch is correct HERE and nowhere else in this file.
+            # A detector is a plugin: spec principle 5 makes detectors
+            # perishable and hot-swappable, and principle 8 requires the
+            # system to remain useful with every ML slot defeated. One corrupt
+            # weights file must therefore cost one slot's evidence, not the
+            # whole decision -- without this, a raising detector means no
+            # audit record at all, no evidence from the healthy detectors, and
+            # a traceback with exit 1. The failure surface is third-party
+            # model code (torch, the weights file, the model's own forward
+            # pass) and is not enumerable, which is exactly the condition a
+            # narrow catch cannot meet. Contrast `_ingest`'s deliberate
+            # `except ValueError`, scoped to the adapter call alone: there the
+            # set of failures meaning "bad input" IS known and small, so
+            # anything wider would relabel genuine bugs as bad input.
+            # `Exception`, never a bare `except:` (gate-forbidden, and it
+            # would swallow more): KeyboardInterrupt and SystemExit derive
+            # from BaseException, not Exception, so Ctrl-C and sys.exit still
+            # stop the process as the operator asked. The traceback is not
+            # lost -- logger.exception records it at ERROR with exc_info.
+            logger.exception(
+                "detector %s raised while scoring; recording %s", name, DETECTOR_ERROR)
+            raw = abstain(name, detector.version, DETECTOR_ERROR)
         logger.debug("detector %s scored in %.1f ms", name,
                      (time.perf_counter() - started) * 1000.0)
         model_versions[name] = detector.version
