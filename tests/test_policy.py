@@ -1,4 +1,5 @@
 import math
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -14,8 +15,15 @@ def test_default_policy_matches_the_thresholds_fusion_has_always_applied():
 
 
 def test_policy_is_frozen():
-    """A policy that can be edited after a record cites it makes the record a lie."""
-    with pytest.raises(Exception):
+    """A policy that can be edited after a record cites it makes the record a lie.
+
+    `FrozenInstanceError`, not bare `Exception`: this repo's own handoff §6
+    names "`pytest.raises` with no discriminating `match=`" as one of its
+    recurring defects, and `pytest.raises(Exception)` is the same defect with
+    the type widened instead of the message dropped — an AttributeError, a
+    TypeError, or a typo raising NameError would all satisfy it.
+    """
+    with pytest.raises(FrozenInstanceError):
         DEFAULT_POLICY.fake_threshold = 2.0  # type: ignore[misc]
 
 

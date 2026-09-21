@@ -16,9 +16,17 @@ composition-root plan's own measurement, above, is a later and different number 
 now exist. Both sets of numbers clear the gate with room; the local/floor discrepancy is unexplained
 in both and nobody has looked into it.)
 
-Read this, then `docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md` — it carries all 106
+Read this, then `docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md` — it carries all 111
 rulings made during the build, each with what it costs if wrong. The spec
-(`docs/superpowers/specs/2026-09-20-deepfake-detection-design.md`) remains the authority.
+(`docs/superpowers/specs/2026-09-20-deepfake-detection-design.md`) remains the authority, except as
+corrected below (§1's dated correction block, and §3).
+
+(**"106" was wrong, corrected 2026-09-21.** Counted as `grep -c '^Ruling'` on the ledger — lines
+opening a ruling, 101 of them `Ruling:` and 10 `Ruling on ...` / `Ruling (...)` / `Ruling for ...`
+— which gives **111**. Three further rulings are written inline at the end of a finding paragraph
+rather than at the start of a line, so `grep -c 'Ruling'` gives 114; the line count is the number
+quoted here. In a document whose bar is measured output over paraphrase, a checkable number that is
+wrong undercuts every uncheckable claim beside it.)
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core

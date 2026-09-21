@@ -213,6 +213,8 @@ def build_audit_record(
                 "stage_reasons must map strings to strings, got "
                 f"{type(key).__name__} -> {type(value).__name__}. A nested "
                 "structure here would be mutable state inside a frozen record.")
+    # Unreachable in effect after the str/str loop above, and kept for symmetry
+    # with model_versions: the guard must survive that loop being relaxed.
     _validate_serialisable(stage_reasons, field="stage_reasons")
     for e in evidence:
         _validate_evidence(e)
