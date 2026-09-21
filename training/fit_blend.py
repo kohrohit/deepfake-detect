@@ -19,9 +19,10 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 
 from corpora.captures import load_capture_sessions
-from corpora.face_pool import build_face_pool
+from corpora.face_pool import DetectFn, build_face_pool
 from corpora.sbi import build_sbi_corpus
 from dfd.detectors.blend import FEATURE_NAMES, BlendModel, save_blend_model, seam_features
+from dfd.faces import detect_faces
 from dfd.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,18 @@ def split_by_subject(
 
     Returns:
         A (train, test) pair.
+
+    Note:
+        `n_test = max(1, round(len(subjects) * holdout_fraction))` always
+        holds out at least one subject: `holdout_fraction=0.0` still yields
+        one test subject, and `holdout_fraction=1.0` (or a corpus with only
+        one subject) empties `train` entirely. This function does not
+        validate that; an empty `train` reaches `fit_blend_model`, where
+        `_matrix([])` calls `np.stack([])`, which raises numpy's own
+        generic "need at least one array to concatenate" rather than the
+        intended "must contain both labels" message. Not guarded here
+        deliberately — `main()` never calls this with a holdout fraction
+        outside (0, 1), so the case is unreachable in practice.
     """
     subjects = sorted({s.context.subject_id for s in samples
                        if s.context.subject_id is not None})
@@ -125,8 +138,17 @@ def evaluate(model: BlendModel, samples: Sequence[Sample]) -> dict[str, float]:
     return {"auc": auc, "n": float(len(samples)), "n_fake": n_fake}
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Build the corpus, fit, evaluate, write the model and a JSON report."""
+def main(argv: Sequence[str] | None = None, *, detect: DetectFn = detect_faces) -> int:
+    """Build the corpus, fit, evaluate, write the model and a JSON report.
+
+    Args:
+        argv: CLI arguments, or None to read `sys.argv`.
+        detect: face detector, forwarded to `build_face_pool`. Injected —
+            not a CLI flag — purely so this function can be exercised in
+            tests against a synthetic corpus with no YuNet weight file, the
+            same seam `corpora/face_pool.py` already exposes for exactly
+            that reason.
+    """
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--captures", required=True, type=Path)
@@ -139,11 +161,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     sessions = load_capture_sessions(args.captures)
+    # Defence in depth, not the only guard: build_sbi_corpus hard-refuses
+    # any crop from a swapped session with EvaluationOnlySessionError, so
+    # removing this filter would surface loudly as that exception rather
+    # than silently leaking evaluation-only fraud into training.
     genuine = [s for s in sessions if not s.swapped]
     logger.info("%d sessions, %d genuine and usable for training",
                 len(sessions), len(genuine))
 
-    crops, skipped = build_face_pool(genuine)
+    crops, skipped = build_face_pool(genuine, detect=detect)
     if not crops:
         # Name both causes. The skip tally distinguishes them — NO_FACE means
         # the detector ran and found nothing (or has no weights), NO_FRAMES

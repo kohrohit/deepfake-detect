@@ -1,14 +1,20 @@
 """The fitter must not leak a subject across the split, and must say so."""
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pytest
 
 from corpora.face_pool import FaceCrop
 from corpora.sbi import build_sbi_corpus
+from dfd.detectors.blend import FEATURE_NAMES, load_blend_model
 from dfd.faces import FaceBox
 from dfd.types import Quality
-from training.fit_blend import evaluate, fit_blend_model, split_by_subject
+from training.fit_blend import evaluate, fit_blend_model, main, split_by_subject
 
 
 def _crop(session_id: str) -> FaceCrop:
@@ -105,15 +111,150 @@ def test_evaluate_reports_the_fake_count_not_only_the_total() -> None:
 
 
 def test_the_model_separates_self_blends_it_was_trained_on() -> None:
-    """A weak but non-vacuous bar: better than chance in-distribution.
-    If this fails the features carry no seam signal at all.
+    """What this proves, and what it does not.
 
-    Deliberately weak. The same pipeline measured on synthetic textured
-    fixtures scored a held-out AUC of 1.000, and that number means nothing
-    about real faces: the fixtures differ from their self-blends in ways a
-    camera never would. Raising this bar to match would be asserting a
-    property of the fixture generator, not of the detector.
+    Proves: the wiring. Feature extraction, the subject-disjoint split,
+    fitting and evaluate() compose into something that separates THESE
+    synthetic fixtures well above chance.
+
+    Does NOT prove anything about real faces: the fixtures differ from
+    their self-blends in ways a camera never would, so a high AUC here is
+    a property of the fixture generator, not of the detector's real-world
+    accuracy. The pipeline measured on synthetic textured fixtures scored
+    a held-out AUC of 1.000.
+
+    Why 0.9 and not the weaker-looking 0.5 that used to be here: with pure
+    random-noise features run through this exact pipeline (fit and
+    evaluate, no seam signal at all), 19 of 40 seeds still passed `> 0.5`
+    — that bar was a coin flip, not a check. At `> 0.9`, the same
+    noise-feature run failed all 40 of 40 seeds, while the real pipeline
+    (this test, unmutated) still passes comfortably (AUC 1.000 at seed=0).
+    0.9 is therefore the bar that actually distinguishes "the features
+    carry seam signal" from "the model memorised nothing and got lucky."
     """
     train, test = split_by_subject(_corpus(n=40), seed=0)
     m = fit_blend_model(train, version="t1")
-    assert evaluate(m, test)["auc"] > 0.5
+    assert evaluate(m, test)["auc"] > 0.9
+
+
+# --- main(): exercised only against a synthetic capture corpus written into
+# tmp_path, via the injected `detect` seam. Never against the real corpus.
+
+def _seed_for(name: str) -> int:
+    """A deterministic per-name seed. Not `hash()`: Python salts str hashing
+    per process unless PYTHONHASHSEED is set, which would make two calls in
+    the same test run agree but not two separate runs — see the identical
+    reasoning in corpora/sbi.py for build_sbi_corpus's per-sample seeding."""
+    return int.from_bytes(hashlib.sha256(name.encode()).digest()[:4], "big")
+
+
+def _write_session(root: Path, session_id: str, *, swapped: bool = False,
+                   n_frames: int = 1) -> None:
+    """A minimal capture session on disk: a results.json plus real, decodable
+    frame_NN.jpg files, so build_face_pool's cv2.imread actually succeeds."""
+    folder = root / session_id
+    folder.mkdir(parents=True)
+    (folder / "results.json").write_text(json.dumps({
+        "session_id": session_id,
+        "swapped": swapped,
+        "decision": {"approved": True},
+        "scan": {"verdict": "ok"},
+        "frame_count": n_frames,
+    }))
+    rng = np.random.default_rng(_seed_for(session_id))
+    for i in range(n_frames):
+        img = rng.integers(0, 255, (224, 224, 3), dtype=np.uint8)
+        cv2.imwrite(str(folder / f"frame_{i:02d}.jpg"),
+                    cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+
+def _one_box_detector(frame: np.ndarray) -> list[FaceBox]:
+    """A stub detector standing in for YuNet: always finds the same box."""
+    lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
+                    [75.0, 125.0], [105.0, 125.0]])
+    return [FaceBox(x=55, y=55, w=70, h=90, landmarks=lms, score=0.9)]
+
+
+def _no_box_detector(frame: np.ndarray) -> list[FaceBox]:
+    """A stub detector that never finds a face — exercises the NO_FACE path."""
+    return []
+
+
+def test_main_happy_path_writes_a_loadable_model_and_a_consistent_report(
+    tmp_path: Path,
+) -> None:
+    captures = tmp_path / "captures"
+    for i in range(6):
+        _write_session(captures, f"real{i}", swapped=False)
+    out = tmp_path / "model.npz"
+    report = tmp_path / "report.json"
+
+    code = main(
+        ["--captures", str(captures), "--out", str(out),
+         "--report", str(report), "--seed", "0"],
+        detect=_one_box_detector,
+    )
+
+    assert code == 0
+    model = load_blend_model(out)
+    assert model.feature_names == FEATURE_NAMES
+
+    data = json.loads(report.read_text())
+    assert set(data) >= {"auc", "n", "n_fake", "n_train", "n_test",
+                         "n_sessions", "n_genuine", "n_crops", "skipped",
+                         "version", "seed"}
+    assert data["n_sessions"] == 6
+    assert data["n_genuine"] == 6
+    assert data["n_crops"] == 6
+    # Every crop yields exactly two samples (real, self-blend), and
+    # split_by_subject partitions rows without dropping any.
+    assert data["n_train"] + data["n_test"] == 2 * data["n_crops"]
+    assert data["n"] == data["n_test"]
+
+
+def test_main_filters_swapped_sessions_before_blending(tmp_path: Path) -> None:
+    """`not s.swapped` in main() is defence-in-depth, not the only guard:
+    build_sbi_corpus independently hard-refuses any crop from a swapped
+    session with EvaluationOnlySessionError. So removing this filter would
+    not leak evaluation-only fraud into training silently — it would fail
+    loudly with that exception the moment build_sbi_corpus saw the crop.
+    What this test checks is narrower: that the filter, as written, keeps
+    the swapped session's crop out of the corpus at all (n_crops counts
+    only the six genuine sessions, not the seventh)."""
+    captures = tmp_path / "captures"
+    for i in range(6):
+        _write_session(captures, f"real{i}", swapped=False)
+    _write_session(captures, "swapped0", swapped=True)
+    out = tmp_path / "model.npz"
+    report = tmp_path / "report.json"
+
+    code = main(
+        ["--captures", str(captures), "--out", str(out),
+         "--report", str(report)],
+        detect=_one_box_detector,
+    )
+
+    assert code == 0
+    data = json.loads(report.read_text())
+    assert data["n_sessions"] == 7
+    assert data["n_genuine"] == 6
+    assert data["n_crops"] == 6
+
+
+def test_main_returns_1_and_writes_nothing_when_no_faces_are_found(
+    tmp_path: Path,
+) -> None:
+    captures = tmp_path / "captures"
+    _write_session(captures, "real0", swapped=False)
+    out = tmp_path / "model.npz"
+    report = tmp_path / "report.json"
+
+    code = main(
+        ["--captures", str(captures), "--out", str(out),
+         "--report", str(report)],
+        detect=_no_box_detector,
+    )
+
+    assert code == 1
+    assert not out.exists()
+    assert not report.exists()
