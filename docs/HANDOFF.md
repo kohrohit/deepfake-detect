@@ -168,8 +168,11 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
 
 **Next, in order:**
 
-1. **Send the EULA requests** (FF++, Celeb-DF, DFDC). Human action, days-to-weeks of external lead
-   time, and now unblocked. Nothing else shortens it.
+1. **Decide which of the three EULA routes to take — read §4 first, it was rewritten today against
+   the primary sources and the answer is not "send three emails".** FF++'s form requires a lab and a
+   named PI; Celeb-DF states the download goes to an academic address; and FF++ clause 6 binds a
+   for-profit *employer* regardless of which mailbox submits the form. Only DFDC is reachable as
+   things stand. §4 lays out the three options and what each costs.
 2. **Criterion 4 — the RD adapter.** The 24 cached results are free, already labelled, and the
    benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
 3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
@@ -489,11 +492,79 @@ locally, absent in CI), every real call to `decide` abstains on both detectors a
 
 ## 4. The critical path, which is still not engineering
 
-1. **Dataset EULAs — FF++, Celeb-DF, DFDC. Still not started.** Days to weeks of external lead time.
-   Nothing in the build shortens this, and every benchmark number waits on it.
-2. **Usable weights.** Measurement (c) shows public detectors do not transfer. Realistic routes:
-   train SBI ourselves (needs only *real* faces, so licence-clean), or rent GPU to fine-tune on the
-   442-session corpus.
+**Rewritten 2026-09-21, against the primary sources rather than from memory.** The research-only
+ruling (§0) made this path live, so the three EULAs were actually looked up. Two of the three cannot
+be applied for honestly from where this project stands, and that is a harder blocker than the
+"a personal address may be refused" wording this section and §1 previously carried.
+
+### What each of the three actually requires
+
+**FaceForensics++** — request via a Google form linked from `github.com/ondyari/FaceForensics`;
+on approval they send a download script. The form's required fields are: Email, Name,
+**Lab/Department/Affiliation**, **Principal Investigator/Advisor's Name**, **Principal
+Investigator/Advisor's Email**, Research purpose/project description, and a terms checkbox. An
+unaffiliated individual has no lab, no PI and no advisor — there is nothing truthful to type in
+three required fields.
+
+The terms of use (`kaldir.vc.in.tum.de/faceforensics_tos.pdf`) are short, and two clauses are
+load-bearing here, quoted verbatim:
+
+> 1. Researcher shall use the Database only for non-commercial research and educational purposes.
+
+> 6. If Researcher is employed by a for-profit, commercial entity, Researcher's employer shall also
+> be bound by these terms and conditions, and Researcher hereby represents that he or she is fully
+> authorized to enter into this agreement on behalf of such employer.
+
+**Clause 6 is the one to read twice, and it is not solved by using a personal address.** It binds on
+*employment*, not on which mailbox the form was submitted from. If the signer is employed by a
+for-profit entity, that employer is bound and the signer is representing they may bind it.
+Given §1's correction that this product is not for ScoreMe, submitting this form from a personal
+Gmail while employed by ScoreMe would make a representation about ScoreMe that nobody has
+authorised — the opposite of the independence the personal-address route was meant to establish.
+Sort that out before submitting, not after.
+
+**Celeb-DF (v1/v2)** — a Google form linked from `github.com/yuezunli/celeb-deepfakeforensics`
+(Tencent mirror also offered; questions to `deepfakeforensics@gmail.com`). Required fields: Name,
+Affiliation/Organization, City, Country, Purpose Description, Version, and a typed signature. Its
+terms state the dataset "is for non-commercial research purposes only", that "you and your
+affiliated institution must agree not to reproduce, duplicate, copy, sell, trade, resell or exploit
+any portion of the videos or derived data" — and, decisively, that the download link goes to
+**"your ACADEMIC email address"**. `kohrohit@gmail.com` is not one. This is a stated requirement,
+not a soft preference, so this request is expected to fail as things stand.
+
+**DFDC** — the only one of the three with no PI field and no academic-address requirement. Meta's
+page (`ai.meta.com/datasets/dfdc/`) routes to `dfdc.ai` and the prerequisites are an AWS account, an
+IAM user, and the AWS account ID; the dataset is also reachable through the Kaggle competition by
+accepting its rules. **Caveat, stated honestly: the non-commercial restriction on DFDC is the one
+claim in this section taken from secondary sources rather than read in the agreement itself** —
+`dfdc.ai` returned no readable terms to this session. Read the actual licence at download time
+before relying on it, and record what it says here.
+
+### The consequence
+
+**Only DFDC is realistically reachable today.** FF++ needs an affiliation and a PI; Celeb-DF needs
+an academic address; both are non-commercial-only in terms that bind an employer if there is one.
+Three ways forward, and this is the owner's call, not an engineering one:
+
+1. **Pursue DFDC alone** and accept a single-source benchmark — which undercuts the
+   leave-one-generator-out protocol the build already implements, since LOGO needs several
+   generators to hold out.
+2. **Find an academic affiliation** — a collaborating lab or supervisor willing to be the named PI
+   and signatory. This unlocks all three and is the only route to the benchmark the spec assumes.
+3. **Drop the research datasets** and build on self-generated swaps over licence-clean real faces —
+   the same plan the *commercial* answer would have forced. Slower to credibility, but it owes
+   nobody an EULA and survives a later commercial turn without re-licensing.
+
+Note that option 3 is required *anyway* for training data (§0: 7 positives cannot train anything),
+so the question is only whether the research datasets are worth chasing as an **evaluation**
+benchmark on top of it.
+
+### Then, still
+
+**Usable weights.** Measurement (c) shows public detectors do not transfer. Realistic routes: train
+SBI ourselves (needs only *real* faces, so licence-clean), or rent GPU to fine-tune on the
+442-session corpus — noting §0's warning that those 442 are the evaluation set and training on them
+spends the only labelled fraud this project has.
 
 ---
 
