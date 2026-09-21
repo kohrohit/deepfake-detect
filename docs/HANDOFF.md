@@ -2,8 +2,12 @@
 
 **As of 2026-09-21.** Branch `p0-evidence-core`. The original **22-of-22-task plan** below is
 finished; a second, 6-task plan (composition root — §2, §3) landed on top of it the same day and is
-also finished. **553 tests green**, ruff clean, `mypy --strict` clean, coverage 94.94% local /
-95.08% floor against a ≥85% gate — all measured 2026-09-21, see "Verified by hand" under §2. The
+also finished, and a whole-branch review's single fix wave landed on top of both (§3's
+"deliberately NOT fixed" block records what it chose to leave). **565 tests green**, ruff clean,
+`mypy --strict` clean, coverage **95.12%** local against a ≥85% gate — measured 2026-09-21 after
+that wave, see "Verified by hand" under §2. The pinned `requirements-floor.txt` venv was **not**
+rebuilt for this last measurement; its previous run reported 553 tests at 95.08%, and only CI's
+floor leg will confirm the new count there. The
 22-task plan's commits are pushed; the composition-root plan's Task 6 commit (this documentation)
 is **not yet pushed** as of this line — deliberately, per that plan's own Task 6 ruling: the branch
 carries an open PR, so pushing is left to whoever reviews the commit. **Neither plan's branch has
@@ -30,7 +34,7 @@ wrong undercuts every uncheckable claim beside it.)
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
-python3 -m pytest -q          # 553 passed
+python3 -m pytest -q          # 565 passed
 ```
 
 **Corrected 2026-09-21.** A previous version of this handoff said the suite ends in "1 warning"
@@ -209,7 +213,9 @@ venv): `ruff check src bench corpora`, `mypy --config-file mypy.ini`, and
 `pytest -q --cov=src/dfd --cov-fail-under=85` — **553 tests passed** in both, coverage 94.94% local
 / 95.08% floor (both comfortably clear the 85% gate; the two environments still count a slightly
 different statement total, 1067 vs 1057, the same unexplained-but-harmless discrepancy noted above
-for the previous session). `mypy --strict`: "Success: no issues found in 25 source files" in both.
+for the previous session). **Re-measured locally after the review's fix wave, 2026-09-21: 565 tests
+passed, coverage 95.12% over 1085 statements, ruff clean, `mypy --strict` clean over 25 files.** The
+floor venv was not rebuilt for that re-measurement. `mypy --strict`: "Success: no issues found in 25 source files" in both.
 
 This machine (not CI) has `assets/models/face_detection_yunet_2023mar.onnx` on disk — it is
 gitignored and absent in CI. That changes the *face* stage's reason but not the outcome: no detector
@@ -274,6 +280,13 @@ verdict=insufficient_evidence llr=0.00 band=unmeasured contributing=0/2 faces=no
 exit=0
 ```
 
+**One line of stderr in that transcript is a property of this machine, 2026-09-21.** `main` now
+configures logging (`WARNING` by default, `-v` INFO, `-vv` DEBUG, formatted, on stderr), so on a
+checkout WITHOUT the YuNet weights — CI, and most machines — the same command prints
+`WARNING dfd.faces: Face detector weights absent at ...` above the summary line. stdout is
+unaffected at any verbosity. Design spec §6 describes this; it previously claimed stderr carries
+one line, which was only ever true where the weights happened to exist.
+
 `faces=no_face` here (not `weights_absent`) is because YuNet's `.onnx` **is** present on this
 machine — it ran, and found no face in random noise, which is the correct outcome for that input on
 this machine's weight state. A CI checkout, with no YuNet weights, would instead report
@@ -323,6 +336,40 @@ Five more limitations, each recorded with its severity:
   load-bearing when calibration lands, and is where the operating threshold must be frozen.
 - **`DfdError` is not yet the root of everything.** 19 bare `ValueError`/`RuntimeError` sites remain
   in `fusion.py`, `calibration.py`, `detectors/`, `ingest/`. The `errors.py` docstring says so.
+
+### Five more, found by the whole-branch review and deliberately NOT fixed (2026-09-21)
+
+These are recorded, not repaired. Each is a design decision belonging to a later milestone, and the
+fix wave that found them judged that changing them with no fitted calibrator and no detector weights
+anywhere would be changing behaviour nobody can measure. They are also in the plan's known-gaps
+block (gaps 7-11). The first one is the serious one.
+
+- **The band used for calibration is not the band the detector was scored on.** `pipeline.py` takes
+  `_worst_band` over **all** observations; each detector separately drops observations below **its
+  own** floor via `filter_by_quality_floor`. Those are different sets, so on any mixed-quality
+  sample the record's `quality_band` names a regime the detector never saw. Demonstrated by
+  execution on this machine, 2026-09-21: a 32-frame clip of 31 `high` frames plus one flat `reject`
+  frame, a detector with floor `low`, a calibrator fitted on `high`. The detector scores the 31 high
+  frames and returns raw 0.3135; `decide` calibrates that on `reject` and the evidence row comes
+  back `{"llr": 0.0, "abstained": true, "reason": "uncalibrated_for_band"}`. The identical clip with
+  the one flat frame removed returns `{"llr": -0.713, "abstained": false, "reason": "ok"}` from the
+  same raw score. **One bad frame in thirty-two destroys the whole sample's evidence.** And the cost
+  is not what the design spec claimed: it said "systematically pessimistic calibration ... the safe
+  direction", but the realistic outcome is NO calibration at all, because no `reject`-band curve
+  will ever be fitted — detectors abstain in that band by design. The spec's §4.2 cost statement has
+  been corrected; the code's band semantics have not been touched, and must be re-argued when
+  calibration lands. **This is invisible today only because nothing is calibrated at all. It is live
+  the first day a fitted calibrator exists.**
+- **`Detector.modalities` is declared by every detector and consumed by nothing.** `decide` scores
+  every registered detector regardless of `sample.modality`.
+- **`normalize` never supplies yaw or pitch**, so `Quality.yaw_deg` and `Quality.pitch_deg` are
+  `0.0` in every record ever produced and `quality.MAX_YAW_HIGH` is permanently inert — a profile
+  face bands exactly like a frontal one.
+- **Per-detector latency goes only to a DEBUG log.** `decide` times each `score` call and logs it;
+  nothing returns it, so acceptance criterion 5's p95 latency has no path out of `decide`.
+- **`src/dfd/ingest/base.py`'s `IngestAdapter` Protocol is dead code.** Nothing implements or
+  references it, and its `(path, context)` signature matches neither real adapter (`load_image` takes
+  `limits`; `load_video` takes `max_frames`, `seed` and `limits`). It reports 0% coverage.
 
 **The composition root now exists (2026-09-21).** `src/dfd/pipeline.py` has `normalize()` (faces +
 quality onto observations, with ROI clamping) and `decide(path, ...) -> AuditRecord`, which wires

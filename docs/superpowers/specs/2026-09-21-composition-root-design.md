@@ -154,9 +154,43 @@ Stages, in order:
 
 **Worst band, not mean or first.** Calibration conditions on the regime that
 held for the whole sample; the mean of `high` and `reject` is a band the sample
-never occupied. Cost if wrong: systematically pessimistic calibration on
-mixed-quality video, which suppresses evidence rather than inventing it — the
-safe direction.
+never occupied.
+
+**Cost if wrong — corrected 2026-09-21.** This paragraph previously read:
+"systematically pessimistic calibration on mixed-quality video, which suppresses
+evidence rather than inventing it — the safe direction." **That cost statement
+is wrong,** and it is wrong in the direction that matters: it describes a cost
+that is bounded and self-correcting, when the real one is neither.
+
+The band `decide` calibrates on is not the band the detector was scored on.
+`_worst_band` runs over **all** observations, while each detector internally
+drops observations below **its own** floor via `filter_by_quality_floor`. Those
+are different sets, so on any mixed-quality sample the calibration band names a
+regime the detector never saw. And the realistic outcome is not pessimistic
+calibration but **no calibration at all**: no `reject`-band curve will ever be
+fitted, because detectors abstain in that band by design, so there is nothing
+to fit from. `Calibrator.to_evidence` then returns `uncalibrated_for_band` with
+llr 0.0 — the detector's evidence is discarded entirely, not merely discounted.
+
+Demonstrated by execution (2026-09-21): a 32-frame clip of 31 `high` frames and
+one flat `reject` frame, a detector with floor `low`, and a calibrator fitted on
+`high`. The detector scores the 31 high frames and returns raw 0.3135;
+`decide` calibrates that score on `reject` and emits
+`{"llr": 0.0, "abstained": true, "reason": "uncalibrated_for_band"}`. The same
+clip with the single flat frame removed emits `{"llr": -0.713, "abstained":
+false, "reason": "ok"}` from the identical raw score. **One bad frame in
+thirty-two destroys the whole sample's evidence** — and destroys it silently,
+since `uncalibrated_for_band` is indistinguishable in the record from the
+uncalibrated state every sample is in today.
+
+The choice is deliberately left unchanged here: band semantics are a design
+decision for the calibration milestone, and changing them in a wave with no
+fitted calibrator anywhere would be changing behaviour nobody can yet measure.
+**It must be re-argued when calibration lands**, against at least these
+alternatives: calibrate each detector on the worst band among the observations
+*that detector actually scored*; or carry the band per evidence row rather than
+per record. Until then this is a known gap, recorded in the plan's known-gaps
+block and in `docs/HANDOFF.md` §3.
 
 **Largest face box.** v-CIP is single-subject. Cost if wrong: on a
 multi-face frame the wrong subject is measured. The face count is recorded so
