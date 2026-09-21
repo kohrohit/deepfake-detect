@@ -1,143 +1,145 @@
 # Handoff — P0 Evidence Core and Benchmark Harness
 
-**As of 2026-09-20.** Branch `p0-evidence-core`, 12 of 22 tasks complete, 154 tests green.
+**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 495 tests green,
+ruff clean, `mypy --strict` clean, coverage 95%. Pushed. **The plan is finished; the branch has
+not been merged.**
 
-Read this, then `docs/superpowers/specs/2026-09-20-deepfake-detection-design.md` (the authority) and
-`docs/superpowers/plans/2026-09-20-p0-evidence-core-and-benchmark.md` (the plan).
-Every ruling made on the user's behalf is in `.superpowers/sdd/2026-09-20-p0-evidence-core-and-benchmark/progress.md`.
-
----
-
-## 1. The three measurements that justify the whole design
-
-These are receipts, taken on this machine against real data. They are why this system is built the
-way it is, and they should survive into any pitch or review.
-
-**(a) Your own fraud was approved five times.** From 442 v-CIP capture sessions: five have
-`swapped=true` AND `approved=true`. Face match was defeated (attacker→victim 0.036 rejected; with
-swap applied 0.857 accepted). Liveness passed, by design — a live human drives the puppet.
-
-**(b) Reality Defender's ensemble is one model wearing ten hats.** Across 24 cached responses,
-`rd-pine-img` alone reconstructs the aggregate at 0.992 separation. One member (`rd-full-elm-img`)
-emits two distinct values across 24 samples. No sample ever had more than 6 of 10 members concur,
-yet the aggregate tracks the maximum — so its false-positive rate approximates the *union* of its
-members' FPRs.
-
-**(c) An Apache-2.0 open detector scores 0.011 AUC on your fraud.**
-`dima806/deepfake_vs_real_image_detection`, 21k downloads, run against the 24 frames from those five
-approved sessions plus 150 genuine frames: mean P(fake) **0.002 on fraud vs 0.005 on genuine**. It
-rates your fraud as *more real* than genuine applicants. 0% caught at every threshold. The label
-direction was verified against the StyleGAN/FFHQ answer key, not assumed.
-
-**The conclusion (c) forces: there is no off-the-shelf shortcut.** Shipping a pretrained public
-detector produces a system that detects nothing while appearing operational — worse than none,
-because it manufactures confidence.
-
----
-
-## 2. What is built and verified
-
-| Module | Status | Verified by execution |
-|---|---|---|
-| `src/dfd/types.py` | done | 8 core types; `QUALITY_BANDS` ordering pinned |
-| `src/dfd/quality.py` | done | banding + `meets_floor`; `"reject"` unusable as a floor (mypy rejects it) |
-| `src/dfd/faces.py` | done | YuNet (MIT) loads; weights on disk; landmark order documented UNVERIFIED |
-| `src/dfd/ingest/` | done | deterministic frame sampling; survives unusable frame-count metadata |
-| `src/dfd/manifest.py` | done | fail-closed; **observed blocking `npr_weights`** |
-| `src/dfd/detectors/` | done | NPR physics: **0.0 on upsampled, 0.25 on natural**; EffNet slots A/E |
-| `src/dfd/detectors/loading.py` | done | `weights_only=True` default; `model_factory` secure path; cache keyed on load config |
-| `src/dfd/calibration.py` | done | **flips an inverted detector**: raw 0.95 → llr −4.40 |
-| `src/dfd/fusion.py` | done | 900 identical frames → 1 observation's worth; abstentions contribute exactly 0 |
-| `bench/metrics.py` | done | **group CI 0.751 vs row CI 0.063 — 11.9× wider** |
-| `bench/guards.py` | done | six guards, all raise; identity report returns a measured number |
-
-**Weights on disk** (gitignored, `assets/models/`): YuNet face detector (MIT, working);
-`dima806` ViT (Apache-2.0, loads, but see measurement (c) — useless against face swaps).
-
----
-
-## 3. What remains
-
-Tasks 13–22, briefs already staged in the SDD workspace:
-
-13 LOGO splits · 14 robustness surface (incl. screenshot/print recapture) · 15 **white-box PGD
-baseline** · 16 corpus loaders · 17 benchmark runner · 18 wire robustness into the runner ·
-19 asset enumeration · 20 **audit record (dropped spec requirement §7.2)** · 21 resource limits ·
-22 CI gates (ruff, mypy --strict, coverage, asset gate)
-
-Tasks 15, 17 and 20 are the ones where being wrong is expensive: 15 is what makes the
-state-sponsored threat model measured rather than decorative; 17 produces the actual head-to-head
-number; 20 is the RBI-defensible artifact without which the system can decide but not account for a
-decision.
-
----
-
-## 4. Rulings that a reviewer should sanity-check
-
-Full list with costs-if-wrong is in the ledger. The ones most worth a second opinion:
-
-1. **ESS discount is linear `ess/n`, not `sqrt`** — LLRs add for independent evidence. Under `sqrt`,
-   900 identical frames still yielded 30.0, saturating the cap and reproducing the confidently-wrong
-   failure the discount exists to prevent. *(This was my error, found in review.)*
-2. **The ESS discount applies only to per-frame evidence lists.** Detectors aggregate internally via
-   `probs.mean()`, so `Evidence.llr` is already whole-sample; discounting on top double-counts.
-   Misuse now warns.
-3. **`DISAGREEMENT_OOD = 3.0`, not the plan's 4.0** — the plan's own test was unreachable at 4.0.
-   Operational risk recorded: 9 detectors at +3 and 1 at −3 routes to OOD despite total +24, so one
-   miscalibrated or adversarial detector can force manual review over a high-confidence fraud call.
-4. **Task 20 restores a dropped spec requirement**, not an enhancement. §7.2 mandates an immutable
-   audit record; the original plan had no task for it.
-5. **Licensing posture**: research-licensed assets permitted through build/benchmark/internal demo,
-   must be swapped before any paying deployment. `npr_weights` and both EffNet weight sets are
-   registered `commercial_use: false` and the gate blocks them.
-6. **Calibration conditions on quality band only.** Spec §7 requires band AND compression level.
-   Real gap; must close before the harness reports cross-compression numbers.
-
----
-
-## 5. The recurring defect, and how to keep catching it
-
-**Twenty-plus tests across eleven tasks shipped unable to fail for the right reason.** Every one
-passed in a green suite. The variants seen:
-
-- assertions on `.shape`/`.dtype` only — passed against a stub doing no work
-- a test that performed the protection itself before asserting it
-- **assertions at a clamp or bound** — correct, buggy and deleted implementations all saturate to the
-  same value (hit twice, in consecutive rounds)
-- **open intervals** (`0.5 < x < 1.0`) — a constant 0.75 stub passes
-- `pytest.raises(ValueError)` with no `match=` — passes on any ValueError
-- an entire untested *dimension*: every test passed a single-element list, hiding a bug where
-  duplicate observations cancelled to zero
-
-**The method that works:** break the implementation, watch the test fail, restore, watch it pass.
-A test nobody watched fail is a hope, not a guard. Require that proof in every dispatch.
-
----
-
-## 6. The critical path, which is not engineering
-
-Two items gate a working detector and neither is shortened by more code:
-
-1. **Dataset EULAs** — FF++, Celeb-DF, DFDC. Days to weeks of external lead time. **Not started.**
-2. **Usable weights** — measurement (c) shows public Apache-2.0 detectors do not transfer to live
-   face swaps. Realistic routes: train SBI ourselves (needs only *real* faces, so it is licence-clean
-   and the consent problem is tractable), or rent GPU to fine-tune on the 442-session corpus.
-
-Start the EULA requests in parallel with the remaining build, or the wait becomes sequential.
-
----
-
-## 7. Resume instructions
+Read this, then `docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md` — it carries all 106
+rulings made during the build, each with what it costs if wrong. The spec
+(`docs/superpowers/specs/2026-09-20-deepfake-detection-design.md`) remains the authority.
 
 ```bash
-cd /home/rohit/Desktop/agents/deepfake
-git checkout p0-evidence-core
-python3 -m pytest -q          # expect 154 passed, 1 warning
+cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
+python3 -m pytest -q          # 495 passed, 1 warning
 ```
 
-The 1 warning is expected and must not be suppressed: it is `torch.load` without `weights_only=True`
-in the deliberately-gated unsafe branch, exercised once by a test. The warning is evidence the unsafe
-path is unsafe.
+The 1 warning is deliberate and must not be suppressed: `torch.load` without `weights_only=True`
+in the gated unsafe branch. The warning is the evidence that the unsafe path is unsafe.
 
-Then read the ledger, and dispatch Task 13 using its staged brief. Nothing is half-finished: every
-task is either complete with its review clean, or not started.
+---
+
+## 1. The three measurements that justify the design
+
+Unchanged from the previous handoff, and still the reason this system is built this way.
+
+**(a) Your own fraud was approved five times.** Of 442 v-CIP sessions, five are `swapped=true` AND
+`approved=true`. Face match was defeated (0.036 rejected → 0.857 accepted with the swap). Liveness
+passed by design: a live human drives the puppet.
+
+**(b) Reality Defender's ensemble is one model wearing ten hats.** `rd-pine-img` alone reconstructs
+the aggregate at 0.992 separation across 24 cached responses. The aggregate tracks the maximum, so
+its false-positive rate approximates the *union* of its members' FPRs.
+
+**(c) An Apache-2.0 open detector scores 0.011 AUC on your fraud.** `dima806` rates the five
+approved swaps as *more real* than genuine applicants (mean P(fake) 0.002 vs 0.005). **There is no
+off-the-shelf shortcut.**
+
+---
+
+## 2. What is true now
+
+Everything in `src/dfd/` (engine), `bench/` (instrument) and `corpora/` (loaders) is implemented,
+reviewed, and green. The additions this session:
+
+| Module | What it does |
+|---|---|
+| `bench/protocol.py` | LOGO splits, identity-disjoint **by construction**, video-whole |
+| `bench/robustness.py` | perturbation surface incl. screenshot and print re-capture |
+| `bench/adversarial.py` | white-box PGD baseline |
+| `bench/runner.py` + `report.py` | the benchmark run and its markdown report |
+| `corpora/` | RD cache + 442-session capture loaders |
+| `src/dfd/audit.py` + `errors.py` | immutable, tamper-evident decision record (spec §7.2) |
+| `src/dfd/limits.py` | decode-bomb defence, enforced **before** allocation |
+| `src/dfd/asset_scan.py` | release gate that cannot pass without examining files |
+| CI | ruff, `mypy --strict`, coverage ≥85%, asset gate — all cleared **and** enabled |
+
+---
+
+## 3. What is NOT true — read this before claiming anything
+
+Four acceptance criteria are **unmet**, now disclosed in the plan's Known-gaps block:
+
+- **Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
+  `None`. This is the largest gap; do not close P0 without it.
+- **Criterion 4 (head-to-head vs RD).** The loaders exist and **nothing consumes them**. No adapter
+  joins them to `run_benchmark`; no RD table is rendered.
+- **Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
+  weights, so there is nothing to attack yet.
+- **Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
+  never reaches `RunRecord`.
+
+Four more limitations, each recorded with its severity:
+
+- **The CI asset gate provides no protection in CI.** Weight files are gitignored, so it runs with
+  `allow_empty=True`. It protects only where run with assets present. **A green CI run is not
+  evidence that criterion 6 holds.**
+- **Quality banding is blind to every perturbation in the robustness surface.** Blur halves
+  high-frequency energy and bands identically; so do both re-capture paths. The abstention
+  mechanism will never route a recaptured sample to manual review on quality grounds. Note the
+  coupling: the robustness sweep reuses the clean quality object *because* banding is blind, so
+  fixing one invalidates the other's construction.
+- **LOGO is computed but is not a trained protocol.** Each fold's train side is unused. It becomes
+  load-bearing when calibration lands, and is where the operating threshold must be frozen.
+- **`DfdError` is not yet the root of everything.** 19 bare `ValueError`/`RuntimeError` sites remain
+  in `fusion.py`, `calibration.py`, `detectors/`, `ingest/`. The `errors.py` docstring says so.
+
+**There is no composition root.** No `__main__`, no CLI, no `[project.scripts]`. `fuse`,
+`Calibrator.to_evidence`, `build_audit_record`, `load_image`/`load_video` and `detect_faces` have no
+non-test callers. The runner builds `Observation`s directly from dicts, bypassing ingest — so Task
+21's decode-bomb defences are exercised by their unit tests and by nothing else.
+
+---
+
+## 4. The critical path, which is still not engineering
+
+1. **Dataset EULAs — FF++, Celeb-DF, DFDC. Still not started.** Days to weeks of external lead time.
+   Nothing in the build shortens this, and every benchmark number waits on it.
+2. **Usable weights.** Measurement (c) shows public detectors do not transfer. Realistic routes:
+   train SBI ourselves (needs only *real* faces, so licence-clean), or rent GPU to fine-tune on the
+   442-session corpus.
+
+---
+
+## 5. Recommended next steps, in order
+
+1. **Open the PR.** The branch is review-clean and pushed.
+2. **Start the EULA requests** — in parallel with everything else, or the wait becomes sequential.
+3. **A composition root**: wire ingest → detectors → calibration → fusion → audit into one runnable
+   path. Most of the unmet criteria are wiring, not new mechanism.
+4. **An embedder for criterion 2.** Note `check_identity_disjoint` now *refuses* ids with no
+   embedding rather than skipping them — a partial-embedding pipeline must omit unembeddable ids
+   explicitly, which is the point.
+5. **The RD adapter for criterion 4** — the 24 cached results are free and already labelled.
+
+---
+
+## 6. The recurring defect, and the method that caught it
+
+**Roughly thirty tests across this plan shipped green while unable to fail for the right reason.**
+Variants, all found here: bound assertions a stub satisfies; open intervals; `pytest.raises` with no
+discriminating `match=`; a boolean asserted one direction; a loop or `all(...)` over a collection
+empty under the mutation; a fixture below a quality floor so every metric was `nan`; a
+correctly-wired value no test could detect regressing.
+
+Two patterns worth carrying forward:
+
+- **A fix correct about the case it was shown, blind one level down.** Five instances. An `except`
+  narrowed for parsing but not construction; asset matching fixed for stems and broken for duplicate
+  claims; a leaf-value check applied to one field and not its sibling; `"finite and positive"`
+  implemented as `"positive"`, where the dropped word was the one that mattered against an adversary.
+- **When you narrow a requirement, state which part you dropped and why it is safe.** If you cannot
+  write that sentence, the narrowing is not safe.
+
+**The method:** break the implementation, watch the test fail, restore, watch it pass. A test nobody
+watched fail is a hope, not a guard. Require that proof in every dispatch, and verify each staged
+plan section by *running* it before handing it to an implementer — four of my own reference
+implementations failed their own tests.
+
+---
+
+## 7. Workspace
+
+`.superpowers/sdd/2026-09-20-p0-evidence-core-and-benchmark/` is retained deliberately (the process
+default is to delete it). It holds the per-task briefs and reports, which are gitignored and would
+be lost. The committed ledger has every ruling; the reports have the working. Delete it once the PR
+is merged.
