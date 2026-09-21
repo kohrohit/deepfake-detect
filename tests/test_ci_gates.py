@@ -1,9 +1,12 @@
 """The CI config is itself tested: a gate nobody verifies is a gate that rots."""
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,8 +76,85 @@ def test_the_declared_dependencies_cover_what_is_imported():
     clean runner and nothing at all locally, where the package is present."""
     dev = (ROOT / "requirements-dev.txt").read_text().lower()
     for package in ("pytest", "ruff", "mypy", "numpy", "opencv-python-headless",
-                    "pillow", "torch", "scikit-learn", "pyyaml"):
+                    "pillow", "torch", "scikit-learn", "pyyaml", "packaging"):
         assert package in dev, f"{package} missing from requirements-dev.txt"
+
+
+# --- Dependency drift ------------------------------------------------------
+# This branch shipped "mypy --strict clean" and went red on its first CI run,
+# because every dependency was a floor with no ceiling and CI resolved numpy
+# 2.2.6 / opencv 5.0.0 / torch 2.14.0 against a local numpy 1.26.4 / opencv
+# 4.10 / torch 2.4.1. Two real defects followed. These three tests keep the
+# pins honest. Each asserts its parse found something first: a loop over an
+# empty list passes against any file at all, which is the exact vacuous-test
+# failure this plan hit roughly thirty times.
+
+EXPECTED_DEV_PINS = 11
+EXPECTED_PYPROJECT_DEPS = 6
+
+
+def _dev_requirements() -> list[Requirement]:
+    lines = (ROOT / "requirements-dev.txt").read_text().splitlines()
+    return [Requirement(ln.strip()) for ln in lines
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def _pyproject_requirements() -> list[Requirement]:
+    """Parses the dependencies array without tomllib, which is 3.11+ while CI
+    pins python 3.10."""
+    text = (ROOT / "pyproject.toml").read_text()
+    block = re.search(r"^dependencies\s*=\s*\[(.*?)^\]",
+                      text, re.DOTALL | re.MULTILINE)
+    assert block is not None, "could not locate the dependencies array"
+    return [Requirement(m) for m in re.findall(r'"([^"]+)"', block.group(1))]
+
+
+def test_every_dev_requirement_is_exactly_pinned():
+    """A floor in this file is how CI and local silently diverge. Exact pins are
+    the only thing that made CI reproducible — ceilings would not have caught
+    the torch 2.6 break, which landed in a minor release."""
+    reqs = _dev_requirements()
+    assert len(reqs) == EXPECTED_DEV_PINS, (
+        f"parsed {len(reqs)} requirements, expected {EXPECTED_DEV_PINS}; "
+        "update EXPECTED_DEV_PINS deliberately when adding a dependency")
+    unpinned = [str(r) for r in reqs
+                if {s.operator for s in r.specifier} != {"=="}]
+    assert unpinned == [], f"requirements-dev.txt entries are not ==-pinned: {unpinned}"
+
+
+def test_every_runtime_dependency_has_an_upper_bound():
+    """An unbounded runtime dependency hands the next major release of numpy,
+    opencv or torch a free pass into anyone who installs this package."""
+    reqs = _pyproject_requirements()
+    assert len(reqs) == EXPECTED_PYPROJECT_DEPS, (
+        f"parsed {len(reqs)} dependencies, expected {EXPECTED_PYPROJECT_DEPS}")
+    unbounded = [str(r) for r in reqs
+                 if not any(s.operator in ("<", "<=") for s in r.specifier)]
+    assert unbounded == [], f"pyproject dependencies lack an upper bound: {unbounded}"
+
+
+def test_dev_pins_satisfy_the_pyproject_ranges():
+    """CI runs `pip install -r requirements-dev.txt` and THEN `pip install -e .`.
+    If a pin fell outside its pyproject range, that second command would quietly
+    re-resolve it and the exact pin above would buy nothing — CI would once again
+    be running versions nobody verified."""
+    dev = {canonicalize_name(r.name): r for r in _dev_requirements()}
+    project = _pyproject_requirements()
+    assert len(project) == EXPECTED_PYPROJECT_DEPS
+
+    checked = []
+    for req in project:
+        pin = dev.get(canonicalize_name(req.name))
+        assert pin is not None, (
+            f"{req.name} is a runtime dependency but is not pinned in "
+            "requirements-dev.txt, so CI never fixes its version")
+        version = str(next(iter(pin.specifier)).version)
+        assert req.specifier.contains(version), (
+            f"requirements-dev.txt pins {req.name}=={version}, which is outside "
+            f"the pyproject range '{req.specifier}'. `pip install -e .` would "
+            "re-resolve it and undo the pin.")
+        checked.append(req.name)
+    assert len(checked) == EXPECTED_PYPROJECT_DEPS
 
 
 def test_pyproject_declares_runtime_dependencies():
