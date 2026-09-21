@@ -20,13 +20,18 @@ docs/EULA-ACCESS.md §1.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import Sequence
 
 import cv2
 import numpy as np
 import numpy.typing as npt
 
 from dfd.faces import FaceBox
+from dfd.types import Context, Modality, Observation, Sample
+
+from .face_pool import FaceCrop
 
 logger = logging.getLogger(__name__)
 
@@ -170,3 +175,103 @@ def self_blend(
     # would bias every blended pixel where 0 < mask < 1 by about half a
     # greylevel, a deterministic artifact perfectly correlated with the seam.
     return np.rint(np.clip(blended, 0, 255)).astype(np.uint8), mask
+
+
+#: The generator name every self-blended fake carries. LOGO holds each
+#: generator out in turn and trains on the rest, so a corpus with only this
+#: one generator offers LOGO no folds at all -- holding out the only
+#: generator leaves nothing to train on, and `bench.protocol.logo_splits`
+#: correctly refuses with `UnsplittableCorpusError` rather than fabricate
+#: one. A second, licence-clean generator family is therefore a
+#: precondition for running the LOGO benchmark at all, not an optional
+#: improvement. See docs/HANDOFF.md §4.
+SBI_GENERATOR = "sbi"
+
+
+class EvaluationOnlySessionError(ValueError):
+    """Raised when a session reserved for evaluation is offered for blending.
+
+    Its own type, not a bare ValueError, because a caller may reasonably want
+    to catch this and filter, while a malformed-crop ValueError means a defect
+    and must propagate.
+    """
+
+
+def build_sbi_corpus(crops: Sequence[FaceCrop], *, seed: int = 0) -> list[Sample]:
+    """Turn real face crops into a labelled, splittable corpus.
+
+    Each crop yields two samples: the crop itself as a real, and a self-blend
+    of it as a fake. They share `subject_id` so identity-disjoint splitting
+    moves them together, and differ in `source_id` because
+    `bench.protocol._validate` requires each source to carry exactly one
+    (subject, generator) pair.
+
+    Args:
+        crops: real face crops. Any crop from a swapped session is refused.
+        seed: base seed. The same seed yields the same corpus.
+
+    Returns:
+        Samples, two per crop, ordered real-then-fake per crop.
+
+    Raises:
+        EvaluationOnlySessionError: if any crop comes from a swapped session.
+            These are the only labelled fraud this project has; blending them
+            would spend the evaluation set on training.
+    """
+    reserved = sorted({c.session_id for c in crops if c.swapped})
+    if reserved:
+        raise EvaluationOnlySessionError(
+            "refusing to blend evaluation-only sessions: "
+            f"{', '.join(reserved)}. Swapped sessions are the held-out fraud "
+            "set; filter them out before building a training corpus.")
+
+    samples: list[Sample] = []
+    for crop in crops:
+        stem = f"{crop.session_id}-{crop.frame_index:02d}"
+        # hashlib, not hash(): Python salts str hashing per process unless
+        # PYTHONHASHSEED is set, so hash() would make this reproducible within
+        # one run and silently irreproducible between runs — the worst of both,
+        # because a test calling it twice in one process would still pass.
+        digest = hashlib.sha256(stem.encode()).digest()[:8]
+        rng = np.random.default_rng([seed, int.from_bytes(digest, "big")])
+        blended, _mask = self_blend(crop.image, _crop_box(crop), rng)
+
+        for suffix, payload, label, generator in (
+            ("real", crop.image, 0, None),
+            ("sbi", blended, 1, SBI_GENERATOR),
+        ):
+            samples.append(Sample(
+                sample_id=f"{stem}-{suffix}",
+                modality=Modality.IMAGE,
+                observations=(Observation(
+                    t=0.0,
+                    payload=payload,
+                    roi=None,
+                    quality=crop.quality,
+                    source_id=f"{crop.session_id}:{suffix}",
+                ),),
+                context=Context(
+                    subject_id=crop.session_id,
+                    generator=generator,
+                    compression=None,
+                    label=label,
+                ),
+            ))
+
+    logger.info("SBI corpus: %d samples from %d crops", len(samples), len(crops))
+    return samples
+
+
+def _crop_box(crop: FaceCrop) -> FaceBox:
+    """A box covering the aligned crop.
+
+    `FaceCrop.box` is in the ORIGINAL frame's coordinates; `crop.image` has
+    already been cropped and resized by `dfd.faces.align`, so those coordinates
+    do not apply to it. Blending under the original box would put the seam
+    outside the crop entirely — silently producing pseudo-fakes identical to
+    their reals, which every downstream metric would then reward the detector
+    for failing to separate.
+    """
+    h, w = crop.image.shape[:2]
+    return FaceBox(x=0, y=0, w=w, h=h,
+                   landmarks=crop.box.landmarks.copy(), score=crop.box.score)
