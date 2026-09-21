@@ -11,8 +11,11 @@ from corpora.captures import CaptureSession
 from corpora.face_pool import NO_FACE, UNREADABLE, build_face_pool
 
 
-def _session(session_id: str, swapped: bool = False) -> CaptureSession:
-    return CaptureSession(session_id=session_id, folder=session_id, swapped=swapped,
+def _session(session_id: str, folder: str, swapped: bool = False) -> CaptureSession:
+    # folder is a COMPLETE path, exactly as load_capture_sessions produces it
+    # (str(path.parent) from a glob already rooted at the caller's root) —
+    # never a bare session id that build_face_pool must re-root.
+    return CaptureSession(session_id=session_id, folder=folder, swapped=swapped,
                           approved=True, scan_verdict="LIVE", frame_count=2)
 
 
@@ -34,7 +37,7 @@ def _fake_box():
 
 def test_one_crop_per_frame_with_provenance(tmp_path: Path) -> None:
     _write_frames(tmp_path, "s1", n=2)
-    crops, skipped = build_face_pool([_session("s1")], tmp_path,
+    crops, skipped = build_face_pool([_session("s1", str(tmp_path / "s1"))],
                                      detect=lambda f: [_fake_box()])
     assert len(crops) == 2
     assert {c.frame_index for c in crops} == {0, 1}
@@ -46,14 +49,16 @@ def test_one_crop_per_frame_with_provenance(tmp_path: Path) -> None:
 
 def test_swapped_flag_is_carried_from_the_session(tmp_path: Path) -> None:
     _write_frames(tmp_path, "s_fraud", n=1)
-    crops, _ = build_face_pool([_session("s_fraud", swapped=True)], tmp_path,
-                               detect=lambda f: [_fake_box()])
+    crops, _ = build_face_pool(
+        [_session("s_fraud", str(tmp_path / "s_fraud"), swapped=True)],
+        detect=lambda f: [_fake_box()])
     assert crops and all(c.swapped for c in crops)
 
 
 def test_frames_with_no_detected_face_are_skipped_and_counted(tmp_path: Path) -> None:
     _write_frames(tmp_path, "s1", n=2)
-    crops, skipped = build_face_pool([_session("s1")], tmp_path, detect=lambda f: [])
+    crops, skipped = build_face_pool([_session("s1", str(tmp_path / "s1"))],
+                                     detect=lambda f: [])
     assert crops == []
     assert skipped == {NO_FACE: 2}
 
@@ -62,7 +67,7 @@ def test_an_unreadable_frame_is_counted_not_raised(tmp_path: Path) -> None:
     d = tmp_path / "s1"
     d.mkdir(parents=True)
     (d / "frame_00.jpg").write_bytes(b"not a jpeg")
-    crops, skipped = build_face_pool([_session("s1")], tmp_path,
+    crops, skipped = build_face_pool([_session("s1", str(d))],
                                      detect=lambda f: [_fake_box()])
     assert crops == []
     assert skipped == {UNREADABLE: 1}
@@ -70,7 +75,7 @@ def test_an_unreadable_frame_is_counted_not_raised(tmp_path: Path) -> None:
 
 def test_max_frames_per_session_caps_the_pool(tmp_path: Path) -> None:
     _write_frames(tmp_path, "s1", n=5)
-    crops, _ = build_face_pool([_session("s1")], tmp_path,
+    crops, _ = build_face_pool([_session("s1", str(tmp_path / "s1"))],
                                detect=lambda f: [_fake_box()],
                                max_frames_per_session=2)
     assert len(crops) == 2
@@ -84,6 +89,25 @@ def test_highest_scoring_face_is_chosen_when_several_are_detected(tmp_path: Path
                     [33.0, 70.0], [57.0, 70.0]])
     small = FaceBox(x=0, y=0, w=10, h=10, landmarks=lms, score=0.5)
     big = FaceBox(x=20, y=25, w=50, h=60, landmarks=lms, score=0.95)
-    crops, _ = build_face_pool([_session("s1")], tmp_path, detect=lambda f: [small, big])
+    crops, _ = build_face_pool([_session("s1", str(tmp_path / "s1"))],
+                               detect=lambda f: [small, big])
     assert len(crops) == 1
     assert crops[0].box.score == pytest.approx(0.95)
+
+
+def test_a_session_folder_is_used_as_the_complete_path_it_is(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CaptureSession.folder is already a full path; build_face_pool must not
+    re-root it. A prior version took a `root` kwarg and joined it against
+    `session.folder`, which double-prefixed a relative folder into a path
+    that does not exist. Regression test for that: run from a cwd where a
+    naive `Path(some_root) / session.folder` join would land on a
+    non-existent directory, and confirm the real (relative) folder is still
+    found.
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_frames(Path("captures"), "s1", n=1)
+    session = _session("s1", "captures/s1")
+    crops, skipped = build_face_pool([session], detect=lambda f: [_fake_box()])
+    assert len(crops) == 1
+    assert skipped == {}

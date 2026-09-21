@@ -59,7 +59,6 @@ class FaceCrop:
 
 def build_face_pool(
     sessions: Sequence[CaptureSession],
-    root: str | Path,
     *,
     size: int = DEFAULT_CROP_SIZE,
     detect: DetectFn = detect_faces,
@@ -69,7 +68,6 @@ def build_face_pool(
 
     Args:
         sessions: sessions to draw from, as loaded by `load_capture_sessions`.
-        root: directory holding one folder per session, each with `frame_NN.jpg`.
         size: edge length of the aligned crop.
         detect: face detector. Injected so tests need no weight file.
         max_frames_per_session: cap on frames taken from any one session.
@@ -79,6 +77,19 @@ def build_face_pool(
         and is empty when nothing was dropped. Never raises for bad input:
         a frame that cannot be decoded is counted, not propagated, because
         one corrupt JPEG must not cost the other 441 sessions.
+
+    There is deliberately no `root` parameter. `CaptureSession.folder`, as
+    produced by `load_capture_sessions`, is already a complete path (it is
+    built there as `str(path.parent)` from a glob rooted at the caller's
+    `root`) — not a bare session id relative to some root the caller must
+    supply again. An earlier version of this function took a `root` and
+    joined it against `session.folder`: with an absolute root that
+    "worked" only because `Path.joinpath` discards its left operand
+    whenever the right operand is itself absolute, and with a relative
+    root it silently double-prefixed the path (`root/root/session_id`),
+    so every session reported `NO_FRAMES` even though the frames were on
+    disk. If you find yourself wanting to add `root` back, don't: pass a
+    `session.folder` that is already correct instead.
     """
     crops: list[FaceCrop] = []
     skipped: dict[str, int] = {}
@@ -87,7 +98,7 @@ def build_face_pool(
         skipped[reason] = skipped.get(reason, 0) + 1
 
     for session in sessions:
-        folder = Path(root) / session.folder
+        folder = Path(session.folder)
         frames = sorted(folder.glob("frame_*.jpg"))[:max_frames_per_session]
         if not frames:
             logger.debug("session %s has no frames", session.session_id)
