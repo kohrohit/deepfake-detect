@@ -52,6 +52,38 @@ run all four gates there.
 
 ---
 
+## 0. Resume here (last touched 2026-09-21, end of session)
+
+**PR #1 is open and green:** https://github.com/kohrohit/deepfake-detect/pull/1 — 84+ commits,
+`MERGEABLE`, all four CI gates passing. Nothing is uncommitted or unpushed.
+
+On a fresh machine:
+
+```bash
+git clone git@github.com:kohrohit/deepfake-detect.git && cd deepfake-detect
+git checkout p0-evidence-core
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt && pip install -e .   # now exactly pinned = CI's env
+python3 -m pytest -q                                      # 498 passed
+```
+
+`gh` note: this repo is `kohrohit/*`, and `gh` may be active as a different account
+(`gh auth switch -h github.com -u kohrohit`). `gh pr edit` fails here with a Projects-classic
+GraphQL deprecation; use `gh api -X PATCH repos/kohrohit/deepfake-detect/pulls/1 -F body=@file`.
+
+**What this session did, beyond opening the PR:** CI failed on its first run and exposed two real
+defects that local could not see (opencv≥5 type stubs; torch≥2.6 flipping the `torch.load`
+`weights_only` default, which had silently disabled the `allow_unsafe_load` branch). Both fixed.
+Dependencies are now pinned, with three new drift gates in `tests/test_ci_gates.py`. See §1's
+correction block and the environment-drift section below.
+
+**Next, in order:** merge the PR (or get it reviewed); start the dataset EULAs — §4, still the
+longest pole and still not started; then the composition root in §5.3. One deliberate gap left
+open: nothing exercises the declared dependency floors automatically — a second CI matrix leg on
+the floor versions would fix that, roughly ten lines of `ci.yml`.
+
+---
+
 ## 1. The three measurements that justify the design
 
 Unchanged from the previous handoff, and still the reason this system is built this way.
