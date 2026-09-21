@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -150,6 +151,35 @@ def evaluate(model: BlendModel, samples: Sequence[Sample]) -> dict[str, float]:
     return {"auc": auc, "n": float(len(samples)), "n_fake": n_fake}
 
 
+def _json_safe(value: object) -> object:
+    """Replace non-finite floats with None, recursively, before json.dumps.
+
+    `evaluate()` legitimately returns `auc=nan` for a one-class test set
+    (its own docstring) -- that is not a bug, it is the honest "AUC is
+    undefined here" answer, and this report exists to record it, not to
+    hide it behind a crash. `json.dumps`'s default behaviour, though,
+    would emit the bare token `NaN`: valid to Python's own parser but not
+    to any conforming JSON consumer, the same defect `src/dfd/audit.py`
+    guards against with `allow_nan=False`. Converting known non-finite
+    values to `null` here -- rather than raising, as `audit.py` does for
+    an audit record -- keeps `main()` finishing the write it started
+    instead of crashing mid-report over a state this module already
+    handles deliberately; `null` is also the more useful reading for a
+    metric, where "undefined" is closer to the truth than "absent".
+    `allow_nan=False` is still passed at the call site below as a safety
+    net: if some other, un-anticipated non-finite value reaches the
+    report by a path this function does not walk, it fails loudly rather
+    than silently writing invalid JSON.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def main(argv: Sequence[str] | None = None, *, detect: DetectFn = detect_faces) -> int:
     """Build the corpus, fit, evaluate, write the model and a JSON report.
 
@@ -205,7 +235,8 @@ def main(argv: Sequence[str] | None = None, *, detect: DetectFn = detect_faces) 
               "n_crops": len(crops), "skipped": skipped,
               "n_train": len(train), "n_test": len(test), **metrics}
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, indent=2, sort_keys=True))
+    args.report.write_text(json.dumps(_json_safe(report), indent=2,
+                                       sort_keys=True, allow_nan=False))
     logger.info("held-out AUC %.3f over %d rows (%d fake)",
                 metrics["auc"], int(metrics["n"]), int(metrics["n_fake"]))
     return 0

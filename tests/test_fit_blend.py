@@ -14,7 +14,7 @@ from corpora.sbi import build_sbi_corpus
 from dfd.detectors.blend import FEATURE_NAMES, load_blend_model
 from dfd.faces import FaceBox
 from dfd.types import Quality
-from training.fit_blend import evaluate, fit_blend_model, main, split_by_subject
+from training.fit_blend import _json_safe, evaluate, fit_blend_model, main, split_by_subject
 
 
 def _seed_for_session(session_id: str) -> int:
@@ -202,6 +202,23 @@ def test_the_content_hash_control_no_longer_passes_the_bar(
     auc = evaluate(m, test)["auc"]
     assert auc < 0.9, (
         f"content-hash control (zero seam signal) cleared the 0.9 bar: {auc}")
+
+
+def test_json_safe_turns_nan_into_null_not_a_crash() -> None:
+    """evaluate() legitimately returns auc=nan for a one-class test set
+    (its own docstring); json.dumps's default behaviour would then emit
+    the bare token `NaN`, which is not valid JSON for any parser but
+    Python's own. `_json_safe` must convert it to `None` so the report
+    writer neither crashes nor emits non-conformant JSON."""
+    report = {"version": "t1", "auc": float("nan"), "n": 4.0,
+              "skipped": {"no_face": 1}, "nested": [1.0, float("nan")]}
+    safe = _json_safe(report)
+    text = json.dumps(safe, sort_keys=True, allow_nan=False)  # must not raise
+    assert "NaN" not in text
+    back = json.loads(text)
+    assert back["auc"] is None
+    assert back["nested"] == [1.0, None]
+    assert back["n"] == 4.0  # a finite float is untouched
 
 
 # --- main(): exercised only against a synthetic capture corpus written into
