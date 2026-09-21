@@ -1,8 +1,13 @@
 # Handoff — P0 Evidence Core and Benchmark Harness
 
-**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 498 tests green,
-ruff clean, `mypy --strict` clean, coverage 95%. Pushed. **The plan is finished; the branch has
-not been merged.**
+**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 502 tests green,
+ruff clean, `mypy --strict` clean, coverage ~93% against a ≥85% gate. Pushed. **The plan is
+finished; the branch has not been merged.**
+
+(The "95%" a previous version of this line claimed is not what the tool reports. Measured
+2026-09-21: 92.7% locally, 93.4% in the pinned floor venv — the two environments' coverage
+tooling counts 868 and 858 statements respectively. Both clear the gate with room; the discrepancy
+is unexplained and nobody has looked into it.)
 
 Read this, then `docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md` — it carries all 106
 rulings made during the build, each with what it costs if wrong. The spec
@@ -10,7 +15,7 @@ rulings made during the build, each with what it costs if wrong. The spec
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
-python3 -m pytest -q          # 498 passed
+python3 -m pytest -q          # 502 passed
 ```
 
 **Corrected 2026-09-21.** A previous version of this handoff said the suite ends in "1 warning"
@@ -43,12 +48,24 @@ pins are the guard, and only for direct dependencies — transitive ones still f
 sits inside its range (otherwise the `pip install -e .` CI runs after the pinned install would
 quietly re-resolve it).
 
-**Still not guarded:** nothing exercises the declared floors automatically. Both ends are tested
-today only because two machines happen to sit at opposite ends; CI runs the upper end alone. A
-second CI leg installing the floor versions would turn that from coincidence into a gate.
+**Now guarded (2026-09-21).** The floors used to be exercised only because two machines happened
+to sit at opposite ends of the ranges, and CI ran the upper end alone. `requirements-floor.txt`
+pins the declared floors exactly, and `ci.yml` runs all four gates twice — `matrix: deps: [dev,
+floor]`, `fail-fast: false`, so a red upper leg cannot cancel the lower one. Verified before
+pushing: a clean venv built from `requirements-floor.txt` with no local site-packages passes ruff,
+`mypy --strict` (21 files), 502 tests, coverage 93%, and the asset gate; `pip install -e .` after it
+re-resolves nothing. Four tests in `tests/test_ci_gates.py` hold it there — the floor file stays
+`==`-pinned, each pin *is* the declared pyproject floor rather than merely satisfying it, the dev
+tooling is identical across both legs (so a red floor leg is unambiguous), at least one runtime pin
+actually differs (so the leg is not a silent duplicate), and CI keeps both legs. All six mutations
+of those were run and failed for the right reason.
 
-To reproduce what CI sees: build a venv from `requirements-dev.txt` with no local site-packages and
-run all four gates there.
+**Still only two points.** Both endpoints are gates now; the interior of every range is untested,
+and transitive dependencies still float in both files. The opencv floor reads `>=4.10.0.84`, not
+`>=4.10`, because the pin must equal the declared floor exactly.
+
+To reproduce what CI sees: build a venv from `requirements-dev.txt` (or `requirements-floor.txt`
+for the other leg) with no local site-packages and run all four gates there.
 
 ---
 
@@ -64,7 +81,7 @@ git clone git@github.com:kohrohit/deepfake-detect.git && cd deepfake-detect
 git checkout p0-evidence-core
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt && pip install -e .   # now exactly pinned = CI's env
-python3 -m pytest -q                                      # 498 passed
+python3 -m pytest -q                                      # 502 passed
 ```
 
 `gh` note: this repo is `kohrohit/*`, and `gh` may be active as a different account
@@ -77,10 +94,12 @@ defects that local could not see (opencv≥5 type stubs; torch≥2.6 flipping th
 Dependencies are now pinned, with three new drift gates in `tests/test_ci_gates.py`. See §1's
 correction block and the environment-drift section below.
 
+**Then, this session:** closed that last gap — `requirements-floor.txt` plus the two-leg CI matrix
+described above, with four new drift tests and all four gates verified green in a clean floor venv.
+502 tests.
+
 **Next, in order:** merge the PR (or get it reviewed); start the dataset EULAs — §4, still the
-longest pole and still not started; then the composition root in §5.3. One deliberate gap left
-open: nothing exercises the declared dependency floors automatically — a second CI matrix leg on
-the floor versions would fix that, roughly ten lines of `ci.yml`.
+longest pole and still not started; then the composition root in §5.3.
 
 ---
 

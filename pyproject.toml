@@ -14,11 +14,16 @@ requires-python = ">=3.10"
 # which `torch<3` would have allowed straight through. requirements-dev.txt pins
 # the CI environment exactly; that is the guard.
 #
-# Both ends of every range below are tested, but only at the two endpoints, and
-# only the upper endpoint runs in CI. Nothing exercises the floors automatically.
+# Both ends of every range below are tested, and both now run in CI: the gates
+# execute twice, once per requirements file (requirements-dev.txt = the ceiling
+# end, requirements-floor.txt = these floors, pinned exactly). Only the two
+# endpoints are covered — nothing tests the interior of a range. The opencv
+# floor reads 4.10.0.84 rather than 4.10 because the floor file must pin the
+# declared floor exactly, and that is the version actually executed; a bare
+# 4.10 would let the two disagree while both looked right.
 dependencies = [
     "numpy>=1.26.4,<3",
-    "opencv-python-headless>=4.10,<6",
+    "opencv-python-headless>=4.10.0.84,<6",
     "pillow>=11.0,<13",
     "pyyaml>=6.0.3,<7",
     "scikit-learn>=1.5,<2",

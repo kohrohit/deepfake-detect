@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -90,6 +91,7 @@ def test_the_declared_dependencies_cover_what_is_imported():
 # failure this plan hit roughly thirty times.
 
 EXPECTED_DEV_PINS = 11
+EXPECTED_FLOOR_PINS = 11
 EXPECTED_PYPROJECT_DEPS = 6
 
 
@@ -156,6 +158,96 @@ def test_dev_pins_satisfy_the_pyproject_ranges():
         checked.append(req.name)
     assert len(checked) == EXPECTED_PYPROJECT_DEPS
 
+
+def _floor_requirements() -> list[Requirement]:
+    lines = (ROOT / "requirements-floor.txt").read_text().splitlines()
+    return [Requirement(ln.strip()) for ln in lines
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def test_every_floor_requirement_is_exactly_pinned():
+    """Same reasoning as the dev pins: a floor with no ceiling in this file
+    would let the floor leg resolve upward and silently become a second copy
+    of the pinned leg, testing nothing."""
+    reqs = _floor_requirements()
+    assert len(reqs) == EXPECTED_FLOOR_PINS, (
+        f"parsed {len(reqs)} requirements, expected {EXPECTED_FLOOR_PINS}; "
+        "update EXPECTED_FLOOR_PINS deliberately when adding a dependency")
+    unpinned = [str(r) for r in reqs
+                if {s.operator for s in r.specifier} != {"=="}]
+    assert unpinned == [], f"requirements-floor.txt entries are not ==-pinned: {unpinned}"
+
+
+def test_floor_pins_are_exactly_the_declared_pyproject_floors():
+    """The point of the floor file is that `numpy>=1.26.4` in pyproject.toml is
+    a claim someone can check. If the pin here merely *satisfies* the range
+    instead of *being* its lower bound, the declared floor goes back to being
+    an untested assertion while CI reports green against some higher version."""
+    floor = {canonicalize_name(r.name): r for r in _floor_requirements()}
+    project = _pyproject_requirements()
+    assert len(project) == EXPECTED_PYPROJECT_DEPS
+
+    checked = []
+    for req in project:
+        lower = [s for s in req.specifier if s.operator == ">="]
+        assert len(lower) == 1, (
+            f"{req.name} does not declare exactly one '>=' floor: '{req.specifier}'")
+        pin = floor.get(canonicalize_name(req.name))
+        assert pin is not None, (
+            f"{req.name} is a runtime dependency but is not pinned in "
+            "requirements-floor.txt, so its declared floor is never executed")
+        pinned_version = Version(str(next(iter(pin.specifier)).version))
+        declared_floor = Version(lower[0].version)
+        assert pinned_version == declared_floor, (
+            f"requirements-floor.txt pins {req.name}=={pinned_version}, but "
+            f"pyproject.toml declares the floor as {declared_floor}. The floor "
+            "leg would then exercise a version nobody declared, and the "
+            "declared floor would stay untested.")
+        checked.append(req.name)
+    assert len(checked) == EXPECTED_PYPROJECT_DEPS
+
+
+def test_the_two_requirement_files_differ_only_in_runtime_dependencies():
+    """Two things, both load-bearing. Tooling identical: if ruff or mypy also
+    moved between the legs, a red floor leg would not say whether the runtime
+    floor or the tool broke it. And at least one runtime version must actually
+    differ, or the floor leg is a duplicate of the pinned leg — green, costing
+    CI minutes, and proving nothing."""
+    dev = {canonicalize_name(r.name): str(next(iter(r.specifier)).version)
+           for r in _dev_requirements()}
+    floor = {canonicalize_name(r.name): str(next(iter(r.specifier)).version)
+             for r in _floor_requirements()}
+    assert set(dev) == set(floor), (
+        "the two requirement files name different packages: "
+        f"dev-only={sorted(set(dev) - set(floor))}, "
+        f"floor-only={sorted(set(floor) - set(dev))}")
+
+    runtime = {canonicalize_name(r.name) for r in _pyproject_requirements()}
+    tools_that_moved = {name: (dev[name], floor[name]) for name in dev
+                        if name not in runtime and dev[name] != floor[name]}
+    assert tools_that_moved == {}, (
+        "the dev tooling is not held constant across the two legs, so a red "
+        f"floor leg would be ambiguous: {tools_that_moved}")
+
+    moved = {name for name in runtime if dev[name] != floor[name]}
+    assert moved, (
+        "every runtime dependency is pinned identically in both files, so the "
+        "floor leg re-runs the pinned leg and exercises no floor at all")
+
+
+def test_ci_runs_the_gates_at_both_ends_of_every_range():
+    """Before this, both ends were tested only because two machines happened to
+    sit at opposite ends, and CI ran the upper end alone — which is how a break
+    that only appears under one resolution stays invisible until someone's
+    laptop is replaced."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "matrix:" in ci, "CI defines no matrix, so it runs one resolution only"
+    for name in ("requirements-dev.txt", "requirements-floor.txt"):
+        stem = name.removeprefix("requirements-").removesuffix(".txt")
+        assert stem in ci, f"CI never installs {name}, so that end is unexercised"
+    assert "fail-fast: false" in ci, (
+        "without fail-fast: false a red pinned leg cancels the floor leg, and "
+        "the floor result is lost exactly when it is most interesting")
 
 def test_pyproject_declares_runtime_dependencies():
     """pyproject declared none at all, so `pip install .` produced a package

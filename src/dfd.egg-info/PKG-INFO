@@ -3,7 +3,7 @@ Name: dfd
 Version: 0.1.0
 Requires-Python: >=3.10
 Requires-Dist: numpy<3,>=1.26.4
-Requires-Dist: opencv-python-headless<6,>=4.10
+Requires-Dist: opencv-python-headless<6,>=4.10.0.84
 Requires-Dist: pillow<13,>=11.0
 Requires-Dist: pyyaml<7,>=6.0.3
 Requires-Dist: scikit-learn<2,>=1.5
