@@ -1,6 +1,7 @@
 """The detector abstains honestly, and its model file is inert data."""
 from __future__ import annotations
 
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -56,12 +57,42 @@ def test_abstains_below_the_quality_floor(tmp_path: Path) -> None:
     assert r.abstained and r.reason == "below_quality_floor"
 
 
+def test_weights_absent_takes_priority_over_quality_when_both_apply(
+        tmp_path: Path) -> None:
+    """Ordering matters for the audit record's `reason` field, which a
+    caller reads to decide what to do next. NPR and EffNet both check
+    weights_path.exists() before filtering by quality; Blend must match, or
+    a fresh checkout (no model file, the documented default state) blames a
+    low-quality capture for a problem that is actually a missing model —
+    someone would go improve their capture quality and still get nothing."""
+    d = BlendDetector(weights_path=tmp_path / "nope.npz")
+    r = d.score([_obs(band="low")])
+    assert r.abstained and r.reason == WEIGHTS_ABSENT
+
+
 def test_scores_in_the_unit_interval(tmp_path: Path) -> None:
     p = tmp_path / "m.npz"
     save_blend_model(_model(), p)
     r = BlendDetector(weights_path=p).score([_obs()])
     assert not r.abstained
     assert r.score is not None and 0.0 <= r.score <= 1.0
+
+
+def test_predict_proba_clamps_extreme_logits_without_warning() -> None:
+    """A large-magnitude logit (e.g. a scaler mismatch on a real fitted
+    model) drives exp() to overflow or underflow; the clamped result (0.0
+    or 1.0) is correct either way, but this repo keeps test and log output
+    pristine, so the overflow path must not emit RuntimeWarning."""
+    n = len(FEATURE_NAMES)
+    features = np.zeros(n, dtype=np.float32)
+    hot = BlendModel(mean=np.zeros(n), scale=np.ones(n), coef=np.zeros(n),
+                      intercept=1e6, feature_names=FEATURE_NAMES, version="t")
+    cold = BlendModel(mean=np.zeros(n), scale=np.ones(n), coef=np.zeros(n),
+                       intercept=-1e6, feature_names=FEATURE_NAMES, version="t")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert hot.predict_proba(features) == 1.0
+        assert cold.predict_proba(features) == 0.0
 
 
 def test_round_trips_through_the_file(tmp_path: Path) -> None:
@@ -134,9 +165,57 @@ def test_a_model_with_a_different_format_version_is_refused(tmp_path: Path) -> N
     p = tmp_path / "m.npz"
     save_blend_model(_model(), p)
     np.savez(p, **{**dict(np.load(p, allow_pickle=False)),
-                   "format_version": np.array(999)})
+                   "format_version": np.array(2)})
     with pytest.raises(ValueError, match="format version"):
         load_blend_model(p)
+
+
+def test_a_non_integral_format_version_is_refused(tmp_path: Path) -> None:
+    """The staleness guard must validate, not coerce. `int(np.array(1.9))`
+    truncates to 1 rather than rejecting the value, which would silently
+    accept a corrupted or mistyped version field as a match for
+    MODEL_FILE_VERSION == 1. A stale (or malformed) model file must be
+    refused, not used."""
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(), p)
+    np.savez(p, **{**dict(np.load(p, allow_pickle=False)),
+                   "format_version": np.array(1.9)})
+    with pytest.raises(ValueError, match="format_version"):
+        load_blend_model(p)
+
+
+def test_a_missing_field_is_refused_with_valueerror_naming_it(
+        tmp_path: Path) -> None:
+    """The docstring promises ValueError; nothing wraps load_blend_model in
+    BlendDetector.score, so an undocumented KeyError from a truncated or
+    corrupted file would crash the caller instead of being catchable per
+    the documented contract."""
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(), p)
+    data = dict(np.load(p, allow_pickle=False))
+    del data["format_version"]
+    np.savez(p, **data)
+    with pytest.raises(ValueError, match="format_version"):
+        load_blend_model(p)
+
+
+def test_several_missing_fields_are_all_named(tmp_path: Path) -> None:
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(), p)
+    data = dict(np.load(p, allow_pickle=False))
+    del data["format_version"]
+    del data["coef"]
+    del data["version"]
+    np.savez(p, **data)
+    with pytest.raises(ValueError) as excinfo:
+        load_blend_model(p)
+    msg = str(excinfo.value)
+    # "version" is a substring of "format_version", so a naive `in` check
+    # on "version" would pass even if only "format_version" were reported.
+    # Extract the actual comma-separated field list to check all three are
+    # named as distinct entries, not merely as an accidental substring.
+    named = {tok.strip().strip("'\"") for tok in msg.split(":")[-1].split(",")}
+    assert named == {"format_version", "coef", "version"}
 
 
 def test_a_model_whose_features_do_not_match_is_refused(tmp_path: Path) -> None:

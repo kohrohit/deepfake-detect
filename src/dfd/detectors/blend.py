@@ -140,6 +140,15 @@ def seam_features(img: npt.NDArray[np.uint8]) -> npt.NDArray[np.float32]:
 #: On-disk format version for the model file. Bump when the array set changes.
 MODEL_FILE_VERSION = 1
 
+#: Every field save_blend_model writes, and load_blend_model must find.
+#: Checked up front so a truncated or corrupted file raises ValueError
+#: naming what is missing, rather than an undocumented KeyError from
+#: whichever field happens to be dereferenced first.
+_REQUIRED_KEYS = (
+    "format_version", "mean", "scale", "coef", "intercept",
+    "feature_names", "version",
+)
+
 #: Where a deployment is expected to place the fitted model. Gitignored and
 #: absent in this repo, so the detector abstains on every fresh checkout —
 #: the same contract NPR and EffNet already keep.
@@ -176,7 +185,13 @@ class BlendModel:
         z = (features.astype(np.float64) - self.mean) / np.where(
             self.scale == 0.0, 1.0, self.scale)
         logit = float(np.dot(z, self.coef) + self.intercept)
-        return float(1.0 / (1.0 + np.exp(-logit)))
+        # A large-magnitude logit (a scaler mismatch on a real fitted model
+        # could produce one) drives exp(-logit) to overflow to inf, which
+        # numpy reports as a RuntimeWarning by default even though the
+        # result (1/(1+inf) == 0.0) is correct either way. Suppress just
+        # that warning path; nothing here is silently wrong, only loud.
+        with np.errstate(over="ignore"):
+            return float(1.0 / (1.0 + np.exp(-logit)))
 
 
 def save_blend_model(model: BlendModel, path: str | Path) -> None:
@@ -204,13 +219,27 @@ def load_blend_model(path: str | Path) -> BlendModel:
         The model.
 
     Raises:
-        ValueError: if the file's format version or feature names disagree
-            with this build. A stale model file is worse than none: it would
-            score confidently against columns that no longer mean what it
-            was fitted on.
+        ValueError: if a required field is missing, if format_version is
+            not an integer or disagrees with MODEL_FILE_VERSION, or if
+            feature_names disagrees with this build. A stale model file is
+            worse than none: it would score confidently against columns
+            that no longer mean what it was fitted on.
     """
     data = np.load(Path(path), allow_pickle=False)
-    version = int(data["format_version"])
+    missing = [k for k in _REQUIRED_KEYS if k not in data]
+    if missing:
+        raise ValueError(
+            "blend model file is missing required field(s): "
+            + ", ".join(missing))
+
+    # Validate, don't coerce: int(np.array(1.9)) truncates to 1 and would
+    # silently accept a corrupted or mistyped format_version as a match.
+    raw_version = data["format_version"]
+    version_value = float(raw_version)
+    if version_value != int(version_value):
+        raise ValueError(
+            f"blend model format_version is not an integer: {raw_version!r}")
+    version = int(version_value)
     if version != MODEL_FILE_VERSION:
         raise ValueError(
             f"blend model format version {version} != {MODEL_FILE_VERSION}")
@@ -255,14 +284,20 @@ class BlendDetector:
             A RawScore. Abstains with `weights_absent` when the model file is
             missing, or with the quality-floor reason when nothing is usable.
         """
-        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
-        if reason is not None:
-            return abstain(self.name, self.version, reason)
-
+        # Checked before the quality floor, matching NPR and EffNet: on a
+        # fresh checkout (no model file, the documented default state) a
+        # low-quality observation must not be blamed with
+        # "below_quality_floor" for a problem that is actually a missing
+        # model — the reason field is what a caller reads to decide what to
+        # do next, and "go improve your capture quality" would be wrong.
         path = Path(self.weights_path)
         if not path.exists():
             logger.warning("blend model absent at %s", path)
             return abstain(self.name, self.version, WEIGHTS_ABSENT)
+
+        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
+        if reason is not None:
+            return abstain(self.name, self.version, reason)
 
         model = load_blend_model(path)
         probs = [model.predict_proba(seam_features(o.payload)) for o in usable]
