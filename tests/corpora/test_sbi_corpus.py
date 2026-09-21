@@ -1,6 +1,7 @@
 """The corpus builder's job is split discipline, not image processing."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,16 @@ from dfd.types import Modality, Quality
 def _crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCrop:
     lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
                     [75.0, 125.0], [105.0, 125.0]])
-    rng = np.random.default_rng(len(session_id) * 1000 + frame_index)
+    # hashlib, not `len(session_id) * 1000 + frame_index`: that shape
+    # collapses distinct session ids of the same length onto the same seed
+    # (e.g. every "s0".."s9" fixture in this file shared one image) -- the
+    # exact defect fixed in tests/test_fit_blend.py's `_seed_for_session`,
+    # which this mirrors. Harmless for the assertions in this file (none
+    # compare image content across different subjects), but the same shape
+    # is worth not carrying forward.
+    seed = int.from_bytes(
+        hashlib.sha256(f"{session_id}:{frame_index}".encode()).digest()[:8], "big")
+    rng = np.random.default_rng(seed)
     return FaceCrop(
         session_id=session_id,
         frame_index=frame_index,

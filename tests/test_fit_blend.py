@@ -17,10 +17,28 @@ from dfd.types import Quality
 from training.fit_blend import evaluate, fit_blend_model, main, split_by_subject
 
 
+def _seed_for_session(session_id: str) -> int:
+    """A stable, distinct seed per full session id.
+
+    NOT `len(session_id) * 1000`: over "s0".."s39" that collapses to only
+    two distinct lengths (2 chars for s0-s9, 3 for s10-s39), so 40 subjects
+    shared 2 distinct crop images -- 10 on one, 30 on the other, verified
+    by inspection. Every "real" in a held-out test set was then
+    byte-identical to a "real" in the training set, so a classifier could
+    score well by memorising exact images rather than by reading the seam
+    at all (see the AUC numbers in
+    test_the_model_separates_self_blends_it_was_trained_on's docstring).
+    hashlib over the full id, not `hash()`: Python salts str hashing per
+    process unless PYTHONHASHSEED is set, which would make this
+    reproducible within one run and silently irreproducible between runs.
+    """
+    return int.from_bytes(hashlib.sha256(session_id.encode()).digest()[:8], "big")
+
+
 def _crop(session_id: str) -> FaceCrop:
     lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
                     [75.0, 125.0], [105.0, 125.0]])
-    rng = np.random.default_rng(len(session_id) * 1000)
+    rng = np.random.default_rng(_seed_for_session(session_id))
     return FaceCrop(session_id=session_id, frame_index=0,
                     image=rng.integers(40, 210, (224, 224, 3), dtype=np.uint8),
                     box=FaceBox(x=55, y=55, w=70, h=90, landmarks=lms, score=0.9),
@@ -123,18 +141,67 @@ def test_the_model_separates_self_blends_it_was_trained_on() -> None:
     accuracy. The pipeline measured on synthetic textured fixtures scored
     a held-out AUC of 1.000.
 
-    Why 0.9 and not the weaker-looking 0.5 that used to be here: with pure
-    random-noise features run through this exact pipeline (fit and
-    evaluate, no seam signal at all), 19 of 40 seeds still passed `> 0.5`
-    — that bar was a coin flip, not a check. At `> 0.9`, the same
-    noise-feature run failed all 40 of 40 seeds, while the real pipeline
-    (this test, unmutated) still passes comfortably (AUC 1.000 at seed=0).
-    0.9 is therefore the bar that actually distinguishes "the features
-    carry seam signal" from "the model memorised nothing and got lucky."
+    Why 0.9, and what actually justifies it -- corrected 2026-09-22.
+
+    An earlier version of this docstring justified the 0.9 bar with a
+    per-row IID random-noise control ("noise-feature run failed all 40 of
+    40 seeds at > 0.5"). That control was the wrong one: IID noise cannot
+    memorise anything, so it never tested the failure mode that actually
+    mattered here -- whether the classifier can pass by memorising exact
+    images rather than by reading a seam. It could: `_crop`'s old seed
+    (`len(session_id) * 1000`) collapsed 40 subjects ("s0".."s39") onto
+    only 2 distinct images (10 subjects sharing one, 30 sharing the
+    other, confirmed by inspection), so every "real" feature vector in
+    the held-out test set was byte-identical to one seen in training.
+
+    A control that CAN memorise -- same image content -> same feature
+    vector, otherwise carrying zero seam information -- exploited exactly
+    that: with the old seeding it scored held-out AUC **1.0000**,
+    clearing this same 0.9 bar with no seam signal at all. With
+    `_seed_for_session` (sha256 over the full session id, so every
+    subject gets a distinct image) that control's AUC drops to
+    **0.3333** at split_by_subject seed=0 (0.33-0.72 measured across
+    seeds 0-4, always comfortably under 0.9) -- see
+    `test_the_content_hash_control_no_longer_passes_the_bar` below. The
+    real pipeline (this test, unmutated) is unaffected by the seeding
+    fix: still AUC **1.000** at seed=0, both before and after. 0.9 is
+    therefore the bar that now actually distinguishes "the features carry
+    seam signal" from "the model memorised duplicate images and got
+    lucky" -- verified against a control that can memorise, not one that
+    structurally cannot.
     """
     train, test = split_by_subject(_corpus(n=40), seed=0)
     m = fit_blend_model(train, version="t1")
     assert evaluate(m, test)["auc"] > 0.9
+
+
+def test_the_content_hash_control_no_longer_passes_the_bar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control the test above's docstring describes: same image
+    content -> same feature vector, and otherwise unrelated to real/fake
+    or to seam physics -- built to exploit exact-duplicate images, the way
+    the old `len(session_id) * 1000` seeding produced them (see
+    `_seed_for_session`'s docstring). With that old seeding this control's
+    AUC was 1.0000, clearing the 0.9 bar with zero seam signal. With every
+    subject's crop now distinct (this file's fixed `_crop`), it is not:
+    measured 0.3333 here, and 0.33-0.72 across split_by_subject seeds
+    0-4, always well under 0.9.
+    """
+    import training.fit_blend as fit_blend_module
+
+    def content_hash_control(img: np.ndarray) -> np.ndarray:
+        digest = hashlib.sha256(np.ascontiguousarray(img).tobytes()).digest()[:8]
+        rng = np.random.default_rng(int.from_bytes(digest, "big"))
+        return rng.standard_normal(len(FEATURE_NAMES)).astype(np.float32)
+
+    monkeypatch.setattr(fit_blend_module, "seam_features", content_hash_control)
+
+    train, test = split_by_subject(_corpus(n=40), seed=0)
+    m = fit_blend_model(train, version="t1")
+    auc = evaluate(m, test)["auc"]
+    assert auc < 0.9, (
+        f"content-hash control (zero seam signal) cleared the 0.9 bar: {auc}")
 
 
 # --- main(): exercised only against a synthetic capture corpus written into
