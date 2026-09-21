@@ -206,6 +206,27 @@ def build_sbi_corpus(crops: Sequence[FaceCrop], *, seed: int = 0) -> list[Sample
     `bench.protocol._validate` requires each source to carry exactly one
     (subject, generator) pair.
 
+    `subject_id` below is set to `crop.session_id` -- a capture SESSION id
+    (a timestamp like "20260826-221956-387743"), not a person identity.
+    Splitting on it is therefore SESSION-disjoint, not identity-disjoint: a
+    person who enrolled in more than one of the 442 sessions gets a
+    distinct subject_id per session and can still end up on both sides of
+    a split in `training/fit_blend.py`. Genuine identity-disjointness needs
+    a face embedder this repo does not have yet (`docs/HANDOFF.md` §0
+    next-step 3), and its absence is a correctness gap for this fitter, not
+    only for benchmark criterion 2.
+
+    This function's refusal to blend evaluation-only sessions (below)
+    depends entirely on `corpora.captures.load_capture_sessions`' metadata:
+    `FaceCrop.swapped` comes from `CaptureSession.swapped`, which that
+    loader defaults to `False` for a session whose `results.json` has no
+    `swapped` key at all (`corpora/captures.py`: `bool(d.get("swapped",
+    False))`). A session missing that key would silently look genuine to
+    this function and be eligible for blending. As of 2026-09-22 all 442
+    real sessions carry the key explicitly (verified against the corpus at
+    `/home/rohit/Desktop/agents/fraud_gff/deepfake_detection/captures`),
+    so this is a recorded dependency, not a currently-live gap.
+
     Args:
         crops: real face crops. Any crop from a swapped session is refused.
         seed: base seed. The same seed yields the same corpus.
@@ -251,6 +272,8 @@ def build_sbi_corpus(crops: Sequence[FaceCrop], *, seed: int = 0) -> list[Sample
                     source_id=f"{crop.session_id}:{suffix}",
                 ),),
                 context=Context(
+                    # Session-disjoint, not identity-disjoint: see the
+                    # docstring above.
                     subject_id=crop.session_id,
                     generator=generator,
                     compression=None,
@@ -271,6 +294,14 @@ def _crop_box(crop: FaceCrop) -> FaceBox:
     outside the crop entirely — silently producing pseudo-fakes identical to
     their reals, which every downstream metric would then reward the detector
     for failing to separate.
+
+    That remap covers x/y/w/h only: the returned box's `landmarks` are
+    copied straight from `crop.box`, so they stay in the ORIGINAL frame's
+    coordinate space while `x/y/w/h` are now in the crop's. Nothing
+    downstream currently reads this box's landmarks (`face_mask` uses only
+    `x/y/w/h`), so the asymmetry is inert today -- but it is real, and a
+    future caller that reaches for `.landmarks` here would get points that
+    do not correspond to the box they came with.
     """
     h, w = crop.image.shape[:2]
     return FaceBox(x=0, y=0, w=w, h=h,

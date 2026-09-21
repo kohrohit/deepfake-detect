@@ -179,6 +179,11 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
    benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
 3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
    rather than skipping them; a partial-embedding pipeline must omit unembeddable ids explicitly.
+   The same gap also sits under `training/fit_blend.py::split_by_subject`: its "subject" is
+   `corpora.sbi`'s `subject_id`, which is set to the capture SESSION id, not a person identity, so
+   that split is session-disjoint rather than identity-disjoint and a person enrolled in more than
+   one session can land on both sides of it. The absent embedder is therefore not only a benchmark
+   gap — it is a correctness gap for the blend-seam fitter too.
 4. **The blend-seam detector now exists and is wired in.** `corpora/sbi.py` (the self-blend corpus
    builder), `src/dfd/detectors/blend.py` (`seam_features`, `BlendDetector`, slot A) and
    `training/fit_blend.py` (the fitter) are implemented and tested. `default_registry()` now

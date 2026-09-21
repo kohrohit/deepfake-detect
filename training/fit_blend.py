@@ -41,6 +41,18 @@ def split_by_subject(
 ) -> tuple[list[Sample], list[Sample]]:
     """Split samples into (train, test) with no subject on both sides.
 
+    IMPORTANT: "subject" here is `Context.subject_id`, which `corpora.sbi`
+    sets to the capture SESSION id, not a person identity (see
+    `corpora/sbi.py`'s note where `subject_id` is assigned). This split is
+    therefore SESSION-disjoint, not identity-disjoint: a person who
+    enrolled in more than one of the 442 sessions receives a distinct
+    subject_id per session and can still land on both sides of the split,
+    which is exactly the "same face on both sides" failure this function
+    exists to prevent. Real identity-disjointness needs a face embedder
+    that does not exist in this repo yet (`docs/HANDOFF.md` §0 next-step
+    3 records the same gap for benchmark criterion 2; it applies equally
+    here).
+
     Args:
         samples: the corpus.
         holdout_fraction: share of subjects placed in test.
