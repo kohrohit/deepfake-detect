@@ -799,12 +799,8 @@ def test_samples_are_images_carrying_the_crops_quality() -> None:
         assert s.observations[0].quality.band == "high"
 
 
-def test_the_corpus_passes_the_protocol_validator() -> None:
-    """The end-to-end contract: a corpus this builder emits is splittable."""
-    from bench.protocol import logo_splits
-    crops = [_crop(f"s{i}") for i in range(6)]
-    samples = build_sbi_corpus(crops)
-    records = [
+def _records(samples: list) -> list[dict]:
+    return [
         {"sample_id": s.sample_id,
          "subject_id": s.context.subject_id,
          "source_id": s.observations[0].source_id,
@@ -812,8 +808,37 @@ def test_the_corpus_passes_the_protocol_validator() -> None:
          "label": s.context.label}
         for s in samples
     ]
+
+
+def test_a_single_generator_corpus_cannot_be_logo_split() -> None:
+    """Not a defect — the protocol working. LOGO holds each generator out in
+    turn, so with only "sbi" present the one fold it could build has no
+    training fakes, and reporting a number computed from nothing would be
+    worse than refusing. This is why a second licence-clean generator family
+    is a precondition for the benchmark rather than an enhancement to it.
+    """
+    from bench.protocol import UnsplittableCorpusError, logo_splits
+    samples = build_sbi_corpus([_crop(f"s{i}") for i in range(6)])
+    with pytest.raises(UnsplittableCorpusError, match="no train fakes"):
+        logo_splits(_records(samples))
+
+
+def test_the_id_scheme_satisfies_the_protocol_validator() -> None:
+    """The contract the previous test cannot reach: `_validate` runs before any
+    split is attempted and rejects a corpus whose reals carry a generator, whose
+    fakes carry none, or whose source straddles two (subject, generator) pairs.
+    Adding a second generator's rows is what lets a successful split prove the
+    ids this builder emits are well-formed.
+    """
+    from bench.protocol import logo_splits
+    samples = build_sbi_corpus([_crop(f"s{i}") for i in range(6)])
+    records = _records(samples)
+    for i in range(0, 6, 2):
+        records.append({"sample_id": f"s{i}-other", "subject_id": f"s{i}",
+                        "source_id": f"s{i}:other", "generator": "other",
+                        "label": 1})
     splits = logo_splits(records)
-    assert splits, "a single-generator corpus still yields one fold"
+    assert sorted(s.held_out_generator for s in splits) == ["other", "sbi"]
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -826,10 +851,13 @@ Expected: FAIL — `ImportError: cannot import name 'SBI_GENERATOR' from 'corpor
 Append to `corpora/sbi.py` (add `import hashlib`, `from collections.abc import Sequence`, and the `dfd.types` and `face_pool` imports at the top of the file):
 
 ```python
-#: The generator name every self-blended fake carries. LOGO holds generators
-#: out one at a time, so this is the single fold a self-blend-only corpus can
-#: offer — which is exactly the benchmark weakness the research datasets would
-#: have fixed. See docs/HANDOFF.md §4.
+#: The generator name every self-blended fake carries. LOGO holds generators out
+#: one at a time, so a corpus containing only this one cannot be split at all:
+#: the single fold it could build has no training fakes, and
+#: `bench.protocol._require_measurable` raises UnsplittableCorpusError rather
+#: than report a number computed from nothing. A second licence-clean generator
+#: family is a precondition for the LOGO benchmark, not an enhancement to it.
+#: See docs/HANDOFF.md §4.
 SBI_GENERATOR = "sbi"
 
 
@@ -1961,7 +1989,7 @@ git commit -m "feat: register the blend-seam detector and its owned model asset"
 Recorded here so the next reader does not mistake absence for oversight.
 
 1. **It does not fit the model as part of the test suite.** `training/fit_blend.py` runs against the capture corpus on the owner's machine; CI has neither the corpus nor the YuNet weights. The tests fit on synthetic crops instead, which proves the fitter's discipline but says nothing about the detector's accuracy. **The accuracy number only exists once step 6 of Task 6 is run for real.**
-2. **It leaves LOGO with one generator.** A self-blend-only corpus has exactly one generator name, so leave-one-generator-out produces a single fold and cannot measure cross-generator transfer — the headline number spec §8.1 asks for. This is the gap the research datasets or a second clean generator family (classical landmark swap with Poisson blending) would close. It is out of scope here and should be its own plan.
+2. **It leaves LOGO with NO folds at all — not one, as an earlier version of this line claimed.** A self-blend-only corpus has exactly one generator name, and `logo_splits` holds each generator out in turn, so the only fold it can build has no training fakes left in it. `bench/protocol.py`'s `_require_measurable` raises `UnsplittableCorpusError` rather than reporting a number computed from nothing. Verified empirically at 2, 4, 8 and 20 subjects, and the same corpus shape with a second generator yields 2 splits. This is the protocol working correctly: cross-generator transfer is not measurable with one generator. **A second licence-clean generator family — classical landmark swap with Poisson blending is the obvious candidate, OpenCV is Apache-2.0 — is therefore a precondition for the LOGO benchmark, not an enhancement to it.** It is out of scope here and should be its own plan.
 3. **It does not touch calibration.** `Calibrator.to_evidence` still returns `uncalibrated_for_band` for every band, so `dfd score` will keep returning `insufficient_evidence` even once the model file exists. Fitting the calibration curve is the next milestone, and it is where the known `_worst_band` defect recorded in the P0 plan's known-gaps block must be settled first.
 4. **The only accuracy evidence so far is on synthetic fixtures.** Every reference implementation in this plan was executed before the plan was handed over (the rule in `docs/HANDOFF.md` §6), and all assertions hold — including a held-out AUC of 1.000 separating textured fixtures from their self-blends. **That number is not a detector claim.** Synthetic fixtures differ from their blends in ways a real camera never produces. The first honest accuracy figure arrives only from Task 6 step 6 run against the real capture corpus.
 5. **It does not verify the seam-feature design against any baseline.** The annulus geometry and feature set are this project's own and unmeasured. `docs/HANDOFF.md` §6's rule applies: the constants are a hypothesis until something measures them.
