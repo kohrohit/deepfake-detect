@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Tasks:** 22. Tasks 18-19 came from review findings; Tasks 20-22 from raising the bar to production standards. Task 20 (audit record) is a dropped spec requirement (§7.2), not an enhancement.
+
 **Goal:** Build the modality-agnostic evidence core (Sample → Detector → Evidence → Fusion) and a leave-one-generator-out benchmark harness rigorous enough to prove — or disprove — that this system beats Reality Defender.
 
 **Architecture:** Detectors emit raw scores and abstentions; a quality-conditioned calibrator converts those to log-likelihood ratios; fusion sums LLRs with an effective-sample-size discount for correlated frames. The benchmark harness wraps all of it with five evaluation-hygiene guards, a robustness surface, and a white-box adversarial baseline. Everything is hermetic: the harness is fully testable with zero model weights and zero network, so it can be proven correct before any EULA'd dataset arrives.
@@ -26,6 +28,20 @@ Copied verbatim from the spec. Every task's requirements implicitly include this
 - **Hermetic tests.** No test touches the network. No test requires a model weight file to exist.
 - **Python 3.10 typing.** Use `X | None`, not `Optional[X]`. Dataclasses are `frozen=True` unless mutation is required.
 - **Ensemble diversity must be in the physics, not the architecture** (spec §6). The three P0 detectors are deliberately three different physics.
+
+### Production engineering standards (raised 2026-09-20, binding on all tasks from Task 3's fix round onward)
+
+This is production code for a BFSI fraud control, not a research prototype. Every task must additionally satisfy:
+
+- **No silent failures.** Never `except:` or `except Exception: pass`. Catch the narrowest exception that can occur, and either handle it with a stated reason or let it propagate. A swallowed error in a fraud detector is a fraud that was approved.
+- **Validate at boundaries.** Every public function validates its inputs and raises a typed, named exception with an actionable message. Internal helpers may assume validated input; the boundary is where the check lives.
+- **Typed exceptions, not bare ones.** Define a module exception hierarchy rooted at `DfdError`. `ValueError`/`KeyError` are acceptable only where they are the semantically correct answer (a malformed record IS a programming error).
+- **Structured logging, never `print`.** Use the stdlib `logging` module with module-level loggers. Log the abstention reason, never the applicant's image data or any PII.
+- **Resource limits at every decode boundary.** Media arrives from an adversary (spec §3A). Cap decoded dimensions, frame counts, file sizes and durations, and reject beyond them rather than allocating.
+- **Every public callable has complete type hints** and a docstring stating what it does, what it raises, and any non-obvious invariant.
+- **Determinism is declared.** Any function whose output depends on randomness takes an explicit `seed`. No implicit global RNG.
+- **No hardcoded magic numbers in logic.** Thresholds are module-level named constants with a comment recording their provenance.
+- **Lint and type checks must pass**: `ruff check` clean, `mypy --strict` clean on `src/dfd`.
 
 ---
 
@@ -56,7 +72,7 @@ bench/
   runner.py             orchestration, seeding, reproducibility record
   report.py             markdown tables, head-to-head vs Reality Defender
 
-datasets/
+corpora/
   rd_cache.py           loads the 24 cached Reality Defender results
   captures.py           loads the 442-session capture corpus
 
@@ -64,7 +80,7 @@ assets/manifest.yaml    the asset manifest
 tests/                  mirrors src/ and bench/
 ```
 
-**Why this split:** `src/dfd` is the shippable engine; `bench/` is the measuring instrument and must never be importable from production paths; `datasets/` holds corpus-specific loaders that will churn as new corpora arrive. Files that change together live together.
+**Why this split:** `src/dfd` is the shippable engine; `bench/` is the measuring instrument and must never be importable from production paths; `corpora/` holds corpus-specific loaders (NOT `datasets/` — that name is taken by the installed HuggingFace package and a repo-root copy shadows it) that will churn as new corpora arrive. Files that change together live together.
 
 ---
 
@@ -1863,7 +1879,16 @@ def fuse(evidence, n_frames: int = 1, ess: float | None = None) -> FusedResult:
     # observations, not with frame count.
     if n_frames > 1:
         eff = ess if ess is not None else 1.0
-        total *= math.sqrt(max(1.0, eff) / float(n_frames))
+        # LINEAR in ESS, not sqrt. Log-likelihood ratios ADD for independent
+        # evidence, so n observations worth `eff` independent ones carry
+        # eff * per_frame_llr -- a factor of eff/n. sqrt scaling belongs to
+        # standard errors, not additive evidence. Under sqrt, 900 identical
+        # frames still yielded 30.0, saturating the cap and reproducing the
+        # very "confidently wrong" failure this discount exists to prevent.
+        # NOTE: this applies ONLY when `evidence` is one entry PER FRAME.
+        # Detectors in this repo aggregate internally (probs.mean()), so their
+        # Evidence is already whole-sample -- call with n_frames=1 and no discount.
+        total *= max(1.0, eff) / float(n_frames)
 
     total = max(-MAX_TOTAL_LLR, min(MAX_TOTAL_LLR, total))
 
@@ -2420,58 +2445,114 @@ git commit -m "feat: six evaluation-hygiene guards that raise rather than warn"
 - Test: `tests/bench/test_protocol.py`
 
 **Interfaces:**
-- Consumes: `GuardViolation` (Task 12)
-- Produces: `Split`, `logo_splits(records) -> list[Split]`
+- Consumes: nothing (guards in `bench/guards.py` check the *result*; this module makes the result correct by construction)
+- Produces: `Split`, `logo_splits(records, seed) -> list[Split]`
 
 Spec §8.1. **This is the only number that predicts field performance**, because the field always brings an unseen generator.
+
+**Record schema.** Every record carries `sample_id`, `subject_id`, `source_id`, `generator`, `label`. `source_id` is the source video (an image is its own source, recorded explicitly — never aliased). `generator` is `None` for reals and a non-empty string for fakes.
+
+**Why subjects, not records, are partitioned.** Spec §8.1 asks for leave-one-generator-out; spec §8.2 guards 1 and 2 ask for identity-disjoint, video-level splits. Those are not independent: in every real forgery corpus one subject is faked by *several* generators, so assigning fakes to sides by generator alone puts subject `pA`'s faceswap video in train and their deepfacelive video in test. The split then teaches faces. Partitioning **subjects** and dropping the fakes whose generator wants one side while their subject sits on the other is the only assignment that satisfies both. The drops are real and are reported, not hidden: on a corpus where every subject is faked by every generator, half the fakes fall out of each fold. A reader who does not see that number will over-read the fold.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_protocol.py
 import pytest
+
 from bench.protocol import Split, logo_splits
 
 
-RECORDS = [
-    {"sample_id": "r1", "generator": None, "label": 0, "subject_id": "p1"},
-    {"sample_id": "r2", "generator": None, "label": 0, "subject_id": "p2"},
-    {"sample_id": "f1", "generator": "deepfacelive", "label": 1, "subject_id": "p3"},
-    {"sample_id": "f2", "generator": "faceswap", "label": 1, "subject_id": "p4"},
-    {"sample_id": "f3", "generator": "stylegan", "label": 1, "subject_id": "p5"},
+def rec(sample_id, subject_id, generator, label, source_id=None):
+    return {"sample_id": sample_id, "subject_id": subject_id,
+            "source_id": source_id or sample_id,
+            "generator": generator, "label": label}
+
+
+# Six real subjects, and five fake subjects each faked by two or three
+# generators. The repeated subjects are the point: a splitter that assigns
+# fakes by generator alone leaks all five.
+RECORDS = [rec(f"r{i}", f"p{i}", None, 0) for i in range(1, 7)] + [
+    rec("f1", "pA", "deepfacelive", 1), rec("f2", "pA", "faceswap", 1),
+    rec("f3", "pB", "deepfacelive", 1), rec("f4", "pB", "stylegan", 1),
+    rec("f5", "pC", "faceswap", 1), rec("f6", "pC", "stylegan", 1),
+    rec("f7", "pD", "deepfacelive", 1), rec("f8", "pD", "faceswap", 1),
+    rec("f9", "pD", "stylegan", 1),
+    rec("f10", "pE", "deepfacelive", 1), rec("f11", "pE", "faceswap", 1),
+    rec("f12", "pE", "stylegan", 1),
 ]
+
+SEEDS = [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 def test_one_split_per_generator():
     splits = logo_splits(RECORDS)
     assert {s.held_out_generator for s in splits} == {
         "deepfacelive", "faceswap", "stylegan"}
+    assert len(splits) == 3
 
 
-def test_held_out_generator_never_appears_in_train():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_held_out_generator_never_appears_in_train(seed):
+    for s in logo_splits(RECORDS, seed=seed):
         gens = {r["generator"] for r in s.train if r["label"] == 1}
         assert s.held_out_generator not in gens
 
 
-def test_held_out_generator_is_the_only_fake_generator_in_test():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_held_out_generator_is_the_only_fake_generator_in_test(seed):
+    for s in logo_splits(RECORDS, seed=seed):
         gens = {r["generator"] for r in s.test if r["label"] == 1}
         assert gens == {s.held_out_generator}
 
 
-def test_real_samples_appear_in_both_train_and_test():
-    """Without reals in test there is no FPR to measure."""
-    for s in logo_splits(RECORDS):
-        assert any(r["label"] == 0 for r in s.train)
-        assert any(r["label"] == 0 for r in s.test)
+@pytest.mark.parametrize("seed", SEEDS)
+def test_both_sides_carry_reals_and_fakes(seed):
+    """No test reals means no FPR; no test fakes means no TPR."""
+    for s in logo_splits(RECORDS, seed=seed):
+        for side in (s.train, s.test):
+            assert any(r["label"] == 0 for r in side)
+            assert any(r["label"] == 1 for r in side)
 
 
-def test_real_samples_are_identity_disjoint_across_the_split():
-    for s in logo_splits(RECORDS):
+@pytest.mark.parametrize("seed", SEEDS)
+def test_subjects_are_disjoint_across_the_split_including_fake_subjects(seed):
+    """Spec §8.2 guard 1. RECORDS fakes each subject with several
+    generators, so a by-generator-only assignment fails this."""
+    for s in logo_splits(RECORDS, seed=seed):
         tr = {r["subject_id"] for r in s.train}
         te = {r["subject_id"] for r in s.test}
+        assert tr.isdisjoint(te), f"{s.held_out_generator}: leaked {tr & te}"
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_no_source_video_straddles_the_split(seed):
+    """Spec §8.2 guard 2: a source video belongs wholly to one side."""
+    for s in logo_splits(RECORDS, seed=seed):
+        tr = {r["source_id"] for r in s.train}
+        te = {r["source_id"] for r in s.test}
         assert tr.isdisjoint(te)
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_every_record_is_placed_or_reported_dropped(seed):
+    """Nothing vanishes silently."""
+    for s in logo_splits(RECORDS, seed=seed):
+        placed = s.train_ids() + s.test_ids() + s.dropped_ids()
+        assert sorted(placed) == sorted(r["sample_id"] for r in RECORDS)
+        assert len(placed) == len(set(placed))
+
+
+def test_dropped_records_are_exactly_the_identity_conflicts():
+    """Each drop is a fake whose generator wants the side its subject is not
+    on. On this corpus that is a large fraction, which is why it is counted."""
+    for s in logo_splits(RECORDS, seed=0):
+        test_subjects = {r["subject_id"] for r in s.test}
+        for r in s.dropped_for_identity:
+            assert r["label"] == 1
+            wants_test = r["generator"] == s.held_out_generator
+            assert wants_test != (r["subject_id"] in test_subjects)
+        assert len(s.dropped_for_identity) > 0
 
 
 def test_split_is_deterministic_given_a_seed():
@@ -2480,9 +2561,53 @@ def test_split_is_deterministic_given_a_seed():
     assert [s.test_ids() for s in a] == [s.test_ids() for s in b]
 
 
-def test_records_without_a_generator_label_are_rejected():
-    bad = [{"sample_id": "x", "label": 1, "subject_id": "p"}]
-    with pytest.raises(KeyError):
+def test_seed_actually_changes_the_partition():
+    """Guards against an implementation that accepts `seed` and ignores it."""
+    by_seed = {tuple(tuple(s.test_ids()) for s in logo_splits(RECORDS, seed=k))
+               for k in SEEDS}
+    assert len(by_seed) > 1
+
+
+def test_records_without_a_generator_key_are_rejected():
+    bad = [{"sample_id": "x", "subject_id": "p", "source_id": "x", "label": 1}]
+    with pytest.raises(KeyError, match="missing required"):
+        logo_splits(bad)
+
+
+def test_records_without_a_source_id_are_rejected():
+    bad = [{"sample_id": "x", "subject_id": "p", "generator": "g", "label": 1}]
+    with pytest.raises(KeyError, match="missing required"):
+        logo_splits(bad)
+
+
+def test_a_fake_with_no_generator_is_rejected():
+    """An unattributed fake would silently join the training side of EVERY
+    split, which is the one place it can never be measured."""
+    bad = [rec("r1", "p1", None, 0), rec("f1", "pA", None, 1)]
+    with pytest.raises(ValueError, match="unattributed fake"):
+        logo_splits(bad)
+
+
+def test_a_corpus_with_one_subject_is_rejected():
+    """Better to refuse than to emit a split with nothing on one side."""
+    bad = [rec("r1", "pA", None, 0), rec("f1", "pA", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="needs at least 2"):
+        logo_splits(bad)
+
+
+def test_a_single_generator_corpus_is_rejected():
+    """Holding out the only generator leaves nothing to train on."""
+    bad = [rec("r1", "p1", None, 0), rec("r2", "p2", None, 0),
+           rec("f1", "pA", "deepfacelive", 1), rec("f2", "pB", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="train fakes"):
+        logo_splits(bad)
+
+
+def test_a_source_carrying_two_subjects_is_rejected():
+    bad = [rec("a", "p1", None, 0, source_id="v"),
+           rec("b", "p2", None, 0, source_id="v"),
+           rec("f", "pA", "deepfacelive", 1)]
+    with pytest.raises(ValueError, match="more than one subject/generator"):
         logo_splits(bad)
 ```
 
@@ -2500,19 +2625,29 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.protocol'`
 In-dataset AUC measures memorisation. LOGO measures what happens when a
 generator the model has never seen walks through the door — which, in the
 field, is every generator eventually.
+
+Two spec §8.2 guards are structural here rather than checked after the fact:
+identity disjointness (guard 1) and video-level integrity (guard 2). A split
+that leaks a subject or straddles a source video produces a number that cannot
+be repaired downstream, so this module refuses to emit one.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+REQUIRED_KEYS = ("sample_id", "subject_id", "source_id", "generator", "label")
 
 
 @dataclass(frozen=True)
 class Split:
+    """One fold: every fake in `test` comes from `held_out_generator`."""
+
     held_out_generator: str
     train: list[dict]
     test: list[dict]
+    dropped_for_identity: list[dict] = field(default_factory=list)
 
     def test_ids(self) -> list[str]:
         return [r["sample_id"] for r in self.test]
@@ -2520,42 +2655,111 @@ class Split:
     def train_ids(self) -> list[str]:
         return [r["sample_id"] for r in self.train]
 
+    def dropped_ids(self) -> list[str]:
+        return [r["sample_id"] for r in self.dropped_for_identity]
+
+
+def _validate(records: list[dict]) -> None:
+    for r in records:
+        missing = [k for k in REQUIRED_KEYS if k not in r]
+        if missing:
+            raise KeyError(
+                f"record {r.get('sample_id')!r} is missing required "
+                f"key(s) {missing}")
+        if r["label"] == 1 and not r["generator"]:
+            raise ValueError(
+                f"fake record {r['sample_id']!r} has no generator; an "
+                "unattributed fake would join the training side of every split")
+
+    by_source: dict[str, set] = {}
+    for r in records:
+        by_source.setdefault(r["source_id"], set()).add(
+            (r["subject_id"], r["generator"]))
+    for src, pairs in sorted(by_source.items()):
+        if len(pairs) > 1:
+            raise ValueError(
+                f"source {src!r} carries more than one subject/generator pair: "
+                f"{sorted(map(str, pairs))}. A source that straddles cannot be "
+                "assigned to one side of a split")
+
+
+def _require_measurable(
+    held_out: str, train: list[dict], test: list[dict]
+) -> None:
+    counts = {
+        "train reals": sum(1 for r in train if r["label"] == 0),
+        "test reals": sum(1 for r in test if r["label"] == 0),
+        "train fakes": sum(1 for r in train if r["label"] == 1),
+        "test fakes": sum(1 for r in test if r["label"] == 1),
+    }
+    empty = sorted(k for k, v in counts.items() if v == 0)
+    if empty:
+        raise ValueError(
+            f"split holding out {held_out!r} has no {' and no '.join(empty)} "
+            f"(counts={counts}); without test reals there is no FPR to measure "
+            "and without test fakes there is no TPR")
+
 
 def logo_splits(records: list[dict], seed: int = 0) -> list[Split]:
-    """One split per generator. Reals are partitioned identity-disjointly."""
-    for r in records:
-        if "generator" not in r:
-            raise KeyError(f"record {r.get('sample_id')!r} has no 'generator' key")
+    """One split per generator, identity-disjoint and video-whole.
 
-    fakes = [r for r in records if r["label"] == 1]
-    reals = [r for r in records if r["label"] == 0]
-    generators = sorted({r["generator"] for r in fakes if r["generator"]})
+    Subjects — not records — are partitioned, so a subject faked by several
+    generators cannot appear on both sides. Fakes whose generator wants one
+    side while their subject sits on the other are dropped and reported in
+    `Split.dropped_for_identity` rather than silently leaked.
+    """
+    _validate(records)
 
-    subjects = sorted({r["subject_id"] for r in reals})
+    subjects = sorted({r["subject_id"] for r in records})
+    if len(subjects) < 2:
+        raise ValueError(
+            f"corpus has {len(subjects)} distinct subject(s); an "
+            "identity-disjoint split needs at least 2")
+
     rng = np.random.default_rng(seed)
-    shuffled = list(rng.permutation(subjects))
+    shuffled = [subjects[i] for i in rng.permutation(len(subjects))]
     cut = max(1, len(shuffled) // 2)
     train_subjects = set(shuffled[:cut])
 
-    real_train = [r for r in reals if r["subject_id"] in train_subjects]
-    real_test = [r for r in reals if r["subject_id"] not in train_subjects]
+    generators = sorted({r["generator"] for r in records if r["label"] == 1})
 
     splits: list[Split] = []
     for g in generators:
-        splits.append(Split(
-            held_out_generator=g,
-            train=[r for r in fakes if r["generator"] != g] + real_train,
-            test=[r for r in fakes if r["generator"] == g] + real_test,
-        ))
+        train: list[dict] = []
+        test: list[dict] = []
+        dropped: list[dict] = []
+        for r in records:
+            subject_side_is_test = r["subject_id"] not in train_subjects
+            if r["label"] == 0:
+                (test if subject_side_is_test else train).append(r)
+                continue
+            belongs_in_test = r["generator"] == g
+            if belongs_in_test == subject_side_is_test:
+                (test if belongs_in_test else train).append(r)
+            else:
+                dropped.append(r)
+        _require_measurable(g, train, test)
+        splits.append(Split(g, train, test, dropped))
     return splits
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/bench/test_protocol.py -v`
-Expected: PASS, 7 tests
+Expected: PASS, 60 tests (the parametrised ones run once per seed)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the identity test can fail**
+
+The identity guard is the one that has historically shipped vacuous. Prove it fires: temporarily replace the fake-assignment branch in `logo_splits` with the unconditional form
+
+```python
+            belongs_in_test = r["generator"] == g
+            (test if belongs_in_test else train).append(r)
+```
+
+run `pytest tests/bench/test_protocol.py -k disjoint`, and confirm it FAILS reporting leaked subjects. Restore, confirm it passes. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/protocol.py tests/bench/test_protocol.py
@@ -2572,21 +2776,63 @@ git commit -m "feat: leave-one-generator-out split construction"
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `PERTURBATIONS: dict[str, Callable]`, `apply_perturbation(img, name, **kw) -> np.ndarray`, `robustness_sweep(img) -> dict[str, np.ndarray]`
+- Produces: `PERTURBATIONS: dict[str, Callable]`, `JPEG_QUALITIES`, `apply_perturbation(img, name, **kw) -> np.ndarray`, `robustness_sweep(img) -> dict[str, np.ndarray]`
 
 Spec §8.3 and acceptance criterion 9. **Screenshot-of-screen and print-recapture are the cheapest laundering steps available to any adversary** and are routinely skipped in published evaluations.
+
+**Two things this task must get right, both measured rather than assumed.**
+
+*The sweep is a curve, not a point.* Spec §8.3 asks for a "JPEG quality sweep". One JPEG at one quality cannot show where a detector falls off, which is the only thing the sweep is for. `robustness_sweep` emits one entry per quality in `JPEG_QUALITIES`.
+
+*Each perturbation is asserted to do the thing its name claims.* Shape-and-dtype assertions pass against a stub that does no work — a defect class this codebase has shipped repeatedly. The mechanism here is high-frequency energy, because that is the evidence NPR and every frequency-domain detector depends on. Measured on a structured 128×128 test image (Laplacian mean, ratio to clean, min/max over five jittered draws):
+
+| perturbation | ratio | assertion |
+|---|---|---|
+| `resize` | 0.231–0.233 | `< 0.5` |
+| `blur` | 0.130–0.131 | `< 0.3` |
+| `noise` | 1.018–1.022 | `> 1.0` — noise **adds** high frequency |
+| `screenshot_recapture` | 0.360–0.364 | `< 0.6` |
+| `print_recapture` | 0.307–0.309 | `< 0.6` |
+
+**JPEG is deliberately absent from that table.** Its blocking artefacts add edges at block boundaries, so high-frequency energy across q=90→10 runs 0.97, 0.98, 0.97, 0.95, 1.00 — flat and non-monotonic. JPEG is asserted on *distortion* instead, which is monotonic over the same sweep (mean |diff| 14.77, 14.82, 15.24, 17.32, 19.08). Do not "fix" the JPEG case by moving it into the energy table.
+
+The fixture is a structured image — gradients, a block edge, fine scanlines — not uniform noise. On uniform noise JPEG *raises* high-frequency energy (1.10×), so any mechanism assertion written against a noise fixture measures the fixture.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_robustness.py
+import cv2
 import numpy as np
 import pytest
-from bench.robustness import PERTURBATIONS, apply_perturbation, robustness_sweep
+
+from bench.robustness import (
+    JPEG_QUALITIES, PERTURBATIONS, apply_perturbation, robustness_sweep,
+)
 
 
 def _img(h=128, w=128):
-    return np.random.default_rng(0).integers(0, 255, (h, w, 3), dtype=np.uint8)
+    """Structured: two gradients, a hard block edge, and fine scanlines.
+
+    Uniform noise is the wrong fixture here — JPEG raises high-frequency
+    energy on it, so mechanism assertions would measure the fixture.
+    """
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, :, 0] = np.linspace(0, 255, w, dtype=np.uint8)[None, :]
+    img[:, :, 1] = np.linspace(0, 255, h, dtype=np.uint8)[:, None]
+    img[h // 4:3 * h // 4, w // 4:3 * w // 4] = 220
+    img[::4, :] = 40
+    return img
+
+
+def _hf_energy(img):
+    """Mean |Laplacian| — the high-frequency evidence detectors depend on."""
+    grey = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    return float(np.abs(cv2.Laplacian(grey, cv2.CV_32F)).mean())
+
+
+def _distortion(a, b):
+    return float(np.abs(a.astype(np.int32) - b.astype(np.int32)).mean())
 
 
 def test_every_perturbation_preserves_shape_and_dtype():
@@ -2600,40 +2846,72 @@ def test_every_perturbation_preserves_shape_and_dtype():
 def test_every_perturbation_actually_changes_the_image():
     img = _img()
     for name in PERTURBATIONS:
-        out = apply_perturbation(img, name)
-        assert not np.array_equal(out, img), f"{name} was a no-op"
+        assert not np.array_equal(apply_perturbation(img, name), img), name
 
 
-def test_jpeg_quality_is_monotonic_in_degradation():
+@pytest.mark.parametrize("name,limit", [
+    ("resize", 0.5), ("blur", 0.3),
+    ("screenshot_recapture", 0.6), ("print_recapture", 0.6),
+])
+def test_perturbation_destroys_high_frequency_evidence(name, limit):
+    """The mechanism, not just 'the pixels changed'. Measured ratios are
+    0.23, 0.13, 0.36 and 0.31 — these limits carry real margin."""
     img = _img()
-    hi = apply_perturbation(img, "jpeg", quality=95)
-    lo = apply_perturbation(img, "jpeg", quality=20)
-    assert np.abs(lo.astype(int) - img).mean() > np.abs(hi.astype(int) - img).mean()
+    assert _hf_energy(apply_perturbation(img, name)) < limit * _hf_energy(img)
 
 
-def test_screenshot_recapture_is_present():
-    """The cheapest laundering step an adversary has. Must be measured."""
-    assert "screenshot_recapture" in PERTURBATIONS
+def test_noise_adds_high_frequency_rather_than_removing_it():
+    """Asserting every perturbation lowers HF energy would be wrong."""
+    img = _img()
+    assert _hf_energy(apply_perturbation(img, "noise")) > _hf_energy(img)
 
 
-def test_print_recapture_is_present():
-    assert "print_recapture" in PERTURBATIONS
+def test_jpeg_distortion_rises_monotonically_as_quality_falls():
+    """JPEG is asserted on distortion, not high-frequency energy: its
+    blocking artefacts ADD edges, so HF energy is flat and non-monotonic
+    across the sweep."""
+    img = _img()
+    qualities = sorted(JPEG_QUALITIES, reverse=True)
+    d = [_distortion(apply_perturbation(img, "jpeg", quality=q), img)
+         for q in qualities]
+    assert d == sorted(d), dict(zip(qualities, d))
+    assert d[-1] > d[0]
 
 
-def test_sweep_returns_one_entry_per_perturbation_plus_clean():
+def test_sweep_covers_the_whole_jpeg_quality_curve():
+    """Spec §8.3 asks for a sweep. One point is not a curve."""
+    out = robustness_sweep(_img())
+    for q in JPEG_QUALITIES:
+        assert f"jpeg_q{q}" in out
+    assert len(JPEG_QUALITIES) >= 4
+
+
+def test_sweep_returns_clean_plus_every_non_jpeg_perturbation():
     out = robustness_sweep(_img())
     assert "clean" in out
-    assert set(PERTURBATIONS).issubset(set(out))
+    assert np.array_equal(out["clean"], _img())
+    for name in PERTURBATIONS:
+        if name != "jpeg":
+            assert name in out, name
 
 
-def test_unknown_perturbation_raises():
-    with pytest.raises(KeyError):
+def test_sweep_is_deterministic():
+    """The harness's whole value is reproducibility; two perturbations draw
+    from RNGs and nothing else pins them."""
+    a, b = robustness_sweep(_img()), robustness_sweep(_img())
+    assert set(a) == set(b)
+    for k in a:
+        assert np.array_equal(a[k], b[k]), k
+
+
+def test_unknown_perturbation_raises_naming_the_unknown_name():
+    with pytest.raises(KeyError, match="teleport"):
         apply_perturbation(_img(), "teleport")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/bench/test_robustness.py -v`
+Run: `python3 -m pytest tests/bench/test_robustness.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'bench.robustness'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2644,13 +2922,21 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.robustness'`
 
 Includes the two physical re-capture paths that published evaluations usually
 skip and that any adversary can perform for free: photographing a screen, and
-printing then re-photographing. Both destroy the high-frequency evidence most
-detectors depend on.
+printing then re-photographing. Both destroy roughly two thirds of the image's
+high-frequency energy, which is the evidence most detectors depend on.
+
+Every perturbation here is a pure function of its input: the two that draw
+noise take an explicit seed with a fixed default, so a sweep is reproducible.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import cv2
 import numpy as np
+
+#: The JPEG quality curve. Spec §8.3 asks for a sweep; one point is not a curve.
+JPEG_QUALITIES = (90, 70, 50, 30, 10)
 
 
 def _jpeg(img: np.ndarray, quality: int = 50) -> np.ndarray:
@@ -2678,8 +2964,12 @@ def _noise(img: np.ndarray, sigma: float = 8.0, seed: int = 0) -> np.ndarray:
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def _screenshot_recapture(img: np.ndarray, seed: int = 0) -> np.ndarray:
-    """Simulate photographing a screen: resample, moiré, glare, recompress."""
+def _screenshot_recapture(img: np.ndarray) -> np.ndarray:
+    """Photographing a screen: resample, moiré, glare gradient, recompress.
+
+    Deterministic by construction — the moiré and glare are analytic, so this
+    takes no seed.
+    """
     out = _resize(img, 0.7)
     h, w = out.shape[:2]
     yy = np.arange(h)[:, None]
@@ -2691,16 +2981,16 @@ def _screenshot_recapture(img: np.ndarray, seed: int = 0) -> np.ndarray:
 
 
 def _print_recapture(img: np.ndarray, seed: int = 1) -> np.ndarray:
-    """Simulate print-then-photograph: halftone, gamut loss, paper texture, blur."""
+    """Print then photograph: soft focus, gamut loss, halftone, paper grain."""
     out = _blur(img, 3).astype(np.float32)
-    out = np.clip((out - 16.0) * (255.0 / (235.0 - 16.0)), 0, 255)  # gamut compression
-    out = (np.round(out / 16.0) * 16.0)                              # halftone quantise
+    out = np.clip((out - 16.0) * (255.0 / (235.0 - 16.0)), 0, 255)  # gamut
+    out = np.round(out / 16.0) * 16.0                               # halftone
     rng = np.random.default_rng(seed)
-    out = out + rng.normal(0, 4.0, out.shape)                        # paper texture
+    out = out + rng.normal(0, 4.0, out.shape)                       # paper grain
     return _jpeg(np.clip(out, 0, 255).astype(np.uint8), quality=75)
 
 
-PERTURBATIONS = {
+PERTURBATIONS: dict[str, Callable[..., np.ndarray]] = {
     "jpeg": _jpeg,
     "resize": _resize,
     "blur": _blur,
@@ -2712,23 +3002,37 @@ PERTURBATIONS = {
 
 def apply_perturbation(img: np.ndarray, name: str, **kwargs) -> np.ndarray:
     if name not in PERTURBATIONS:
-        raise KeyError(f"unknown perturbation: {name!r}")
+        raise KeyError(
+            f"unknown perturbation: {name!r}; known: {sorted(PERTURBATIONS)}")
     return PERTURBATIONS[name](img, **kwargs)
 
 
 def robustness_sweep(img: np.ndarray) -> dict[str, np.ndarray]:
-    out = {"clean": img}
-    for name in PERTURBATIONS:
-        out[name] = apply_perturbation(img, name)
+    """Clean, the full JPEG quality curve, and one entry per other perturbation.
+
+    JPEG is expanded over `JPEG_QUALITIES` rather than sampled once, because a
+    single quality cannot show where a detector falls off.
+    """
+    out: dict[str, np.ndarray] = {"clean": img}
+    for quality in JPEG_QUALITIES:
+        out[f"jpeg_q{quality}"] = _jpeg(img, quality=quality)
+    for name, fn in PERTURBATIONS.items():
+        if name == "jpeg":
+            continue
+        out[name] = fn(img)
     return out
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/bench/test_robustness.py -v`
-Expected: PASS, 7 tests
+Run: `python3 -m pytest tests/bench/test_robustness.py -v`
+Expected: PASS, 12 tests (the parametrised mechanism test runs four times).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the mechanism assertions can fail**
+
+The mechanism tests are the ones carrying this task's claim. Prove they fire: temporarily make `_screenshot_recapture` and `_print_recapture` return `img` unchanged, run `pytest tests/bench/test_robustness.py -k high_frequency`, and confirm BOTH fail. Restore and confirm they pass. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/robustness.py tests/bench/test_robustness.py
@@ -2744,19 +3048,31 @@ git commit -m "feat: robustness surface including screen and print re-capture"
 - Test: `tests/bench/test_adversarial.py`
 
 **Interfaces:**
-- Consumes: nothing from `dfd`
-- Produces: `pgd_attack(model, x, y, eps, alpha, steps) -> torch.Tensor`, `adversarial_tpr(model, x, y, eps, fpr) -> float`
+- Consumes: `tpr_at_fpr` (Task 11)
+- Produces: `pgd_attack(model, x, y, eps, alpha, steps, seed) -> torch.Tensor`, `adversarial_tpr(model, x, y, eps, fpr) -> float`
 
 Spec acceptance criterion 8 and §3A. **This is the criterion that makes the state-sponsored threat model real rather than decorative.** A detector whose adversarial TPR is ~0 is recorded as such and demoted to evidence-only.
+
+**The fixture is tuned so that a working attack collapses the number, and a broken one does not.** This matters more than it sounds. The obvious formulation — assert `attacked <= clean` — is satisfied by a `pgd_attack` that returns its input unchanged, because then `attacked == clean`. Worse, the obvious fixture (negatives at mean pixel 0.2, positives at 0.8, eps=0.3) cannot be attacked at all: the attack moves positives the full 0.3 to 0.50, which still ranks above the clean negatives at 0.20, so TPR stays 1.0 even with a *perfect* attack. Both were measured. With negatives at 0.45, positives at 0.55 and eps=0.2:
+
+| attack | TPR@FPR=0.1 |
+|---|---|
+| none (clean) | 1.0 |
+| real PGD | **0.0** |
+| a no-op `pgd_attack` | 1.0 — the test must fail here |
+
+So the assertions are exact values, not an inequality.
+
+**PGD gets a real random start.** Without one this is BIM, not PGD, and — measured — `seed=3` and `seed=999` produce byte-identical tensors, so the `seed` parameter is dead code and its determinism test cannot fail. The start is drawn from an explicit `torch.Generator`, not the global `torch.manual_seed`, so running the attack does not perturb global RNG state for every other test in the suite.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/bench/test_adversarial.py
-import numpy as np
 import pytest
 import torch
 import torch.nn as nn
+
 from bench.adversarial import adversarial_tpr, pgd_attack
 
 
@@ -2787,49 +3103,104 @@ def _batch(value, n=8):
     return torch.full((n, 3, 8, 8), value, dtype=torch.float32)
 
 
+def _labelled():
+    """Negatives at 0.45, positives at 0.55 — close enough that eps=0.2
+    genuinely flips the ranking. A wider gap makes the attack unmeasurable."""
+    x = torch.cat([_batch(0.45, 16), _batch(0.55, 16)])
+    y = torch.cat([torch.zeros(16, dtype=torch.long),
+                   torch.ones(16, dtype=torch.long)])
+    return x, y
+
+
 def test_pgd_output_stays_within_the_epsilon_ball(model):
     x = _batch(0.5)
-    y = torch.ones(8, dtype=torch.long)
-    adv = pgd_attack(model, x, y, eps=0.03, alpha=0.01, steps=5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.03, alpha=0.01, steps=5)
     assert torch.max(torch.abs(adv - x)).item() <= 0.03 + 1e-6
 
 
 def test_pgd_output_stays_in_valid_pixel_range(model):
     x = _batch(0.99)
-    y = torch.ones(8, dtype=torch.long)
-    adv = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.1, alpha=0.02, steps=5)
     assert adv.min().item() >= 0.0 and adv.max().item() <= 1.0
+
+
+def test_pgd_actually_moves_the_input(model):
+    """A no-op attack must not be able to reach the later assertions."""
+    x = _batch(0.5)
+    adv = pgd_attack(model, x, torch.ones(8, dtype=torch.long),
+                     eps=0.1, alpha=0.02, steps=5)
+    assert not torch.equal(adv, x)
 
 
 def test_pgd_reduces_confidence_on_the_true_class(model):
     x = _batch(0.9)
     y = torch.ones(8, dtype=torch.long)
     before = torch.softmax(model(x), 1)[:, 1].mean().item()
-    adv = pgd_attack(model, x, y, eps=0.2, alpha=0.05, steps=20)
-    after = torch.softmax(model(adv), 1)[:, 1].mean().item()
-    assert after < before
+    after = torch.softmax(model(pgd_attack(model, x, y, eps=0.2, alpha=0.05,
+                                           steps=20)), 1)[:, 1].mean().item()
+    assert after < before - 0.05
 
 
 def test_pgd_is_deterministic_given_a_seed(model):
-    x = _batch(0.7)
-    y = torch.ones(8, dtype=torch.long)
-    a = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5, seed=3)
-    b = pgd_attack(model, x, y, eps=0.1, alpha=0.02, steps=5, seed=3)
-    assert torch.allclose(a, b)
+    x, y = _batch(0.7), torch.ones(8, dtype=torch.long)
+    kw = dict(eps=0.1, alpha=0.02, steps=5)
+    assert torch.equal(pgd_attack(model, x, y, seed=3, **kw),
+                       pgd_attack(model, x, y, seed=3, **kw))
 
 
-def test_adversarial_tpr_is_at_most_clean_tpr(model):
-    x = torch.cat([_batch(0.2, 16), _batch(0.8, 16)])
-    y = torch.cat([torch.zeros(16, dtype=torch.long),
-                   torch.ones(16, dtype=torch.long)])
-    clean = adversarial_tpr(model, x, y, eps=0.0, fpr=0.1)
-    attacked = adversarial_tpr(model, x, y, eps=0.3, fpr=0.1)
-    assert attacked <= clean
+def test_pgd_seed_is_load_bearing(model):
+    """Without a random start the seed is dead code and the determinism
+    test above passes for any implementation, seeded or not."""
+    x, y = _batch(0.7), torch.ones(8, dtype=torch.long)
+    kw = dict(eps=0.1, alpha=0.02, steps=5)
+    assert not torch.equal(pgd_attack(model, x, y, seed=3, **kw),
+                           pgd_attack(model, x, y, seed=999, **kw))
+
+
+def test_pgd_does_not_disturb_global_torch_rng(model):
+    """The attack must not reseed the RNG every other test draws from."""
+    torch.manual_seed(1234)
+    expected = torch.randn(4)
+    torch.manual_seed(1234)
+    pgd_attack(model, _batch(0.5), torch.ones(8, dtype=torch.long),
+               eps=0.1, alpha=0.02, steps=5, seed=7)
+    assert torch.equal(torch.randn(4), expected)
+
+
+def test_clean_tpr_is_perfect_on_this_fixture(model):
+    """Anchors the collapse below: without this, 'attacked == 0.0' could
+    mean the detector never worked."""
+    x, y = _labelled()
+    assert adversarial_tpr(model, x, y, eps=0.0, fpr=0.1) == 1.0
+
+
+def test_attack_collapses_tpr_to_zero(model):
+    """Acceptance criterion 8. Exact values, not `attacked <= clean` — that
+    inequality is satisfied by an attack that does nothing at all."""
+    x, y = _labelled()
+    assert adversarial_tpr(model, x, y, eps=0.2, fpr=0.1) == 0.0
+
+
+def test_negatives_are_left_clean(model):
+    """The adversary wants fakes to read as real, not the reverse; attacking
+    negatives too would understate the detector by moving the threshold."""
+    x, y = _labelled()
+    before = x[y == 0].clone()
+    adversarial_tpr(model, x, y, eps=0.2, fpr=0.1)
+    assert torch.equal(x[y == 0], before)
+
+
+def test_zero_epsilon_is_the_identity(model):
+    x = _batch(0.5)
+    assert torch.equal(
+        pgd_attack(model, x, torch.ones(8, dtype=torch.long), eps=0.0), x)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/bench/test_adversarial.py -v`
+Run: `python3 -m pytest tests/bench/test_adversarial.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'bench.adversarial'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -2840,7 +3211,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'bench.adversarial'`
 
 The threat model assumes the adversary holds our weights. Under that assumption
 a gradient attack against any differentiable detector is not a risk — it is the
-expected case. Measuring it is what turns 'state-sponsored threat model' from a
+expected case. Measuring it is what turns "state-sponsored threat model" from a
 sentence in a document into a number in a report.
 
 A detector whose adversarial TPR collapses is not thereby useless. It is
@@ -2848,7 +3219,6 @@ demoted from decider to evidence contributor (spec §3A.4).
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -2857,15 +3227,22 @@ from .metrics import tpr_at_fpr
 
 def pgd_attack(model, x: torch.Tensor, y: torch.Tensor, eps: float = 0.03,
                alpha: float = 0.01, steps: int = 10,
-               seed: int | None = None) -> torch.Tensor:
-    """Projected gradient descent within an L-inf ball, clamped to [0, 1]."""
-    if seed is not None:
-        torch.manual_seed(seed)
+               seed: int = 0) -> torch.Tensor:
+    """Projected gradient descent within an L-inf ball, clamped to [0, 1].
+
+    The random start is what distinguishes PGD from iterative FGSM, and it is
+    drawn from a local `torch.Generator` so that attacking does not perturb the
+    global RNG state the rest of the suite draws from.
+    """
     x = x.detach()
     if eps == 0.0:
         return x.clone()
 
-    adv = x.clone().detach()
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    start = (torch.rand(x.shape, generator=generator) * 2.0 - 1.0) * eps
+    adv = torch.clamp(x + start.to(x.device), 0.0, 1.0).detach()
+
     for _ in range(steps):
         adv.requires_grad_(True)
         loss = F.cross_entropy(model(adv), y)
@@ -2880,29 +3257,34 @@ def pgd_attack(model, x: torch.Tensor, y: torch.Tensor, eps: float = 0.03,
 
 def adversarial_tpr(model, x: torch.Tensor, y: torch.Tensor, eps: float,
                     fpr: float = 0.01, alpha: float | None = None,
-                    steps: int = 10) -> float:
+                    steps: int = 10, seed: int = 0) -> float:
     """TPR@FPR after attacking only the positives (the adversary's goal).
 
     Negatives are left clean: a fraudster wants fakes to read as real, not the
-    reverse.
+    reverse, and attacking negatives too would move the threshold and
+    understate the detector.
     """
     alpha = alpha if alpha is not None else max(eps / 4.0, 1e-4)
     pos = y == 1
     adv = x.clone()
-    if eps > 0 and pos.any():
+    if eps > 0 and bool(pos.any()):
         adv[pos] = pgd_attack(model, x[pos], y[pos], eps=eps, alpha=alpha,
-                              steps=steps, seed=0)
+                              steps=steps, seed=seed)
     with torch.no_grad():
         scores = torch.softmax(model(adv), dim=1)[:, 1].cpu().numpy()
-    return tpr_at_fpr(scores, y.cpu().numpy(), fpr=fpr)
+    return tpr_at_fpr(scores, y.cpu().numpy(), fpr)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/bench/test_adversarial.py -v`
-Expected: PASS, 5 tests
+Run: `python3 -m pytest tests/bench/test_adversarial.py -v`
+Expected: PASS, 11 tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the collapse test can fail**
+
+`test_attack_collapses_tpr_to_zero` is the assertion carrying acceptance criterion 8, and the formulation it replaced could not fail. Prove this one does: temporarily make `pgd_attack` return `x.clone()` unconditionally, run `pytest tests/bench/test_adversarial.py -k collapses`, and confirm it FAILS reporting 1.0 where 0.0 was expected. Restore, confirm it passes. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add bench/adversarial.py tests/bench/test_adversarial.py
@@ -2914,22 +3296,24 @@ git commit -m "feat: white-box PGD baseline so the threat model is measured"
 ### Task 16: Corpus loaders for the RD cache and capture sessions
 
 **Files:**
-- Create: `datasets/__init__.py`, `datasets/rd_cache.py`, `datasets/captures.py`
-- Test: `tests/datasets/test_rd_cache.py`, `tests/datasets/test_captures.py`
+- Create: `corpora/__init__.py`, `corpora/rd_cache.py`, `corpora/captures.py`
+- Test: `tests/corpora/test_rd_cache.py`, `tests/corpora/test_captures.py`
 
 **Interfaces:**
 - Consumes: nothing
 - Produces: `load_rd_cache(root) -> list[RDResult]`, `RDResult`, `load_capture_sessions(root) -> list[CaptureSession]`, `CaptureSession`
+
+**The package is `corpora/`, not `datasets/`.** HuggingFace `datasets` 3.0.1 is installed in this environment, alongside `transformers` and `huggingface_hub` which this project already uses. `pyproject.toml` sets `pythonpath = ["src", "."]`, so a repo-root `datasets/` is prepended to `sys.path` and wins. Verified by construction: `import datasets` resolves to the repo package and `from datasets import load_dataset` raises `ImportError: cannot import name 'load_dataset'`. FF++, Celeb-DF and DFDC are routinely loaded through HF `datasets`, so the collision would break the corpora on this project's critical path — and it would surface late, as someone's loader failing for no visible reason, rather than at import. This project has already lost time to exactly this failure once, when a stray `tests/bench/__init__.py` shadowed the real `bench/` package.
 
 These read the two corpora we already own (spec §1.1, §1.2): 24 cached RD responses with per-model breakdowns, and 442 capture sessions of which five are `swapped=true, approved=true` — the fraud that got through.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/datasets/test_rd_cache.py
+# tests/corpora/test_rd_cache.py
 import json
 import pytest
-from datasets.rd_cache import RDResult, load_rd_cache, aggregate_is_max_like
+from corpora.rd_cache import RDResult, load_rd_cache, aggregate_is_max_like
 
 
 def _write(root, name, verdict, score, models):
@@ -2969,6 +3353,35 @@ def test_detects_max_like_aggregation(tmp_path):
     assert aggregate_is_max_like(results, tolerance=0.2) is True
 
 
+def test_a_mean_tracking_ensemble_is_not_max_like(tmp_path):
+    """The negative case. Without it a constant `return True` passes, and this
+    function launders one of the three headline findings in the spec rather
+    than testing it: RD's aggregate tracking the MAX is why its false-positive
+    rate approximates the UNION of its members' FPRs."""
+    for i in range(3):
+        _write(tmp_path, f"m{i}", "MANIPULATED", 0.50,
+               [{"name": "m1", "verdict": "MANIPULATED", "score": 0.99},
+                {"name": "m2", "verdict": "AUTHENTIC", "score": 0.01}])
+    results = load_rd_cache(tmp_path)
+    assert aggregate_is_max_like(results, tolerance=0.2) is False
+
+
+def test_tolerance_is_load_bearing(tmp_path):
+    """Same corpus, two tolerances, two answers — so `tolerance` cannot be
+    silently ignored."""
+    for i in range(3):
+        _write(tmp_path, f"m{i}", "MANIPULATED", 0.50,
+               [{"name": "m1", "verdict": "MANIPULATED", "score": 0.99},
+                {"name": "m2", "verdict": "AUTHENTIC", "score": 0.01}])
+    results = load_rd_cache(tmp_path)
+    assert aggregate_is_max_like(results, tolerance=0.4) is False
+    assert aggregate_is_max_like(results, tolerance=0.6) is True
+
+
+def test_an_empty_corpus_is_not_reported_as_max_like(tmp_path):
+    assert aggregate_is_max_like(load_rd_cache(tmp_path)) is False
+
+
 def test_missing_models_key_does_not_crash(tmp_path):
     d = tmp_path / "bbb"
     d.mkdir()
@@ -2978,10 +3391,12 @@ def test_missing_models_key_does_not_crash(tmp_path):
 ```
 
 ```python
-# tests/datasets/test_captures.py
+# tests/corpora/test_captures.py
 import json
+import logging
+
 import pytest
-from datasets.captures import CaptureSession, load_capture_sessions, missed_attacks
+from corpora.captures import CaptureSession, load_capture_sessions, missed_attacks
 
 
 def _session(root, name, swapped, approved, verdict="LIVE"):
@@ -3022,22 +3437,46 @@ def test_malformed_session_is_skipped_not_fatal(tmp_path):
     (tmp_path / "broken" / "results.json").write_text("{not json")
     _session(tmp_path, "ok", False, True)
     assert len(load_capture_sessions(tmp_path)) == 1
+
+
+def test_a_skipped_session_is_reported_not_swallowed(tmp_path, caplog):
+    """442 sessions, of which exactly 5 are the fraud that matters. A session
+    dropped in silence could be one of the 5 and nobody would know."""
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "results.json").write_text("{not json")
+    _session(tmp_path, "ok", False, True)
+    with caplog.at_level(logging.WARNING):
+        load_capture_sessions(tmp_path)
+    assert "broken" in caplog.text
+    assert "1" in caplog.text
+
+
+@pytest.mark.parametrize("frame_count", [0, 1, 37, 900])
+def test_frame_count_is_preserved(tmp_path, frame_count):
+    d = tmp_path / "s1"
+    d.mkdir()
+    (d / "results.json").write_text(json.dumps({
+        "session_id": "s1", "swapped": False, "frame_count": frame_count,
+        "scan": {"verdict": "LIVE"},
+        "decision": {"approved": True, "reason": "approved"},
+    }))
+    assert load_capture_sessions(tmp_path)[0].frame_count == frame_count
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/datasets -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'datasets.rd_cache'`
+Run: `python -m pytest tests/corpora -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'corpora.rd_cache'`
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# datasets/__init__.py
+# corpora/__init__.py
 """Corpus loaders. One module per corpus; they churn as corpora arrive."""
 ```
 
 ```python
-# datasets/rd_cache.py
+# corpora/rd_cache.py
 """Loader for cached Reality Defender responses (spec §1.2).
 
 These are the free head-to-head data: 24 results with per-model breakdowns,
@@ -3105,7 +3544,7 @@ def aggregate_is_max_like(results: list[RDResult], tolerance: float = 0.2) -> bo
 ```
 
 ```python
-# datasets/captures.py
+# corpora/captures.py
 """Loader for the 442-session v-CIP capture corpus (spec §1.1).
 
 Five of these sessions are swapped=true and approved=true. They are the actual
@@ -3115,8 +3554,11 @@ aggregate accuracy over 442 sessions would hide all five.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -3136,10 +3578,16 @@ class CaptureSession:
 
 def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
     out: list[CaptureSession] = []
+    skipped: list[str] = []
     for path in sorted(Path(root).glob("*/results.json")):
         try:
             d = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            # Never silent: a dropped session may be one of the five that are
+            # the actual fraud, and aggregate counts would not reveal it.
+            logger.warning("skipping unreadable session %s: %s",
+                           path.parent.name, exc)
+            skipped.append(path.parent.name)
             continue
         out.append(CaptureSession(
             session_id=d.get("session_id", path.parent.name),
@@ -3149,6 +3597,9 @@ def load_capture_sessions(root: str | Path) -> list[CaptureSession]:
             scan_verdict=(d.get("scan") or {}).get("verdict"),
             frame_count=int(d.get("frame_count", 0)),
         ))
+    if skipped:
+        logger.warning("loaded %d capture sessions, skipped %d: %s",
+                       len(out), len(skipped), ", ".join(skipped))
     return out
 
 
@@ -3159,13 +3610,17 @@ def missed_attacks(sessions: list[CaptureSession]) -> list[CaptureSession]:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/datasets -v`
-Expected: PASS, 8 tests
+Run: `python -m pytest tests/corpora -v`
+Expected: PASS, 16 tests
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Prove the max-like tests can fail**
+
+`aggregate_is_max_like` encodes a headline claim from the spec, and the version this task replaced asserted only the `True` case — a constant `return True` passed it. Prove the new tests discriminate: temporarily replace the function body with `return True`, run `pytest tests/corpora/test_rd_cache.py -k max_like or tolerance or empty_corpus`, and confirm the mean-tracking, tolerance and empty-corpus tests FAIL while `test_detects_max_like_aggregation` still passes. Then try `return False` and confirm the reverse. Restore and confirm all 16 pass. Record each output in the report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add datasets tests/datasets
+git add corpora tests/corpora
 git commit -m "feat: loaders for the RD cache and the v-CIP capture corpus"
 ```
 
@@ -3188,9 +3643,13 @@ This delivers spec acceptance criteria 1, 5 and 10: a reproducible run producing
 ```python
 # tests/bench/test_runner.py
 import numpy as np
+import logging
+
 import pytest
 from bench.guards import GuardViolation
-from bench.runner import RunConfig, RunRecord, dataset_hash, run_benchmark
+from bench.runner import (
+    RunConfig, RunRecord, dataset_hash, run_benchmark, worst_logo_auc,
+)
 from dfd.detectors.base import Registry, SyntheticDetector
 
 
@@ -3201,13 +3660,28 @@ def _records(n=40):
         out.append({
             "sample_id": f"s{i}",
             "subject_id": f"p{i}",
-            "generator": "deepfacelive" if fake else None,
+            # Each image is its own source. Recorded explicitly, never aliased
+            # to sample_id: the moment video records arrive, several samples
+            # share one source_id and the video-level guard must still bite.
+            "source_id": f"src{i}",
+            # TWO generators, because leave-one-generator-out is undefined
+            # with one: holding out the only generator leaves nothing to
+            # train on, and logo_splits refuses such a corpus outright.
+            "generator": ["deepfacelive", "faceswap"][(i // 2) % 2] if fake else None,
             "label": 1 if fake else 0,
             "compression": ["c0", "c23", "c40"][i % 3],
             "face_detector": "yunet",
             "align": "v1",
+            # Non-square and varying, and at least 128px on the short side.
+            # Both matter. A uniform fixture SHAPE hid a crash through every
+            # test in Task 14. And a 64x64 image measures quality band
+            # "reject", below SyntheticDetector's "low" floor, so the whole
+            # corpus abstains: AUC, CI, TPR and ECE all come back nan and the
+            # runner's entire metric path goes untested while the suite looks
+            # green.
             "image": np.random.default_rng(i).integers(
-                0, 255, (64, 64, 3), dtype=np.uint8),
+                0, 255, (128 + (i % 3) * 16, 160 + (i % 5) * 16, 3),
+                dtype=np.uint8),
         })
     return out
 
@@ -3231,11 +3705,24 @@ def test_run_records_seed_and_dataset_hash_for_reproducibility():
     assert len(rec.dataset_hash) == 64
 
 
-def test_dataset_hash_is_stable_and_content_sensitive():
+def test_dataset_hash_is_stable():
     a = _records()
     assert dataset_hash(a) == dataset_hash(a)
-    b = _records()
-    b[0]["sample_id"] = "changed"
+
+
+@pytest.mark.parametrize("field_name,value", [
+    ("sample_id", "changed"),
+    ("subject_id", "changed"),
+    ("source_id", "changed"),
+    ("generator", "changed"),
+    ("label", 0),
+    ("compression", "c99"),
+])
+def test_dataset_hash_is_sensitive_to_every_identifying_field(field_name, value):
+    """Mutating one field was one field's worth of evidence. The hash is what
+    ties an audit record to the corpus it was computed on."""
+    a, b = _records(), _records()
+    b[0][field_name] = value
     assert dataset_hash(a) != dataset_hash(b)
 
 
@@ -3245,16 +3732,20 @@ def test_run_records_model_versions():
 
 
 def test_run_records_latency_per_detector():
-    """Spec acceptance criterion 5: recorded, not optimised."""
+    """Spec acceptance criterion 5: recorded, not optimised.
+
+    `>= 0.0` would be satisfied by a stub that never measures anything and
+    returns 0.0. Scoring 40 records takes real time, so require it.
+    """
     rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
-    assert rec.detector_results["synth_a"].p95_latency_ms >= 0.0
+    assert rec.detector_results["synth_a"].p95_latency_ms > 0.0
 
 
 def test_guards_run_by_default_and_fail_the_run():
     recs = _records()
     for r in recs:
         r["compression"] = "c23"          # violates compression coverage
-    with pytest.raises(GuardViolation):
+    with pytest.raises(GuardViolation, match="compression"):
         run_benchmark(recs, _registry(), RunConfig(seed=7))
 
 
@@ -3266,12 +3757,74 @@ def test_guards_can_be_waived_only_explicitly():
     assert rec.guards_enforced is False
 
 
-def test_abstention_rate_is_reported():
-    """A detector that abstains on everything must be visible as such."""
+def test_a_detector_that_abstains_on_everything_reports_rate_one():
+    """The previous form asserted only `0.0 <= rate <= 1.0`, which any value
+    satisfies — while its own docstring named the property it failed to test."""
     reg = Registry()
     reg.register(SyntheticDetector(name="picky", seed=1, min_quality_band="high"))
     rec = run_benchmark(_records(), reg, RunConfig(seed=7, enforce_guards=False))
-    assert 0.0 <= rec.detector_results["picky"].abstention_rate <= 1.0
+    result = rec.detector_results["picky"]
+    assert result.abstention_rate == 1.0
+    assert result.auc != result.auc          # nan: nothing was scored
+
+
+def test_a_detector_that_abstains_on_nothing_reports_rate_zero():
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.detector_results["synth_a"].abstention_rate == 0.0
+
+
+def test_logo_results_exist_for_every_generator():
+    """Spec 8.1. Without this the harness reports only in-dataset AUC, which
+    the spec describes as measuring memorisation."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert set(rec.logo_results) == {"deepfacelive", "faceswap"}
+    for folds in rec.logo_results.values():
+        assert set(folds) == {"synth_a", "synth_b"}
+
+
+def test_a_logo_fold_scores_only_its_held_out_generator():
+    """The fold must be a strict subset of the corpus, or it is not held out
+    at all — a fold silently scoring everything would report in-dataset
+    numbers under a LOGO heading, which is worse than reporting neither."""
+    records = _records()
+    rec = run_benchmark(records, _registry(), RunConfig(seed=7))
+    # Without this, an empty logo_results passes by never entering the loop.
+    assert len(rec.logo_results) == 2
+    for folds in rec.logo_results.values():
+        n = folds["synth_a"].n_samples
+        assert 0 < n < len(records)
+
+
+def test_logo_and_in_dataset_numbers_are_reported_separately():
+    """They must not be the same object or the same number by construction."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.detector_results["synth_a"].n_samples == 40
+    # `all(...)` over an empty dict is True, so the count is asserted first.
+    assert len(rec.logo_results) == 2
+    assert all(f["synth_a"].n_samples < 40 for f in rec.logo_results.values())
+
+
+def test_worst_logo_auc_takes_the_minimum_not_the_mean():
+    """Spec 8.2 guard 3 reports the WORST compression cell for the same
+    reason: an average over generators hides the one an attacker will use."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    per_fold = [f["synth_a"].auc for f in rec.logo_results.values()]
+    assert worst_logo_auc(rec, "synth_a") == min(per_fold)
+
+
+def test_a_single_generator_corpus_reports_no_logo_rather_than_failing(caplog):
+    """LOGO is undefined with one generator. The in-dataset numbers are still
+    valid, so the run degrades rather than raising."""
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "deepfacelive"
+    with caplog.at_level(logging.WARNING):
+        rec = run_benchmark(records, _registry(),
+                            RunConfig(seed=7, enforce_guards=False))
+    assert rec.logo_results == {}
+    assert "LOGO unavailable" in caplog.text
+    assert rec.detector_results["synth_a"].n_samples == 40
 
 
 def test_run_is_reproducible_given_a_seed():
@@ -3279,10 +3832,16 @@ def test_run_is_reproducible_given_a_seed():
     b = run_benchmark(_records(), _registry(), RunConfig(seed=7))
     assert (a.detector_results["synth_a"].auc
             == b.detector_results["synth_a"].auc)
+    assert a.dataset_hash == b.dataset_hash
+    # Folds are drawn from a seeded permutation; same seed, same folds.
+    assert ({g: f["synth_a"].auc for g, f in a.logo_results.items()}
+            == {g: f["synth_a"].auc for g, f in b.logo_results.items()})
 ```
 
 ```python
 # tests/bench/test_report.py
+from dataclasses import replace
+
 from bench.report import render_markdown
 from bench.runner import DetectorResult, RunRecord
 
@@ -3328,6 +3887,41 @@ def test_report_flags_a_detector_defeated_by_adversarial_attack():
 def test_report_shows_confidence_intervals():
     md = render_markdown(_record())
     assert "0.71" in md and "0.92" in md
+
+
+def _logo_record():
+    base = _record()
+    def _dr(auc):
+        return DetectorResult(
+            detector="synth_a", auc=auc, auc_ci=(auc - 0.1, auc + 0.1),
+            tpr_at_1pct=0.2, tpr_at_0p1pct=0.1, ece=0.05,
+            adversarial_tpr_at_1pct=0.03, abstention_rate=0.0,
+            p95_latency_ms=1.0, n_samples=12)
+    return replace(base, logo_results={
+        "deepfacelive": {"synth_a": _dr(0.77)},
+        "faceswap": {"synth_a": _dr(0.51)},
+    })
+
+
+def test_report_leads_with_the_worst_held_out_generator():
+    """Spec §8.1. The mean of 0.77 and 0.51 is 0.64; reporting that would
+    hide the generator an attacker would actually choose."""
+    md = render_markdown(_logo_record())
+    assert "0.510" in md
+    assert "0.640" not in md
+    assert md.index("Leave-one-generator-out") < md.index("In-dataset")
+
+
+def test_report_labels_whole_corpus_numbers_as_memorisation():
+    md = render_markdown(_logo_record())
+    assert "memorisation" in md.lower()
+
+
+def test_report_says_so_when_logo_was_not_computed():
+    """A missing LOGO number must be stated, not left as a silent absence
+    that reads as though the in-dataset table were the result."""
+    md = render_markdown(_record())
+    assert "not computed" in md.lower()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -3349,6 +3943,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -3362,6 +3957,9 @@ from .guards import (
     check_uniform_preprocessing, check_video_level,
 )
 from .metrics import auc, bootstrap_ci_by_group, ece, tpr_at_fpr
+from .protocol import logo_splits
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -3394,14 +3992,21 @@ class RunRecord:
     guards_enforced: bool
     model_versions: dict[str, str]
     identity_report: IdentityReport | None
+    #: Whole-corpus metrics. THIS IS IN-DATASET PERFORMANCE, which measures
+    #: memorisation, not field performance. Never report it as the headline.
     detector_results: dict[str, DetectorResult] = field(default_factory=dict)
+    #: held-out generator -> detector -> metrics. Spec 8.1: the only number
+    #: that predicts field performance. Empty when the corpus cannot be split.
+    logo_results: dict[str, dict[str, DetectorResult]] = field(
+        default_factory=dict)
 
 
 def dataset_hash(records: list[dict]) -> str:
     """Content hash over identifying fields — stable, order-independent."""
     keys = sorted(
         json.dumps({k: r.get(k) for k in
-                    ("sample_id", "subject_id", "generator", "label", "compression")},
+                    ("sample_id", "subject_id", "source_id", "generator",
+                     "label", "compression")},
                    sort_keys=True)
         for r in records)
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
@@ -3413,23 +4018,36 @@ def _observation(record: dict) -> Observation:
     lm = np.array([[w * 0.35, h * 0.4], [w * 0.65, h * 0.4]])
     q = measure_quality(img, (0, 0, w, h), lm)
     return Observation(t=0.0, payload=img, roi=(0, 0, w, h), quality=q,
-                       source_id=record["sample_id"])
+                       source_id=record["source_id"])
 
 
 def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord:
     if config.enforce_guards:
+        # `groups` MUST identify the SOURCE VIDEO, never the sample id.
+        # Passing sample_ids for both arguments makes this guard vacuous: its
+        # only failure condition is groups[i] != sample_ids[i], so identical
+        # lists can never raise. Records must carry a source-video field; for
+        # image records each image is its own source, which must be recorded
+        # explicitly rather than aliased to sample_id.
         check_video_level([r["sample_id"] for r in records],
-                          [r["sample_id"] for r in records])
+                          [r["source_id"] for r in records])
         check_compression_coverage(records)
         check_uniform_preprocessing(records)
         check_threshold_provenance(config.threshold_source)
 
     labels = np.array([r["label"] for r in records], dtype=int)
-    groups = np.array([r["sample_id"] for r in records])
+    # The SOURCE video, not the sample id. bootstrap_ci_by_group resamples
+    # over these, and resampling over frames rather than videos fabricates
+    # precision: measured at 11.9x too narrow (group CI 0.751 vs row 0.063).
+    # check_video_level enforces a 1:1 mapping while guards are on, but
+    # enforce_guards=False is a supported path and that is exactly where an
+    # honest interval matters most.
+    groups = np.array([r["source_id"] for r in records])
     observations = [_observation(r) for r in records]
 
     results: dict[str, DetectorResult] = {}
     versions: dict[str, str] = {}
+    scores_by_detector: dict[str, np.ndarray] = {}
 
     for name in registry.names():
         det = registry.get(name)
@@ -3450,36 +4068,98 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
                 scores.append(float(raw.score))
 
         s = np.array(scores, dtype=float)
-        valid = np.isfinite(s)
-        if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
-            results[name] = DetectorResult(
-                detector=name, auc=float("nan"), auc_ci=(float("nan"), float("nan")),
-                tpr_at_1pct=float("nan"), tpr_at_0p1pct=float("nan"),
-                ece=float("nan"), adversarial_tpr_at_1pct=None,
-                abstention_rate=abstentions / max(1, len(records)),
-                p95_latency_ms=float(np.percentile(latencies, 95)),
-                n_samples=len(records))
-            continue
+        scores_by_detector[name] = s
+        results[name] = _detector_result(
+            name, s, labels, groups, latencies, abstentions, config)
 
-        results[name] = DetectorResult(
-            detector=name,
-            auc=auc(s[valid], labels[valid]),
-            auc_ci=bootstrap_ci_by_group(s[valid], labels[valid], groups[valid],
-                                         auc, n=config.bootstrap_n,
-                                         seed=config.seed),
-            tpr_at_1pct=tpr_at_fpr(s[valid], labels[valid], 0.01),
-            tpr_at_0p1pct=tpr_at_fpr(s[valid], labels[valid], 0.001),
-            ece=ece(s[valid], labels[valid]),
-            adversarial_tpr_at_1pct=None,
-            abstention_rate=abstentions / max(1, len(records)),
-            p95_latency_ms=float(np.percentile(latencies, 95)),
-            n_samples=len(records),
-        )
+    logo_results = _logo_results(records, registry, scores_by_detector,
+                                 labels, groups, config)
 
     return RunRecord(seed=config.seed, dataset_hash=dataset_hash(records),
                      guards_enforced=config.enforce_guards,
                      model_versions=versions, identity_report=None,
-                     detector_results=results)
+                     detector_results=results, logo_results=logo_results)
+
+
+def _detector_result(name, s, labels, groups, latencies, abstentions,
+                     config) -> DetectorResult:
+    """Metrics for one detector over one set of rows.
+
+    Split out so a LOGO fold can reuse it verbatim: the fold differs only in
+    which rows it passes, never in how the numbers are computed.
+    """
+    n = len(s)
+    valid = np.isfinite(s)
+    base = dict(
+        detector=name,
+        adversarial_tpr_at_1pct=None,
+        abstention_rate=abstentions / max(1, n),
+        p95_latency_ms=float(np.percentile(latencies, 95)) if latencies else 0.0,
+        n_samples=n,
+    )
+    if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
+        nan = float("nan")
+        return DetectorResult(auc=nan, auc_ci=(nan, nan), tpr_at_1pct=nan,
+                              tpr_at_0p1pct=nan, ece=nan, **base)
+    return DetectorResult(
+        auc=auc(s[valid], labels[valid]),
+        auc_ci=bootstrap_ci_by_group(s[valid], labels[valid], groups[valid],
+                                     auc, n=config.bootstrap_n,
+                                     seed=config.seed),
+        tpr_at_1pct=tpr_at_fpr(s[valid], labels[valid], 0.01),
+        tpr_at_0p1pct=tpr_at_fpr(s[valid], labels[valid], 0.001),
+        ece=ece(s[valid], labels[valid]),
+        **base,
+    )
+
+
+def _logo_results(records, registry, scores_by_detector, labels, groups,
+                  config) -> dict[str, dict[str, DetectorResult]]:
+    """Per-held-out-generator metrics — spec 8.1, the number that predicts field
+    performance.
+
+    Detection is not re-run per fold: a detector's score for a record does not
+    depend on which fold the record lands in, so folds slice the scores already
+    computed.
+
+    HONEST SCOPE. A full LOGO protocol trains on the fold's train side and
+    tests on the held-out one. P0 detectors are not trained here, so what this
+    computes is evaluation on the held-out generator's test rows. That is the
+    number you report, and it becomes the full protocol once training or
+    calibration fitting exists — at which point the fold's train side is also
+    where the operating threshold must be frozen (spec 8.2 guard 5).
+    """
+    try:
+        splits = logo_splits(records, seed=config.seed)
+    except ValueError as exc:
+        # A corpus with one generator, one subject, or no measurable fold.
+        # Recorded rather than raised: the in-dataset numbers are still valid.
+        logger.warning("LOGO unavailable for this corpus: %s", exc)
+        return {}
+
+    position = {r["sample_id"]: i for i, r in enumerate(records)}
+    out: dict[str, dict[str, DetectorResult]] = {}
+    for split in splits:
+        rows = np.array([position[sid] for sid in split.test_ids()], dtype=int)
+        out[split.held_out_generator] = {
+            name: _detector_result(name, scores_by_detector[name][rows],
+                                   labels[rows], groups[rows], [], 0, config)
+            for name in registry.names()
+        }
+    return out
+
+
+def worst_logo_auc(record: "RunRecord", detector: str) -> float:
+    """The weakest held-out generator for one detector.
+
+    Reported in preference to the mean, for the same reason spec 8.2 guard 3
+    reports the worst compression cell: an average over generators hides the
+    one an attacker will actually use.
+    """
+    folds = [f[detector].auc for f in record.logo_results.values()
+             if detector in f]
+    finite = [a for a in folds if a == a]
+    return min(finite) if finite else float("nan")
 ```
 
 ```python
@@ -3491,7 +4171,7 @@ number that always looks good and never means anything.
 """
 from __future__ import annotations
 
-from .runner import RunRecord
+from .runner import RunRecord, worst_logo_auc
 
 ADVERSARIAL_FLOOR = 0.10
 
@@ -3515,7 +4195,33 @@ def render_markdown(record: RunRecord) -> str:
                      f"at threshold `{r.threshold}`, {r.violations} violations")
     lines.append("")
 
-    lines.append("## Per-detector results\n")
+    lines.append("## Leave-one-generator-out (spec §8.1)\n")
+    if not record.logo_results:
+        lines.append(
+            "**Not computed for this corpus.** Without a held-out-generator "
+            "number there is nothing here that predicts field performance; "
+            "the table below measures memorisation only.\n")
+    else:
+        lines.append("Worst held-out generator per detector — the headline "
+                     "number. Reported as the worst rather than the mean for "
+                     "the same reason spec §8.2 guard 3 reports the worst "
+                     "compression cell: an average hides the generator an "
+                     "attacker will actually use.\n")
+        detectors = sorted(record.detector_results)
+        generators = sorted(record.logo_results)
+        lines.append("| detector | worst AUC | "
+                     + " | ".join(f"held out {g}" for g in generators) + " |")
+        lines.append("|---|---|" + "---|" * len(generators))
+        for name in detectors:
+            cells = [_f(record.logo_results[g][name].auc) for g in generators]
+            lines.append(f"| {name} | **{_f(worst_logo_auc(record, name))}** | "
+                         + " | ".join(cells) + " |")
+        lines.append("")
+
+    lines.append("## In-dataset results — memorisation, not field performance\n")
+    lines.append("These are computed over the whole corpus, with every "
+                 "generator seen. Spec §8.1: in-dataset AUC measures "
+                 "memorisation. Read the LOGO table above instead.\n")
     lines.append("| detector | AUC | 95% CI | TPR@FPR=1% | TPR@FPR=0.1% | "
                  "adversarial TPR@FPR=1% | ECE | abstained | p95 ms | n |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
@@ -3548,7 +4254,7 @@ def render_markdown(record: RunRecord) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/bench/test_runner.py tests/bench/test_report.py -v`
-Expected: PASS, 14 tests
+Expected: PASS, 29 tests (21 runner, 8 report)
 
 - [ ] **Step 5: Run the full suite and commit**
 
@@ -3565,14 +4271,1374 @@ git commit -m "feat: reproducible benchmark runner and head-to-head report"
 ## Self-Review
 
 **Spec coverage.** §5.1 Sample abstraction → Task 1. §5.2 LLR currency → Tasks 9, 10. §5.3 quality gate → Tasks 3, 6. §6 portfolio (slots A, C, E) → Tasks 7, 8. §7.1 calibration → Task 9. §7 four verdicts + disagreement → Tasks 1, 10. §8.1 LOGO → Task 13. §8.2 six guards (incl. demographic parity) → Task 12. §8.3 metrics and robustness → Tasks 11, 14. §8.4 head-to-head → Tasks 16, 17. §9.5 ESS discount → Task 10. §11 manifest → Tasks 2, 4, 7, 8. §3A adversarial → Task 15. Principle 9 randomisation → Task 6 `select_subset`. Principle 10 reconstructability → Task 17.
+**Correction (whole-branch review):** the two mentions above overstate what shipped. "§8.2 six guards (incl. demographic parity) → Task 12" is true only of what Task 12 *implemented and unit-tested*; the demographic-parity guard has no call site in `run_benchmark` (gap 6 below). "§8.4 head-to-head → Tasks 16, 17" is true only of the corpus-loading and reporting *infrastructure* those tasks built; no code path joins it into a benchmark run or renders a comparison (gap 7 below). Read both spec-coverage entries as "built the pieces," not "the criterion is met."
 
 **Known gaps, deliberately deferred and recorded here so they are not forgotten:**
 
-1. **Guard 1 (identity leakage) is implemented in Task 12 but not yet wired into `run_benchmark`.** `RunRecord.identity_report` is present and rendered but always `None`, because computing it needs a face-embedding model that is not part of P0's licence-clean set (spec §11 flags InsightFace). **Acceptance criterion 2 is therefore not met by this plan alone** — it needs a follow-up task once an embedding model is chosen. This is the single most important gap; do not close P0 without it.
-2. `adversarial_tpr_at_1pct` is computed by Task 15 but wired as `None` in the runner, because it needs a differentiable model and the P0 detectors abstain without weights. Wire it when real weights land.
-3. Calibration is fitted per detector but the runner scores raw detector output rather than fused LLRs. End-to-end fusion scoring belongs in P1.
-4. `check_video_level` is called with `sample_ids` as both arguments in the runner, which is correct for image records (one sample per group) but must be revisited when video records arrive.
+1. **The LOGO number is now computed, but this is not a trained LOGO protocol.** `run_benchmark` evaluates each detector on each held-out generator's test rows and reports the worst as the headline. A full protocol also *trains* on the fold's train side; P0 detectors are not trained here, so the train side is currently unused. It becomes load-bearing the moment calibration or training lands — and that is also where the operating threshold must be frozen, which would make spec §8.2 guard 5 real rather than the string check on `config.threshold_source` it is today.
+
+2. **Guard 1 (identity leakage) is implemented in Task 12 but not yet wired into `run_benchmark`.** `RunRecord.identity_report` is present and rendered but always `None`, because computing it needs a face-embedding model that is not part of P0's licence-clean set (spec §11 flags InsightFace). **Acceptance criterion 2 is therefore not met by this plan alone** — it needs a follow-up task once an embedding model is chosen. This is the single most important gap; do not close P0 without it.
+3. `adversarial_tpr_at_1pct` is computed by Task 15 but wired as `None` in the runner, because it needs a differentiable model and the P0 detectors abstain without weights. Wire it when real weights land.
+4. Calibration is fitted per detector but the runner scores raw detector output rather than fused LLRs. End-to-end fusion scoring belongs in P1.
+5. **Resolved, not deferred.** `check_video_level` reads a real `source_id` field; records must populate it. For image corpora each image is its own source, recorded explicitly. Aliasing `source_id` to `sample_id` at the call site makes the guard vacuous — its only failure condition is `groups[i] != sample_ids[i]` — so the alias is forbidden rather than tolerated.
+6. **Criterion 11 (per-stratum FPR parity reported as a headline number) is NOT met.** `check_demographic_parity` (guard 6, Task 12) is implemented and covered by its own unit tests, but has zero call sites outside `tests/`: `run_benchmark` never calls it, `ParityReport` never reaches `RunRecord`, and `render_markdown` has no parity section. Nothing today surfaces an inter-stratum FPR ratio anywhere a reader of a benchmark report would see it. It would be met once `run_benchmark` computes a `ParityReport` per run (given per-sample stratum labels, which the record schema does not yet carry either) and the report renders the ratio as a headline number, not once the guard function merely exists.
+7. **Criterion 4 (head-to-head vs the 24 cached RD results and the 442-session swap corpus) is NOT met.** `corpora/rd_cache.py` and `corpora/captures.py` have no consumer anywhere in the tree: no adapter joins either corpus to `run_benchmark`, and no RD comparison table is rendered by `bench/report.py`. Tasks 16 and 17 built corpus loading and the benchmark runner respectively, but nothing wires the two together for this specific comparison. It would be met once a task loads both corpora through `run_benchmark` and renders a table of our numbers alongside the cached RD numbers with confidence intervals, as the criterion requires.
+8. **Criterion 1's clause "with all five hygiene guards active and verified" is FALSE as written.** (The spec's own count is inconsistent — §12.1 says "five," `bench/guards.py` implements and numbers six — but under either count, not all of them run.) `run_benchmark` calls four guards when `enforce_guards=True`: video-level (guard 2), compression coverage (guard 3), uniform preprocessing (guard 4), and threshold provenance (guard 5). It does not call identity leakage (guard 1 — no embedder is wired in, gap 2 above) or demographic parity (guard 6 — gap 6 above). Both are implemented and unit-tested; neither runs as part of a benchmark run. The corrected claim: four of six guards run and are verified per-run; two are implemented and tested in isolation but not yet part of `run_benchmark`.
 
 **Placeholder scan.** No TBDs. Every step carries runnable code. Threshold constants in `quality.py` are marked as starting values with a stated plan (Task 18 follow-up) rather than left as magic numbers.
 
 **Type consistency.** `RawScore` (Tasks 1, 6, 7, 8) → `Calibrator.to_evidence` (Task 9) → `Evidence` (Tasks 1, 10) → `FusedResult` (Task 10) verified consistent. `meets_floor(band, floor)` signature identical in Tasks 3, 6, 7, 8. `abstain(detector, version, reason)` identical in Tasks 6, 7, 8. `Registry` defined in `base.py` and re-exported from `registry.py`, imported both ways in tests — consistent.
+
+---
+
+### Task 18: Wire the robustness sweep into the runner
+
+**Files:**
+- Modify: `bench/runner.py`, `bench/report.py`
+- Test: `tests/bench/test_runner_robustness.py`
+
+**Interfaces:**
+- Consumes: `robustness_sweep`, `PERTURBATIONS` (Task 14); `RunConfig`, `DetectorResult`, `run_benchmark` (Task 17)
+- Produces: `RunConfig.robustness` flag, `DetectorResult.tpr_by_perturbation: dict[str, float]`
+
+**Why this task exists:** Tasks 14 and 17 were both correct in isolation and did not connect — `robustness_sweep` was built, tested, and never called. Spec acceptance criterion 9 requires screenshot-of-screen and print-recapture to be **measured**, and without this task P0 would close believing it measured them. The two cheapest laundering steps available to any adversary would have gone untested.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/bench/test_runner_robustness.py
+import numpy as np
+import pytest
+from bench.robustness import JPEG_QUALITIES, robustness_sweep
+from bench.runner import RunConfig, run_benchmark
+from dfd.detectors.base import Registry, SyntheticDetector
+
+
+def _records(n=30):
+    out = []
+    for i in range(n):
+        fake = i % 2 == 0
+        out.append({
+            "sample_id": f"s{i}", "subject_id": f"p{i}",
+            # The runner reads source_id (spec §8.2 guard 2); an image is its
+            # own source and that is recorded, never aliased to sample_id.
+            "source_id": f"src{i}",
+            # Two generators: leave-one-generator-out is undefined with one.
+            "generator": ["deepfacelive", "faceswap"][(i // 2) % 2] if fake else None,
+            "label": 1 if fake else 0,
+            "compression": ["c0", "c23", "c40"][i % 3],
+            "face_detector": "yunet", "align": "v1",
+            # At least 128px on the short side, and non-square. A 64x64 image
+            # measures quality band "reject", below SyntheticDetector's floor,
+            # so the whole corpus abstains and every number comes back nan
+            # while the suite still passes.
+            "image": np.random.default_rng(i).integers(
+                0, 255, (128 + (i % 3) * 16, 160 + (i % 5) * 16, 3),
+                dtype=np.uint8),
+        })
+    return out
+
+
+def _registry():
+    reg = Registry()
+    reg.register(SyntheticDetector(name="synth_a", seed=1))
+    return reg
+
+
+def test_robustness_is_off_by_default():
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=1))
+    assert rec.detector_results["synth_a"].tpr_by_perturbation == {}
+
+
+def test_robustness_reports_one_entry_per_sweep_variant():
+    """Keyed on what `robustness_sweep` actually emits, not on PERTURBATIONS.
+    Those differ deliberately: the sweep expands `jpeg` into one entry per
+    quality in JPEG_QUALITIES, because spec §8.3 asks for a curve and a single
+    quality cannot show where a detector falls off."""
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    got = rec.detector_results["synth_a"].tpr_by_perturbation
+    expected = set(robustness_sweep(_records(1)[0]["image"]))
+    assert set(got) == expected
+    assert "clean" in got
+
+
+def test_the_whole_jpeg_quality_curve_is_measured():
+    """A single JPEG point would let a detector look robust at q=90 while
+    collapsing at q=10, which is the regime real uploads live in."""
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    got = rec.detector_results["synth_a"].tpr_by_perturbation
+    for quality in JPEG_QUALITIES:
+        assert f"jpeg_q{quality}" in got
+
+
+def test_physical_recapture_paths_are_measured():
+    """Spec acceptance criterion 9 — the reason this task exists.
+
+    Key presence alone is not measurement: a corpus that abstains everywhere
+    produces every key with a nan value. Require real numbers.
+    """
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    got = rec.detector_results["synth_a"].tpr_by_perturbation
+    for name in ("screenshot_recapture", "print_recapture"):
+        assert name in got
+        assert got[name] == got[name], f"{name} is nan — nothing was measured"
+        assert 0.0 <= got[name] <= 1.0
+
+
+def test_the_clean_baseline_is_measured_too():
+    """Without it the perturbed numbers have nothing to be compared against."""
+    rec = run_benchmark(_records(), _registry(),
+                        RunConfig(seed=1, robustness=True))
+    clean = rec.detector_results["synth_a"].tpr_by_perturbation["clean"]
+    assert clean == clean
+
+
+def test_robustness_run_is_reproducible():
+    a = run_benchmark(_records(), _registry(), RunConfig(seed=1, robustness=True))
+    b = run_benchmark(_records(), _registry(), RunConfig(seed=1, robustness=True))
+    assert (a.detector_results["synth_a"].tpr_by_perturbation
+            == b.detector_results["synth_a"].tpr_by_perturbation)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/bench/test_runner_robustness.py -v`
+Expected: FAIL with `TypeError: __init__() got an unexpected keyword argument 'robustness'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `bench/runner.py`, add `robustness: bool = False` to `RunConfig`, add
+`tpr_by_perturbation: dict = field(default_factory=dict)` to `DetectorResult`,
+import `from .robustness import robustness_sweep`, and after the clean scoring
+loop for each detector add:
+
+```python
+        tpr_by_perturbation: dict[str, float] = {}
+        if config.robustness:
+            variants: dict[str, list[float]] = {}
+            for rec_in, obs in zip(records, observations):
+                for pname, pimg in robustness_sweep(rec_in["image"]).items():
+                    pobs = Observation(t=obs.t, payload=pimg, roi=obs.roi,
+                                       quality=obs.quality,
+                                       source_id=obs.source_id)
+                    praw = det.score([pobs])
+                    variants.setdefault(pname, []).append(
+                        float(praw.score) if not praw.abstained
+                        and praw.score is not None else np.nan)
+            for pname, pscores in variants.items():
+                ps = np.array(pscores, dtype=float)
+                pv = np.isfinite(ps)
+                tpr_by_perturbation[pname] = (
+                    tpr_at_fpr(ps[pv], labels[pv], 0.01)
+                    if pv.sum() and len(np.unique(labels[pv])) > 1
+                    else float("nan"))
+```
+
+Pass `tpr_by_perturbation=tpr_by_perturbation` into both `DetectorResult(...)`
+constructions in the function (the degenerate-case one and the normal one).
+
+In `bench/report.py`, after the per-detector table, add:
+
+```python
+    any_rob = any(d.tpr_by_perturbation for d in record.detector_results.values())
+    if any_rob:
+        names = sorted({p for d in record.detector_results.values()
+                        for p in d.tpr_by_perturbation})
+        lines.append("## Robustness — TPR@FPR=1% under perturbation\n")
+        lines.append("| detector | " + " | ".join(names) + " |")
+        lines.append("|---" * (len(names) + 1) + "|")
+        for name in sorted(record.detector_results):
+            d = record.detector_results[name]
+            row = " | ".join(_f(d.tpr_by_perturbation.get(p)) for p in names)
+            lines.append(f"| {d.detector} | {row} |")
+        lines.append("")
+        lines.append("`screenshot_recapture` and `print_recapture` are the two "
+                     "cheapest laundering steps available to an adversary; a "
+                     "detector that collapses under them is not deployable "
+                     "against the threat model in spec §3A.\n")
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/bench/test_runner_robustness.py tests/bench/test_runner.py tests/bench/test_report.py -v`
+Expected: PASS — 6 new tests, and Task 17's 29 still green
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add bench/runner.py bench/report.py tests/bench/test_runner_robustness.py
+git commit -m "feat: measure the robustness surface in the benchmark runner"
+```
+
+---
+
+### Task 19: Asset enumeration — make the release gate non-vacuous
+
+**Files:**
+- Create: `src/dfd/asset_scan.py`
+- Modify: `src/dfd/manifest.py` (distinguish unregistered from non-commercial in the failure message)
+- Test: `tests/test_asset_scan.py`
+
+**Interfaces:**
+- Consumes: `load_manifest`, `assert_release_clean`, `NonCommercialAsset` (Task 2)
+- Produces: `ASSET_SUFFIXES`, `AssetScanEmpty`, `discover_assets(root) -> list[str]`, `assert_all_assets_registered(root, manifest_path, allow_empty=False)`
+
+**Why this task exists:** Task 2's `assert_release_clean(manifest, asset_ids)` can only judge assets it is *handed*. Passing it an empty list returns cleanly — a vacuous pass. Nothing in the repo enumerates what assets are actually in use, so the gate currently guarantees nothing about a real release: forget to list a weight file and it ships unchecked, which is precisely the false confidence Task 2 exists to prevent. Spec §12.1 criterion 6 ("asset manifest covering every dataset and weight file in use") is unverifiable without this.
+
+**An empty scan is a failure, not a pass — and this is the whole difficulty.** The obvious implementation is `assert_release_clean(load_manifest(path), discover_assets(root))`, which simply moves the vacuity rather than removing it: `assert_release_clean` iterates the ids it is handed, so discovering *nothing* returns cleanly exactly as passing `[]` did. That is not hypothetical here. Of everything under `assets/`, git tracks exactly one file — `assets/manifest.yaml` — and `.gitignore` carries `*.onnx`, `*.pth` and `models/`. So on a fresh CI checkout the scan finds nothing and the gate passes unconditionally, forever, while Task 22 reports it as the enforcement of criterion 6. A check that has never examined a file would be certifying the property.
+
+So `assert_all_assets_registered` refuses an empty scan unless the caller says `allow_empty=True` in as many words. CI then either provides the assets or opts into emptiness deliberately — a decision someone makes, rather than a silence nobody notices.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_asset_scan.py
+import pytest
+from dfd.asset_scan import (
+    ASSET_SUFFIXES, AssetScanEmpty, assert_all_assets_registered,
+    discover_assets,
+)
+from dfd.manifest import NonCommercialAsset, assert_release_clean, load_manifest
+
+MANIFEST = """
+assets:
+  good_weights:
+    source: "s"
+    license: "MIT"
+    commercial_use: true
+    evidence_url: "u"
+    date_checked: "2026-09-20"
+    checked_by: "k"
+"""
+
+
+def _tree(tmp_path, *names):
+    (tmp_path / "assets" / "models").mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (tmp_path / "assets" / "models" / n).write_bytes(b"x")
+    return tmp_path
+
+
+def test_discovers_weight_files_by_suffix(tmp_path):
+    _tree(tmp_path, "good_weights.onnx", "notes.txt")
+    found = discover_assets(tmp_path)
+    assert "good_weights" in found
+    assert "notes" not in found
+
+
+def test_every_declared_suffix_is_discovered(tmp_path):
+    names = [f"a{i}{s}" for i, s in enumerate(sorted(ASSET_SUFFIXES))]
+    _tree(tmp_path, *names)
+    found = set(discover_assets(tmp_path))
+    assert len(found) == len(ASSET_SUFFIXES)
+
+
+def test_passes_when_every_discovered_asset_is_registered(tmp_path):
+    _tree(tmp_path, "good_weights.onnx")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    assert assert_all_assets_registered(tmp_path, mp) is None
+
+
+def test_raises_on_an_asset_present_on_disk_but_absent_from_the_manifest(tmp_path):
+    """The whole point: a weight file nobody registered must fail the build."""
+    _tree(tmp_path, "good_weights.onnx", "sneaky_weights.pt")
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(NonCommercialAsset, match="sneaky_weights"):
+        assert_all_assets_registered(tmp_path, mp)
+
+
+def test_an_empty_scan_fails_the_gate(tmp_path):
+    """The defect this task exists to remove, at the level it actually bites.
+
+    Handing `assert_release_clean` an empty list returns cleanly, so a scan
+    that finds nothing would certify a clean release having examined no files.
+    On a fresh checkout that is the normal case: weight files are gitignored.
+    """
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(AssetScanEmpty, match="found no assets"):
+        assert_all_assets_registered(tmp_path, mp)
+
+
+def test_the_empty_scan_message_names_where_it_looked(tmp_path):
+    """A gate that fails must say enough to be fixed or waived deliberately."""
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(AssetScanEmpty) as exc:
+        assert_all_assets_registered(tmp_path, mp)
+    assert str(tmp_path) in str(exc.value)
+    assert ".onnx" in str(exc.value)
+
+
+def test_an_empty_scan_can_be_waived_only_explicitly(tmp_path):
+    (tmp_path / "assets").mkdir()
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    assert assert_all_assets_registered(tmp_path, mp, allow_empty=True) is None
+
+
+def test_empty_tree_discovers_nothing(tmp_path):
+    (tmp_path / "assets").mkdir()
+    assert discover_assets(tmp_path) == []
+
+
+def test_unregistered_and_non_commercial_are_reported_distinctly(tmp_path):
+    """"I have never heard of this file" is not "this file's licence forbids
+    commercial use", and a reader debugging a red gate should not be told a
+    licensing story about a file that is merely absent from the manifest."""
+    mp = tmp_path / "manifest.yaml"
+    mp.write_text(MANIFEST)
+    with pytest.raises(NonCommercialAsset) as exc:
+        assert_release_clean(load_manifest(mp), ["nobody_registered_this"])
+    message = str(exc.value)
+    assert "unregistered" in message.lower()
+    assert "nobody_registered_this" in message
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_asset_scan.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.asset_scan'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/asset_scan.py
+"""Enumerate assets on disk so the release gate cannot pass vacuously.
+
+`assert_release_clean` judges only the ids it is handed, so handing it nothing
+returns cleanly. That is a gate guaranteeing nothing. This module supplies the
+list from the filesystem instead of from a human's memory.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from .manifest import assert_release_clean, load_manifest
+
+# Extensions that carry model weights or dataset payloads.
+ASSET_SUFFIXES = (".onnx", ".pt", ".pth", ".safetensors", ".tflite", ".bin", ".npz")
+
+
+def discover_assets(root: str | Path) -> list[str]:
+    """Asset ids (filename stems) for every weight-like file under `root`."""
+    found: set[str] = set()
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.suffix.lower() in ASSET_SUFFIXES:
+            found.add(path.stem)
+    return sorted(found)
+
+
+class AssetScanEmpty(Exception):
+    """The scan found no assets, so it can certify nothing.
+
+    Joins the `DfdError` hierarchy when Task 20 introduces it.
+    """
+
+
+def assert_all_assets_registered(root: str | Path,
+                                 manifest_path: str | Path,
+                                 allow_empty: bool = False) -> None:
+    """Raise unless every asset on disk is registered and commercially clear.
+
+    Raises:
+        AssetScanEmpty: nothing was discovered and `allow_empty` is False. An
+            empty scan passing `assert_release_clean` would return cleanly
+            having examined no files — the vacuity this module exists to
+            remove, one level up. On a fresh checkout this is the normal case,
+            because weight files are gitignored, so the caller must opt into
+            it deliberately rather than inherit it by silence.
+        NonCommercialAsset: a discovered asset is unregistered, or registered
+            without commercial clearance.
+    """
+    discovered = discover_assets(root)
+    if not discovered and not allow_empty:
+        raise AssetScanEmpty(
+            f"asset scan found no assets under {root} matching "
+            f"{', '.join(ASSET_SUFFIXES)}; a gate that examined nothing cannot "
+            "certify a release. Provide the assets, or pass allow_empty=True "
+            "to record that this environment deliberately has none.")
+    assert_release_clean(load_manifest(manifest_path), discovered)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Then in `src/dfd/manifest.py`, split `assert_release_clean`'s failure into its two distinct causes so the message describes the actual fault:
+
+```python
+    unregistered = [a for a in asset_ids if manifest.get(a) is None]
+    non_commercial = [a for a in asset_ids
+                      if manifest.get(a) is not None
+                      and not manifest[a].commercial_use]
+    if unregistered or non_commercial:
+        parts = []
+        if unregistered:
+            parts.append("unregistered assets (absent from the manifest): "
+                         + ", ".join(sorted(unregistered)))
+        if non_commercial:
+            parts.append("assets not cleared for commercial release: "
+                         + ", ".join(sorted(non_commercial)))
+        raise NonCommercialAsset("; ".join(parts))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_asset_scan.py tests/test_manifest.py -v`
+Expected: PASS — 9 new tests, Task 2's still green
+
+- [ ] **Step 5: Prove the empty-scan gate can fail**
+
+This is the defect the task exists to remove, and the version it replaces passed silently. Prove the new test fires: temporarily restore the original one-line body
+
+```python
+    assert_release_clean(load_manifest(manifest_path), discover_assets(root))
+```
+
+run `pytest tests/test_asset_scan.py`, and confirm `test_an_empty_scan_fails_the_gate` and `test_the_empty_scan_message_names_where_it_looked` both FAIL. Restore and confirm all pass. Record both outputs in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/dfd/asset_scan.py src/dfd/manifest.py tests/test_asset_scan.py
+git commit -m "feat: enumerate assets from disk so the release gate cannot pass vacuously"
+```
+
+---
+
+### Task 20: Immutable audit record
+
+**Files:**
+- Create: `src/dfd/errors.py`, `src/dfd/audit.py`
+- Test: `tests/test_audit.py`
+
+**Interfaces:**
+- Consumes: `Evidence`, `Verdict` (Task 1)
+- Produces: `DfdError` hierarchy; `AuditRecord`, `build_audit_record(...) -> AuditRecord`, `AuditRecord.to_json() -> str`, `record_digest(record) -> str`
+
+**Why this task exists:** spec §7.2 requires every decision to emit an immutable record — input hash, model versions, per-detector LLRs, quality metrics, policy version, decision. It is the artifact that makes a rejection defensible to a regulator and doubles as next-cycle training data. **The original 19-task plan had no task for it; this is a dropped spec requirement, not an enhancement.** Without it the system can decide but cannot account for a decision, which is not shippable in BFSI.
+
+**The record is called immutable and tamper-evident, so it has to be both.** Three ways the obvious implementation is neither, all measured:
+
+1. **`@dataclass(frozen=True)` is shallow.** A `dict` field stays mutable: `record.model_versions["npr"] = "tampered"` raises nothing and *changes the digest*, so a record can be altered after the fact and re-digested to match. Containers are frozen here — `MappingProxyType` for mappings, tuples for sequences — and each is asserted to refuse mutation.
+2. **Excluding `created_at` from the digest makes backdating invisible.** Verified: moving a timestamp from 2026 to 1999 leaves the digest identical. The only reason to exclude it is so two separately-built records compare equal in a test — which weakens the guarantee to fit the test. Instead `created_at` is an **injectable parameter** defaulting to now, so identical records really are identical and the digest covers the timestamp. For an audit record defended to a regulator, the timestamp is among the most attack-relevant fields there is.
+3. **`json.dumps(..., default=str)` silently absorbs anything.** It never raises, so a caller passing a numpy array, bytes, or any other non-JSON value gets it stringified into the record instead of rejected. For a record whose digest is the tamper-evidence, silently absorbing an unexpected type is the wrong failure direction. `default=` is omitted, and a non-JSON value is asserted to raise.
+
+Note also what a PII test must actually do. Asserting `r"\x89PNG" not in r.to_json()` proves nothing — that is seven literal characters no implementation ever inserts, and the assertion passes on a record carrying a whole image. The real discipline is that the record references its input by hash and refuses values it cannot serialise.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_audit.py
+import dataclasses
+import json
+
+import numpy as np
+import pytest
+
+from dfd.audit import AuditRecord, build_audit_record, record_digest
+from dfd.errors import DfdError, InvalidInput
+from dfd.types import Evidence, Verdict
+
+FIXED_TIME = "2026-09-20T10:00:00+00:00"
+
+
+def _ev(name, llr, abstained=False, reason="ok"):
+    return Evidence(detector=name, detector_version="1.0", llr=llr,
+                    raw_score=0.5, uncertainty=0.0,
+                    abstained=abstained, reason=reason)
+
+
+def _record(**kw):
+    base = dict(
+        sample_id="s1", input_sha256="a" * 64, verdict=Verdict.FAKE,
+        llr_total=3.2, posterior=0.96,
+        evidence=[_ev("npr", 2.0), _ev("sbi", 1.2)],
+        quality_band="high", ood_score=0.1,
+        policy_version="policy-1", threshold=1.0,
+        model_versions={"npr": "0.1.0", "sbi": "0.1.0"},
+        created_at=FIXED_TIME,
+    )
+    base.update(kw)
+    return build_audit_record(**base)
+
+
+def test_record_carries_every_field_a_regulator_would_ask_for():
+    r = _record()
+    for name in ("sample_id", "input_sha256", "verdict", "llr_total",
+                 "posterior", "policy_version", "threshold", "model_versions",
+                 "quality_band", "ood_score", "created_at", "schema_version"):
+        assert getattr(r, name) is not None, name
+
+
+def test_rebinding_a_field_raises():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        _record().verdict = Verdict.REAL
+
+
+def test_model_versions_cannot_be_mutated_in_place():
+    """`frozen=True` is shallow: a plain dict field stays writable and
+    mutating it changes the digest, so the record is not immutable at all."""
+    r = _record()
+    with pytest.raises(TypeError):
+        r.model_versions["npr"] = "tampered"
+
+
+def test_evidence_rows_cannot_be_appended_to():
+    r = _record()
+    with pytest.raises(AttributeError):
+        r.evidence.append({"detector": "ghost"})
+
+
+def test_per_detector_llrs_are_preserved_including_abstentions():
+    """An abstention is evidence about the system, not an absence of evidence."""
+    r = _record(evidence=[_ev("npr", 2.0),
+                          _ev("sbi", 0.0, abstained=True,
+                              reason="weights_absent")])
+    got = {e["detector"]: e for e in r.evidence}
+    assert got["sbi"]["abstained"] is True
+    assert got["sbi"]["reason"] == "weights_absent"
+    assert got["npr"]["llr"] == 2.0
+
+
+def test_to_json_round_trips():
+    d = json.loads(_record().to_json())
+    assert d["sample_id"] == "s1"
+    assert d["verdict"] == "fake"
+    assert len(d["evidence"]) == 2
+
+
+def test_digest_is_stable_for_identical_records():
+    assert record_digest(_record()) == record_digest(_record())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("verdict", Verdict.REAL),
+    ("llr_total", 3.3),
+    ("posterior", 0.95),
+    ("sample_id", "s2"),
+    ("input_sha256", "b" * 64),
+    ("quality_band", "low"),
+    ("ood_score", 0.2),
+    ("policy_version", "policy-2"),
+    ("threshold", 1.5),
+    ("model_versions", {"npr": "0.2.0", "sbi": "0.1.0"}),
+    ("created_at", "1999-01-01T00:00:00+00:00"),
+])
+def test_digest_changes_when_any_field_changes(field, value):
+    """Tamper-evidence, field by field. `created_at` is in this list
+    deliberately: excluding it makes backdating a decision invisible."""
+    assert record_digest(_record()) != record_digest(_record(**{field: value}))
+
+
+def test_digest_changes_when_evidence_changes():
+    assert record_digest(_record()) != record_digest(
+        _record(evidence=[_ev("npr", 9.9), _ev("sbi", 1.2)]))
+
+
+def test_a_value_that_cannot_be_serialised_is_refused_not_stringified():
+    """`json.dumps(default=str)` never raises, so an image passed by mistake
+    would be absorbed into the record instead of rejected."""
+    with pytest.raises((InvalidInput, TypeError)):
+        _record(model_versions={"npr": np.zeros((4, 4), dtype=np.uint8)}).to_json()
+
+
+def test_the_record_references_its_input_by_hash_only():
+    d = json.loads(_record().to_json())
+    assert d["input_sha256"] == "a" * 64
+    assert not any(k.startswith("image") or k.endswith("bytes") for k in d)
+
+
+def test_rejects_a_malformed_input_hash():
+    with pytest.raises(InvalidInput, match="64 lowercase hex"):
+        _record(input_sha256="not-a-hash")
+
+
+def test_rejects_an_uppercase_hash():
+    """Case matters: the same digest in two cases would give two records."""
+    with pytest.raises(InvalidInput, match="64 lowercase hex"):
+        _record(input_sha256="A" * 64)
+
+
+def test_rejects_an_empty_sample_id():
+    with pytest.raises(InvalidInput, match="sample_id"):
+        _record(sample_id="")
+
+
+def test_invalid_input_is_a_dfd_error():
+    """One catchable root for every error this package raises."""
+    assert issubclass(InvalidInput, DfdError)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_audit.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.audit'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/errors.py
+"""Exception hierarchy. One catchable root for everything this package raises."""
+from __future__ import annotations
+
+
+class DfdError(Exception):
+    """Base for every error raised by the dfd package."""
+
+
+class InvalidInput(DfdError):
+    """A caller supplied an argument that cannot be processed."""
+
+
+class ResourceLimitExceeded(DfdError):
+    """Input exceeded a configured decode or size limit."""
+```
+
+```python
+# src/dfd/audit.py
+"""Immutable per-decision audit record (spec §7.2).
+
+Makes a rejection defensible: what was decided, by which model versions, on
+what evidence, under which policy. References the input by SHA-256 and never
+carries image bytes — the record is retained far longer than the media, and
+BFSI face data is sensitive personal data under India's DPDP Act.
+
+Immutable means immutable in depth: `frozen=True` alone leaves dict and list
+fields writable, and mutating one changes the digest, which would let a record
+be altered after the fact and re-digested to match.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+from dataclasses import dataclass, fields
+from datetime import datetime, timezone
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
+
+from .errors import InvalidInput
+from .types import Evidence, Verdict
+
+logger = logging.getLogger(__name__)
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+AUDIT_SCHEMA_VERSION = "1"
+
+
+def _freeze(value: Any) -> Any:
+    """Deep-freeze the containers a record holds."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """Plain-Python view for serialisation. No `default=` fallback: a value
+    this cannot render must raise rather than be silently stringified."""
+    if isinstance(value, Mapping):
+        return {k: _thaw(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    schema_version: str
+    sample_id: str
+    input_sha256: str
+    verdict: str
+    llr_total: float
+    posterior: float
+    evidence: tuple
+    quality_band: str
+    ood_score: float
+    policy_version: str
+    threshold: float
+    model_versions: Mapping[str, str]
+    created_at: str
+
+    def to_json(self) -> str:
+        """Serialise deterministically (sorted keys) so digests are comparable.
+
+        `dataclasses.asdict` is deliberately not used: it deep-copies every
+        field value, and a `MappingProxyType` cannot be deep-copied.
+
+        Raises:
+            TypeError: if any field holds a value JSON cannot represent.
+        """
+        payload = {f.name: _thaw(getattr(self, f.name)) for f in fields(self)}
+        return json.dumps(payload, sort_keys=True)
+
+
+def build_audit_record(
+    sample_id: str,
+    input_sha256: str,
+    verdict: Verdict,
+    llr_total: float,
+    posterior: float,
+    evidence: Sequence[Evidence],
+    quality_band: str,
+    ood_score: float,
+    policy_version: str,
+    threshold: float,
+    model_versions: Mapping[str, str],
+    created_at: str | None = None,
+) -> AuditRecord:
+    """Build an immutable decision record.
+
+    `created_at` is injectable so that two records describing the same decision
+    are genuinely identical. It is covered by `record_digest`: a timestamp
+    outside the digest makes backdating a decision invisible.
+
+    Raises:
+        InvalidInput: if `sample_id` is empty or `input_sha256` is not a
+            lowercase 64-character hex digest.
+    """
+    if not sample_id:
+        raise InvalidInput("sample_id must be a non-empty string")
+    if not _SHA256_RE.match(input_sha256 or ""):
+        raise InvalidInput(
+            "input_sha256 must be 64 lowercase hex characters, got "
+            f"{input_sha256!r}")
+
+    rows = tuple(
+        MappingProxyType({
+            "detector": e.detector,
+            "version": e.detector_version,
+            "llr": float(e.llr),
+            "raw_score": None if e.raw_score is None else float(e.raw_score),
+            "abstained": bool(e.abstained),
+            "reason": e.reason,
+        })
+        for e in evidence
+    )
+    record = AuditRecord(
+        schema_version=AUDIT_SCHEMA_VERSION,
+        sample_id=sample_id,
+        input_sha256=input_sha256,
+        verdict=verdict.value if isinstance(verdict, Verdict) else str(verdict),
+        llr_total=float(llr_total),
+        posterior=float(posterior),
+        evidence=rows,
+        quality_band=quality_band,
+        ood_score=float(ood_score),
+        policy_version=policy_version,
+        threshold=float(threshold),
+        model_versions=_freeze(dict(model_versions)),
+        created_at=created_at or datetime.now(timezone.utc).isoformat(),
+    )
+    logger.info("audit record built: sample=%s verdict=%s detectors=%d",
+                sample_id, record.verdict, len(rows))
+    return record
+
+
+def record_digest(record: AuditRecord) -> str:
+    """Tamper-evident digest over the whole record, timestamp included."""
+    return hashlib.sha256(record.to_json().encode()).hexdigest()
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_audit.py -v`
+Expected: PASS, 25 tests (14 plus the digest test parametrised over 11 fields).
+
+- [ ] **Step 5: Prove the tamper-evidence tests can fail**
+
+Two of these guard properties that the obvious implementation silently lacks. Prove each fires:
+
+1. Make `record_digest` drop the timestamp before hashing (`payload = json.loads(record.to_json()); payload.pop("created_at")`). Run `pytest tests/test_audit.py -k digest_changes` and confirm the `created_at` case FAILS while the others still pass. Restore.
+2. Replace `model_versions=_freeze(dict(model_versions))` with `model_versions=dict(model_versions)`. Run `pytest tests/test_audit.py -k mutated` and confirm it FAILS. Restore.
+
+Record all four outputs in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/dfd/errors.py src/dfd/audit.py tests/test_audit.py
+git commit -m "feat: immutable per-decision audit record and error hierarchy"
+```
+
+---
+
+### Task 21: Resource limits at the decode boundary
+
+**Files:**
+- Create: `src/dfd/limits.py`
+- Modify: `src/dfd/ingest/image.py`, `src/dfd/ingest/video.py`
+- Test: `tests/test_limits.py`
+
+**Interfaces:**
+- Consumes: `InvalidInput`, `ResourceLimitExceeded` (Task 20); `load_image`, `load_video` (Task 5)
+- Produces: `Limits`, `DEFAULT_LIMITS`, `check_file_size(path, limits)`, `check_frame_dims(w, h, limits)`, `probe_image_dims(path)`, `check_image_before_decode(path, limits)`
+
+**Why this task exists:** spec §3A assumes a well-resourced adversary and spec §10 names resource exhaustion via crafted media as an attack surface. A 50,000×50,000 PNG decodes to 7.5 GB and takes the service down — a denial-of-service against a fraud control is itself a fraud enabler, because it forces a fallback path.
+
+**Limits are enforced before allocation, and that word is load-bearing.** The obvious design — check the file size, decode, then check the decoded array's shape — does not defend against this attack at all, for two reasons:
+
+1. **A file-size limit is exactly what a decompression bomb defeats.** Measured: a 12,000×12,000 uniform PNG is **161,331 bytes on disk** — 0.15 MB — and decodes to **0.40 GB**. It passes a 256 MB file limit with five orders of magnitude to spare. The task's own headline example, 50,000×50,000, is roughly 2.8 MB on disk and 7.5 GB decoded.
+2. **Checking `decoded.shape` runs after the allocation it exists to prevent.** By the time an array has a shape, the memory is already committed.
+
+So dimensions are read from the image **header**, before any decode. Pillow does this: `Image.open(path).size` returned `(12000, 12000)` in **0.007 s** without decoding a pixel. Only a frame whose header dimensions pass is handed to `cv2.imread`.
+
+**Pillow's own bomb guard must be absorbed, not left to fire on its own.** Pillow warns with `DecompressionBombWarning` above `MAX_IMAGE_PIXELS` (89,478,485 by default) and raises `DecompressionBombError` above twice that. Our `max_pixels` is 33.2 M — stricter than Pillow's — so our check is the one that should speak. `probe_image_dims` suppresses Pillow's warning and converts its error into `ResourceLimitExceeded`, giving one source of truth and keeping test output pristine.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_limits.py
+import dataclasses
+
+import cv2
+import numpy as np
+import pytest
+
+from dfd.errors import DfdError, InvalidInput, ResourceLimitExceeded
+from dfd.limits import (
+    DEFAULT_LIMITS, Limits, check_file_size, check_frame_dims,
+    check_image_before_decode, probe_image_dims,
+)
+from dfd.ingest.image import load_image
+from dfd.types import Context
+
+
+def _png(path, width, height):
+    """A uniform image: large in pixels, tiny on disk. That gap is the attack."""
+    cv2.imwrite(str(path), np.zeros((height, width), dtype=np.uint8))
+    return path
+
+
+@pytest.fixture
+def context():
+    return Context(label=0)
+
+
+def test_limits_are_a_frozen_value_object():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        DEFAULT_LIMITS.max_pixels = 1
+
+
+def test_defaults_are_the_documented_values():
+    """Asserting only `> 0` would let max_pixels drift to 1 unnoticed."""
+    assert DEFAULT_LIMITS.max_pixels == 7680 * 4320
+    assert DEFAULT_LIMITS.max_file_bytes == 256 * 1024 * 1024
+    assert DEFAULT_LIMITS.max_frames == 10_000
+    assert DEFAULT_LIMITS.max_duration_s == 1800.0
+
+
+def test_oversized_file_is_rejected(tmp_path):
+    p = tmp_path / "big.bin"
+    p.write_bytes(b"0" * 2048)
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit 1024"):
+        check_file_size(p, Limits(max_file_bytes=1024))
+
+
+def test_file_within_limit_passes(tmp_path):
+    p = tmp_path / "ok.bin"
+    p.write_bytes(b"0" * 100)
+    assert check_file_size(p, Limits(max_file_bytes=1024)) is None
+
+
+def test_missing_file_is_invalid_input_not_a_resource_limit(tmp_path):
+    """`DfdError` alone cannot tell these apart — ResourceLimitExceeded is one."""
+    with pytest.raises(InvalidInput, match="not a readable file"):
+        check_file_size(tmp_path / "nope.bin", DEFAULT_LIMITS)
+
+
+@pytest.mark.parametrize("width,height", [
+    (50000, 50000),        # the square bomb
+    (1, 10 ** 9),          # a degenerate strip: same pixel count, no large side
+    (10 ** 9, 1),          # and its transpose
+    (7681, 4320),          # one pixel over the cap
+])
+def test_oversized_dimensions_are_rejected(width, height):
+    """Shape is parametrised deliberately. A check that compares each side
+    against a maximum instead of the product passes the strips."""
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit"):
+        check_frame_dims(width, height, DEFAULT_LIMITS)
+
+
+@pytest.mark.parametrize("width,height", [(1920, 1080), (7680, 4320), (1, 1)])
+def test_dimensions_within_the_cap_pass(width, height):
+    assert check_frame_dims(width, height, DEFAULT_LIMITS) is None
+
+
+@pytest.mark.parametrize("width,height", [(0, 100), (100, 0), (-1, 100), (100, -1)])
+def test_non_positive_dimensions_are_invalid_input(width, height):
+    with pytest.raises(InvalidInput, match="must be positive"):
+        check_frame_dims(width, height, DEFAULT_LIMITS)
+
+
+def test_probe_reads_dimensions_from_the_header(tmp_path):
+    _png(tmp_path / "a.png", 640, 480)
+    assert probe_image_dims(tmp_path / "a.png") == (640, 480)
+
+
+def test_probe_reads_a_bomb_without_decoding_it(tmp_path):
+    """12000x12000 is 144M pixels. If this decoded, it would allocate ~0.4GB."""
+    _png(tmp_path / "bomb.png", 12000, 12000)
+    assert probe_image_dims(tmp_path / "bomb.png") == (12000, 12000)
+
+
+def test_probe_emits_no_warnings_on_a_bomb(tmp_path, recwarn):
+    """Pillow's own DecompressionBombWarning must be absorbed, not leaked:
+    this project requires pristine test output."""
+    _png(tmp_path / "bomb.png", 12000, 12000)
+    probe_image_dims(tmp_path / "bomb.png")
+    assert [w.category.__name__ for w in recwarn] == []
+
+
+def test_probe_rejects_a_file_that_is_not_an_image(tmp_path):
+    p = tmp_path / "junk.png"
+    p.write_bytes(b"not an image")
+    with pytest.raises(InvalidInput, match="could not read image header"):
+        probe_image_dims(p)
+
+
+def test_a_bomb_passes_the_file_size_check_and_is_still_rejected(tmp_path):
+    """The measurement that justifies header probing: this file is ~0.15MB,
+    far under the 256MB default, and decodes to ~0.4GB."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+    assert p.stat().st_size < DEFAULT_LIMITS.max_file_bytes
+    assert check_file_size(p, DEFAULT_LIMITS) is None
+    with pytest.raises(ResourceLimitExceeded, match="exceeds limit"):
+        check_image_before_decode(p, DEFAULT_LIMITS)
+
+
+def test_the_check_runs_before_any_decode(tmp_path, monkeypatch):
+    """The whole point. If cv2.imread is reached, the allocation already
+    happened and the limit is decorative."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("cv2.imread was called — decode preceded the check")
+
+    monkeypatch.setattr(cv2, "imread", _boom)
+    with pytest.raises(ResourceLimitExceeded):
+        check_image_before_decode(p, DEFAULT_LIMITS)
+
+
+def test_load_image_rejects_a_bomb_before_decoding_it(tmp_path, monkeypatch, context):
+    """The guard must be WIRED IN. Calling the checker directly in every test
+    would let the loader enforce nothing while the suite stayed green."""
+    p = _png(tmp_path / "bomb.png", 12000, 12000)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("cv2.imread was called — decode preceded the check")
+
+    monkeypatch.setattr(cv2, "imread", _boom)
+    with pytest.raises(ResourceLimitExceeded):
+        load_image(p, context)
+
+
+def test_load_image_still_loads_a_normal_image(tmp_path, context):
+    _png(tmp_path / "ok.png", 64, 48)
+    sample = load_image(tmp_path / "ok.png", context)
+    assert sample.observations[0].payload.shape == (48, 64, 3)
+
+
+def test_resource_limit_exceeded_is_a_dfd_error():
+    assert issubclass(ResourceLimitExceeded, DfdError)
+    assert issubclass(InvalidInput, DfdError)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_limits.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'dfd.limits'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+```python
+# src/dfd/limits.py
+"""Resource limits enforced at every decode boundary (spec §3A, §10).
+
+Media arrives from an adversary. A crafted image can allocate gigabytes before
+any detection logic runs, and a denial-of-service against a fraud control is a
+fraud enabler: it forces the fallback path.
+
+Two things this module refuses to do, because both are the usual way this
+control is built and neither works:
+
+- It does not treat file size as a proxy for decoded size. A 12,000x12,000
+  uniform PNG occupies 161 KB on disk and 0.40 GB decoded; defeating a size
+  limit is what a decompression bomb IS.
+- It does not inspect a decoded array's shape. By the time an array has a
+  shape the memory is already committed.
+
+Dimensions come from the image header instead, before any decode.
+"""
+from __future__ import annotations
+
+import logging
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+
+from PIL import Image, UnidentifiedImageError
+
+from .errors import InvalidInput, ResourceLimitExceeded
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Limits:
+    # 8K RGB decodes to ~100MB; beyond this nothing legitimate in v-CIP arrives.
+    max_pixels: int = 7680 * 4320
+    max_file_bytes: int = 256 * 1024 * 1024
+    max_frames: int = 10_000
+    max_duration_s: float = 1800.0
+
+
+DEFAULT_LIMITS = Limits()
+
+
+def check_file_size(path: str | Path, limits: Limits = DEFAULT_LIMITS) -> None:
+    """Raise unless the file exists and is within `limits.max_file_bytes`.
+
+    This is a cheap first gate against a merely huge file. It is NOT a defence
+    against a decompression bomb — see the module docstring.
+
+    Raises:
+        InvalidInput: the path does not exist or is not a regular file.
+        ResourceLimitExceeded: the file is larger than the configured maximum.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise InvalidInput(f"not a readable file: {p}")
+    size = p.stat().st_size
+    if size > limits.max_file_bytes:
+        raise ResourceLimitExceeded(
+            f"file {p.name} is {size} bytes, exceeds limit {limits.max_file_bytes}")
+
+
+def check_frame_dims(width: int, height: int,
+                     limits: Limits = DEFAULT_LIMITS) -> None:
+    """Raise unless the frame dimensions are positive and within the pixel cap.
+
+    The cap is on the PRODUCT, not on either side: a 1 x 10**9 strip carries
+    the same allocation as a square bomb and has no large dimension.
+
+    Raises:
+        InvalidInput: a dimension is zero or negative.
+        ResourceLimitExceeded: width * height exceeds `limits.max_pixels`.
+    """
+    if width <= 0 or height <= 0:
+        raise InvalidInput(
+            f"frame dimensions must be positive, got {width}x{height}")
+    if width * height > limits.max_pixels:
+        raise ResourceLimitExceeded(
+            f"frame {width}x{height} = {width * height} pixels, "
+            f"exceeds limit {limits.max_pixels}")
+
+
+def probe_image_dims(path: str | Path) -> tuple[int, int]:
+    """Read (width, height) from the image header without decoding it.
+
+    Pillow's own bomb guard is absorbed here rather than allowed to surface:
+    its threshold is looser than ours, so our limit should be the one that
+    speaks, and its warning would otherwise pollute output.
+
+    Raises:
+        InvalidInput: the header cannot be read.
+        ResourceLimitExceeded: Pillow refused the image as a bomb outright.
+    """
+    p = Path(path)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(p) as im:
+                return int(im.width), int(im.height)
+    except Image.DecompressionBombError as exc:
+        raise ResourceLimitExceeded(
+            f"{p.name} rejected as a decompression bomb: {exc}") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise InvalidInput(f"could not read image header for {p}: {exc}") from exc
+
+
+def check_image_before_decode(path: str | Path,
+                              limits: Limits = DEFAULT_LIMITS) -> tuple[int, int]:
+    """Gate an image file before a single pixel is decoded.
+
+    Returns:
+        The header (width, height), so callers need not read it twice.
+
+    Raises:
+        InvalidInput: unreadable path or unreadable header.
+        ResourceLimitExceeded: file too large, or too many pixels.
+    """
+    check_file_size(path, limits)
+    width, height = probe_image_dims(path)
+    check_frame_dims(width, height, limits)
+    return width, height
+```
+
+Then in `src/dfd/ingest/image.py`, call `check_image_before_decode(path)` **before** `cv2.imread` — not after, and not on the decoded array. In `src/dfd/ingest/video.py`, call `check_file_size(path)` before opening and clamp the requested frame count to `limits.max_frames`. Import from `..limits`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_limits.py tests/test_ingest.py -v`
+Expected: PASS — 28 new tests, Task 5's still green.
+
+- [ ] **Step 5: Prove the ordering and wiring tests can fail**
+
+These are the two properties the whole task rests on, and both are invisible to a test that merely calls the checker directly.
+
+1. **Ordering.** In `check_image_before_decode`, move `check_file_size` and `check_frame_dims` to run *after* a `cv2.imread(str(path))` call. Run `pytest tests/test_limits.py -k before_any_decode` and confirm it FAILS with the `cv2.imread was called` assertion. Restore.
+2. **Wiring.** In `src/dfd/ingest/image.py`, delete the `check_image_before_decode` call. Run `pytest tests/test_limits.py -k load_image_rejects` and confirm it FAILS. Restore.
+
+Record all four outputs in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/dfd/limits.py src/dfd/ingest tests/test_limits.py
+git commit -m "feat: resource limits enforced before decode, not after"
+```
+
+---
+
+### Task 22: CI pipeline with lint, type and coverage gates
+
+**Files:**
+- Create: `.github/workflows/ci.yml`, `ruff.toml`, `mypy.ini`
+- Modify: `pyproject.toml`
+- Test: `tests/test_ci_gates.py`
+
+**Interfaces:**
+- Consumes: `assert_all_assets_registered` (Task 19)
+- Produces: a CI workflow that fails on lint, type, coverage or unregistered-asset violations
+
+**Why this task exists:** the production standards in Global Constraints are only real if something enforces them. A standard enforced by intention is a standard that decays by the third contributor. This also wires Task 19's asset gate into CI, which is what makes spec §12.1 criterion 6 an enforced property rather than a claim.
+
+**A gate test must run the gate, not read its config.** `assert "strict = True" in mypy.ini` proves a string is in a file. It cannot tell you whether mypy passes, so the suite goes green locally while CI goes red on the first push — which is the same "enforced by intention" failure this task exists to end, relocated into the task's own tests. Every gate test here therefore *invokes* the gate and asserts it exits zero.
+
+**Both gates currently fail, and fixing them is part of this task.** Measured on the tree as it stands:
+
+- `ruff check src/ bench/ corpora/` — **11 `F541` findings** (f-string with no placeholders): 8 in `bench/guards.py`, 3 in `src/dfd/detectors/loading.py`. All auto-fixable with `ruff check --fix`.
+- `mypy --strict` over `src/dfd` — **22 errors in 7 files**, all mechanical: 15 bare `np.ndarray`, 4 bare `dict`, 3 bare `npt.NDArray`, plus 1 `no-any-return` and 2 stale `type: ignore` comments. By file: `faces.py` 5, `types.py` 4, `quality.py` 3, `detectors/npr.py` 3, `calibration.py` 3, `fusion.py` 2, `detectors/effnet.py` 2.
+
+Turning on a gate without clearing it ships a red pipeline; clearing it without turning it on ships a standard nobody enforces. This task does both.
+
+Timing, so the choice to run the gates in-suite is made with numbers: `ruff` takes 0.04 s. `mypy` takes ~1 s warm and ~41 s on a cold cache. That is worth paying for a gate that otherwise rots silently.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_ci_gates.py
+"""The CI config is itself tested: a gate nobody verifies is a gate that rots."""
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_ci_workflow_exists():
+    assert (ROOT / ".github/workflows/ci.yml").is_file()
+
+
+def test_ci_runs_every_gate():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    for gate in ("ruff", "mypy", "pytest"):
+        assert gate in ci, f"CI does not run {gate}"
+
+
+def test_ci_enforces_the_asset_registration_gate():
+    """Spec criterion 6 is only real if CI fails on an unregistered weight file."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "assert_all_assets_registered" in ci or "asset_scan" in ci
+
+
+def test_mypy_is_configured_strict():
+    cfg = (ROOT / "mypy.ini").read_text()
+    assert "strict = True" in cfg or "strict=True" in cfg
+
+
+def test_ruff_actually_passes():
+    """Runs the gate. Asserting the config file contains "E722" proves a
+    string is in a file, not that the tree is clean — the suite would go
+    green here while CI went red on the first push."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "src", "bench", "corpora"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_mypy_strict_actually_passes():
+    """Runs the gate. ~1s warm, ~41s cold — worth it for a gate that
+    otherwise rots silently."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "mypy", "--config-file", "mypy.ini"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_ruff_bans_silent_exception_handling():
+    """Global constraint: a swallowed error in a fraud detector is an approved fraud."""
+    cfg = (ROOT / "ruff.toml").read_text()
+    # E722 = bare except; BLE = blind except; S110 = try/except/pass
+    assert "E722" in cfg
+    assert "BLE" in cfg or "S110" in cfg
+
+
+def test_the_declared_dependencies_cover_what_is_imported():
+    """CI installs from these files; a missing entry is a red pipeline on a
+    clean runner and nothing at all locally, where the package is present."""
+    dev = (ROOT / "requirements-dev.txt").read_text().lower()
+    for package in ("pytest", "ruff", "mypy", "numpy", "opencv-python-headless",
+                    "pillow", "torch", "scikit-learn", "pyyaml"):
+        assert package in dev, f"{package} missing from requirements-dev.txt"
+
+
+def test_pyproject_declares_runtime_dependencies():
+    """pyproject declared none at all, so `pip install .` produced a package
+    that imports numpy, opencv, torch and Pillow and depends on none of them."""
+    cfg = (ROOT / "pyproject.toml").read_text().lower()
+    assert "dependencies" in cfg
+    for package in ("numpy", "opencv", "pillow"):
+        assert package in cfg, f"{package} not declared in pyproject.toml"
+
+
+def test_no_bare_except_anywhere_in_src():
+    """Enforced here too, so the rule holds even if ruff config drifts."""
+    offenders = []
+    for path in (ROOT / "src").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.strip() == "except:":
+                offenders.append(f"{path}:{n}")
+    assert offenders == [], f"bare except found: {offenders}"
+
+
+def test_no_print_statements_in_src():
+    """Global constraint: structured logging, never print."""
+    offenders = []
+    for path in (ROOT / "src").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if line.strip().startswith("print("):
+                offenders.append(f"{path}:{n}")
+    assert offenders == [], f"print() found in src: {offenders}"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest tests/test_ci_gates.py -v`
+Expected: FAIL — the workflow and config files do not exist, and the two gate-running tests fail because the tree does not yet pass either gate
+
+- [ ] **Step 3: Write minimal implementation**
+
+```toml
+# ruff.toml
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "S", "BLE", "RET", "SIM"]
+# E722 bare except, BLE001 blind except, S110 try-except-pass: a swallowed error
+# in a fraud detector is a fraud that was approved. Never silence these.
+ignore = ["S101"]  # assert is fine in tests
+
+[lint.per-file-ignores]
+"tests/*" = ["S", "N802"]
+```
+
+```ini
+# mypy.ini
+[mypy]
+python_version = 3.10
+strict = True
+warn_unreachable = True
+files = src/dfd
+
+[mypy-cv2.*]
+ignore_missing_imports = True
+
+[mypy-torch.*]
+ignore_missing_imports = True
+
+[mypy-sklearn.*]
+ignore_missing_imports = True
+
+[mypy-yaml.*]
+ignore_missing_imports = True
+```
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -e .
+      - name: Lint
+        run: ruff check .
+      - name: Types
+        run: mypy --config-file mypy.ini
+      - name: Tests
+        run: pytest -q --cov=src/dfd --cov-fail-under=85
+      - name: Asset registration gate
+        run: |
+          python -c "
+          from dfd.asset_scan import assert_all_assets_registered
+          assert_all_assets_registered('.', 'assets/manifest.yaml')
+          print('all assets registered and commercially cleared')
+          "
+```
+
+Also create `requirements-dev.txt` listing: `pytest`, `pytest-cov`, `ruff`, `mypy`, `numpy`, `opencv-python-headless`, `pillow`, `scikit-learn`, `pyyaml`, `torch`. **Pillow is required** — Task 21's decode-bomb defence reads image headers with it, and without the entry CI installs a tree that cannot import `dfd.limits`.
+
+And add the runtime dependencies to `pyproject.toml`, which currently declares **none at all** despite the package importing numpy, opencv, Pillow and torch:
+
+```toml
+[project]
+name = "dfd"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+]
+```
+
+`torch` and `scikit-learn` stay out of the runtime set deliberately: the detectors that need them abstain cleanly when they are absent, so a caller who only wants the NPR physics detector and the evidence core should not be made to install a GPU stack. They remain in `requirements-dev.txt`, which is what CI installs.
+
+**Clear the gates before turning them on.** Run `ruff check --fix src bench corpora` for the 11 `F541` findings, then work through the 22 `mypy --strict` errors listed above — parameterise the bare `np.ndarray` annotations (`npt.NDArray[np.uint8]`, `npt.NDArray[np.float32]`, and so on, matching what each function actually handles rather than blanket-typing them), give the bare `dict` annotations their key and value types, delete the two stale `type: ignore` comments, and fix the one `no-any-return`. Do not silence any of these with `# type: ignore`; the point of the gate is that the annotations become true.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest tests/test_ci_gates.py -v && ruff check . && mypy --config-file mypy.ini`
+Expected: 7 tests PASS; ruff and mypy clean. Fix any violations they surface in existing code — that is the point of the gate.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .github ruff.toml mypy.ini requirements-dev.txt pyproject.toml tests/test_ci_gates.py
+git commit -m "feat: CI gates for lint, strict types, coverage and asset registration"
+```

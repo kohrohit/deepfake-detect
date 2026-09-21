@@ -1,0 +1,34 @@
+# The OTHER end of every range in pyproject.toml, pinned exactly.
+#
+# WHY THIS FILE EXISTS: requirements-dev.txt pins the versions CI actually ran,
+# which are the newest ones. The floors in pyproject.toml were a separate claim
+# — "this code runs on numpy 1.26.4" — and nothing checked it. Both ends passed
+# only because two machines happened to sit at opposite ends of the ranges: a
+# developer laptop at the bottom, CI at the top. Replace the laptop and the
+# lower end stops being tested, silently, with no gate going red.
+#
+# CI now runs all four gates twice, once per requirements file, so each end of
+# every declared range is exercised by something that can fail.
+#
+# The dev TOOLING (pytest, pytest-cov, ruff, mypy, packaging) is pinned
+# identically to requirements-dev.txt on purpose: the only variable between the
+# two legs is the runtime dependency set. If ruff moved too, a red floor leg
+# would not tell you which of the two caused it. tests/test_ci_gates.py enforces
+# that, and enforces that every pin below IS the declared pyproject floor rather
+# than merely satisfying it.
+#
+# TO RAISE A FLOOR: raise it in pyproject.toml and here together — the test
+# demands they match — then run all four gates in a venv built from THIS file
+# with no local site-packages.
+
+pytest==9.1.1
+pytest-cov==7.1.0
+ruff==0.16.8
+mypy==2.3.1
+packaging==26.3
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+pillow==11.0.0
+scikit-learn==1.5.0
+pyyaml==6.0.3
+torch==2.4.1

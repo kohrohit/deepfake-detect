@@ -67,6 +67,45 @@ while the aggregate tracks the maximum. Near-max aggregation means the system's
 false-positive rate approximates the *union* of its members' false-positive
 rates — recall-tuned, at the cost of precision on genuine applicants.
 
+### 1.3 An off-the-shelf open detector scores 0.011 AUC on our fraud
+
+Measured 2026-09-20 on this machine. `dima806/deepfake_vs_real_image_detection`
+(Apache-2.0, ViT, ~21k downloads) was run against the 24 frames from the five
+sessions where our live swap was **approved**, plus 150 genuine capture frames.
+
+| | mean P(fake) | median | max |
+|---|---|---|---|
+| **Fraud** (live swap, approved) | **0.002** | 0.002 | 0.004 |
+| Genuine applicants | 0.005 | 0.005 | 0.009 |
+
+**AUC = 0.011. TPR@FPR=1% = 0%. Zero fraud caught at any threshold.**
+
+The direction matters: it rates our fraud as *more real* than genuine frames.
+That is not randomness (0.5) — it is systematic inversion.
+
+**The label mapping was verified, not assumed.** Against the StyleGAN/FFHQ
+answer key in `assets/demo/`, synthetic scored higher than real (0.527 vs
+0.344), confirming `id2label` is correct. The model is weak even there —
+it called a real FFHQ face 86% fake and a StyleGAN face 0.7% fake.
+
+**Why:** it was trained on GAN-generated faces (thispersondoesnotexist-style).
+Our attack is a live face swap of a real person through a real webcam with
+GFPGAN restoration. Different generator family, different capture physics. The
+model has never seen the distribution and therefore answers confidently wrong.
+
+**Three consequences for this design:**
+
+1. **There is no off-the-shelf shortcut.** Shipping a pretrained public
+   detector would produce a system that detects nothing while appearing
+   operational — worse than no detector, because it manufactures confidence.
+2. **This is §3(a) confirmed on our own data.** Reality Defender's 4-of-10
+   dissent was the same generalisation failure, caught earlier and more gently.
+3. **It re-weights the portfolio.** The slots that can catch this are **A (SBI
+   — the blending seam)** and **B (noise residual — absent camera physics)**,
+   plus §9's capture-path attestation and active challenge. Appearance
+   classifiers are the wrong instrument for a live swap, regardless of licence
+   or download count.
+
 ---
 
 ## 2. First principles: what a deepfake physically is

@@ -1,0 +1,53 @@
+# Every dataset and weight file used anywhere in this repo must appear here.
+# Fails closed: unregistered == non-commercial. See spec §11.
+#
+# `files` lists the repo-relative path(s) this id covers. A filename alone is
+# not a reliable proxy for a logical id (vendor-named exports collide, e.g.
+# every HuggingFace `safetensors` checkpoint is routinely named
+# "model.safetensors" regardless of which model it is), so the mapping from
+# on-disk path to logical id is declared here rather than inferred from the
+# name. npr_weights, sbi_effnetb4_weights and ffpp_effnetb4_weights have no
+# `files` entry: none of those weight files exist on this machine yet, and
+# guessing a path risks it silently matching the wrong file once one is added
+# (see dfd/asset_scan.py). Fill in `files` for each when its weight file is
+# actually vendored.
+assets:
+  yunet_face_detector:
+    source: "https://github.com/opencv/opencv_zoo — face_detection_yunet_2023mar.onnx"
+    license: "MIT"
+    commercial_use: true
+    evidence_url: "https://github.com/opencv/opencv_zoo/blob/main/LICENSE"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
+    files:
+      - "assets/models/face_detection_yunet_2023mar.onnx"
+  dima806_vit_weights:
+    source: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
+    license: "Apache-2.0"
+    commercial_use: true
+    evidence_url: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
+    files:
+      - "assets/models/dima806/model.safetensors"
+  npr_weights:
+    source: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
+  sbi_effnetb4_weights:
+    source: "https://github.com/mapooon/SelfBlendedImages"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/mapooon/SelfBlendedImages"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"
+  ffpp_effnetb4_weights:
+    source: "https://github.com/SCLBD/DeepfakeBench"
+    license: "research-only — VERIFY before any commercial release (spec §11)"
+    commercial_use: false
+    evidence_url: "https://github.com/SCLBD/DeepfakeBench"
+    date_checked: "2026-09-20"
+    checked_by: "kohrohit@gmail.com"

@@ -1,0 +1,20 @@
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "S", "BLE", "RET", "SIM"]
+# E722 bare except, BLE001 blind except, S110 try-except-pass: a swallowed error
+# in a fraud detector is a fraud that was approved. Never silence these.
+ignore = [
+    "S101",  # assert is fine in tests
+    # N818: exception names ending without "Error" (GuardViolation, InvalidInput,
+    # ResourceLimitExceeded, AssetScanEmpty, DuplicateAssetClaim, NonCommercialAsset)
+    # are an established public naming convention across ~125 call sites; renaming
+    # is a pure style churn with no safety benefit, unlike E722/BLE/S110 below.
+    "N818",
+    # N812: `import torch.nn.functional as F` is the universal PyTorch idiom.
+    "N812",
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["S", "N802"]
