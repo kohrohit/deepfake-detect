@@ -125,7 +125,62 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-21, after the merge)
+## 0. Resume here (last touched 2026-09-21, after PR #2 merged and the three questions were answered)
+
+**Both PRs are merged and the workspaces are gone.** `main` is at `c058934`. PR #2 (docs only —
+the final review's rulings appended to the committed ledger) was squash-merged, its branch deleted
+on both ends, and `.superpowers/sdd/` deleted per §7 now that its stated precondition holds. Local
+`p0-evidence-core` still exists, merged and harmless.
+
+**The two questions that blocked all data work are answered.** The owner ruled, 2026-09-21:
+
+1. **Research / internal only — not a commercial product (for now).** So the FF++, Celeb-DF and
+   DFDC EULAs are worth pursuing, and §4's critical path is live rather than moot. §1's correction
+   block still stands on the two things this does *not* change: the requests go from
+   `kohrohit@gmail.com`, a personal address these agreements generally do not expect, and
+   `assert_all_assets_registered` still fails closed on anything `assets/manifest.yaml` does not
+   mark commercially cleared — so a later commercial turn cannot silently inherit research-only
+   weights. This ruling makes the EULA wait the longest pole again; start it before any engineering.
+2. **The labelled data is available, with rights — and it is on this machine.** Verified by running
+   the loaders against it, not by asking:
+
+   ```
+   D=/home/rohit/Desktop/agents/fraud_gff/deepfake_detection
+   load_capture_sessions("$D/captures")  -> 442 sessions, 0 skipped
+   load_rd_cache("$D/cache")             -> 24 results, 10 models each
+   ```
+
+   442 sessions (299M, frames present as `frame_NN.jpg`), 7 `swapped`, **5 `swapped AND approved`**
+   — the five that are the actual fraud, ids `20260826-221956-387743`, `20260827-104716-349039`,
+   `20260829-010524-969870`, `20260831-142514-700890`, `20260831-142708-227903`, all `LIVE` to the
+   scan, all 5 frames. 258 approved / 184 not; scan verdicts 162 LIVE / 144 NOT LIVE / 136 absent;
+   frame counts 1–5 (163 sessions have 3). RD cache: 17 MANIPULATED / 7 AUTHENTIC. Every number
+   §1 argues from reproduces exactly. **The corpus lives outside the repo** and both loaders take a
+   root path, so nothing is wired to that path yet — that is a deliberate choice to preserve, not an
+   omission to fix.
+
+**The consequence nobody had written down: 7 positives is not a training set.** The CPU-feasible
+first detector (NPR-style upsampling fingerprints, DCT/SRM residuals, light classifier — §1's
+correction block 3) cannot be *trained* on 5–7 swapped sessions however licence-clean they are. They
+are an evaluation set, and a precious one. Generating a swap corpus is therefore required on the
+research path too, not only on the commercial one §1 described — the ruling above changes who may
+supply the *real* faces, not whether swaps must be made. Treat the 442 as test, never as train.
+
+**Next, in order:**
+
+1. **Send the EULA requests** (FF++, Celeb-DF, DFDC). Human action, days-to-weeks of external lead
+   time, and now unblocked. Nothing else shortens it.
+2. **Criterion 4 — the RD adapter.** The 24 cached results are free, already labelled, and the
+   benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
+3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
+   rather than skipping them; a partial-embedding pipeline must omit unembeddable ids explicitly.
+4. **A swap corpus**, per the paragraph above, before any detector training is attempted.
+
+**Do not read "it runs" as "it detects".** Every real input still abstains, correctly — see §3.
+
+---
+
+## 0a. Previous resume block (2026-09-21, after PR #1 merged)
 
 **PR #1 IS MERGED.** `main` is at merge commit `f6ddeaf`; the composition-root plan is complete and
 in. 565 tests green on merged `main`, coverage 95.12%, ruff and `mypy --strict` clean, both CI legs
@@ -483,7 +538,9 @@ implementations failed their own tests.
 
 ## 7. Workspace
 
-`.superpowers/sdd/2026-09-20-p0-evidence-core-and-benchmark/` is retained deliberately (the process
-default is to delete it). It holds the per-task briefs and reports, which are gitignored and would
-be lost. The committed ledger has every ruling; the reports have the working. Delete it once the PR
-is merged.
+**Deleted 2026-09-21**, once its stated precondition held. `.superpowers/sdd/` held two workspaces
+— `2026-09-20-p0-evidence-core-and-benchmark/` and `2026-09-21-composition-root/`, 123 gitignored
+files, 2.9M of per-task briefs and reports. They were retained past the process default because the
+committed ledger did not yet carry the final review's rulings; PR #2 fixed that, and they were
+removed immediately after it merged. The ledger has every ruling; the reports had the working, and
+that working is now gone. Nothing tracked was touched.
