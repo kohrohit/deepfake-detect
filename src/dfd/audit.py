@@ -27,7 +27,8 @@ from .types import Evidence, Verdict
 logger = logging.getLogger(__name__)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-AUDIT_SCHEMA_VERSION = "1"
+# "2" adds stage_reasons. A consumer parsing a "1" record will not find that key.
+AUDIT_SCHEMA_VERSION = "2"
 
 # The only leaf types a record is allowed to carry. Anything else (bytes,
 # a numpy array, an arbitrary object) is refused at build time, not merely
@@ -121,6 +122,11 @@ class AuditRecord:
     threshold: float
     model_versions: Mapping[str, str]
     created_at: str
+    #: Why a stage could not measure what it was asked to, keyed by stage name,
+    #: e.g. {"faces": "weights_absent"}. An abstention without a cause is not an
+    #: audit trail: "no face detector weights" and "no face in frame" produce
+    #: the same verdict and demand completely different remedies.
+    stage_reasons: Mapping[str, str]
 
     def to_json(self) -> str:
         """Serialise deterministically (sorted keys) so digests are comparable.
@@ -160,6 +166,7 @@ def build_audit_record(
     policy_version: str,
     threshold: float,
     model_versions: Mapping[str, str],
+    stage_reasons: Mapping[str, str] | None = None,
     created_at: str | None = None,
 ) -> AuditRecord:
     """Build an immutable decision record.
@@ -180,8 +187,9 @@ def build_audit_record(
             `created_at` is not a string (or `sample_id` is empty); if
             `input_sha256` is not a lowercase 64-character hex digest; if
             `created_at` is not a valid ISO-8601 timestamp; if
-            `model_versions` holds a value this record cannot serialise; or
-            if any evidence row's `detector`, `detector_version`, or `reason`
+            `model_versions` holds a value this record cannot serialise; if
+            `stage_reasons` is not a string-to-string mapping; or if any
+            evidence row's `detector`, `detector_version`, or `reason`
             is not a string, or its `llr`/`raw_score` is not numeric.
     """
     if not isinstance(sample_id, str) or not sample_id:
@@ -198,6 +206,14 @@ def build_audit_record(
             f"policy_version must be a string, got {type(policy_version).__name__}")
 
     _validate_serialisable(model_versions, field="model_versions")
+    stage_reasons = {} if stage_reasons is None else stage_reasons
+    for key, value in stage_reasons.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise InvalidInput(
+                "stage_reasons must map strings to strings, got "
+                f"{type(key).__name__} -> {type(value).__name__}. A nested "
+                "structure here would be mutable state inside a frozen record.")
+    _validate_serialisable(stage_reasons, field="stage_reasons")
     for e in evidence:
         _validate_evidence(e)
 
@@ -239,6 +255,7 @@ def build_audit_record(
         threshold=float(threshold),
         model_versions=_freeze(dict(model_versions)),
         created_at=created_at,
+        stage_reasons=_freeze(dict(stage_reasons)),
     )
     logger.info("audit record built: sample=%s verdict=%s detectors=%d",
                 sample_id, record.verdict, len(rows))

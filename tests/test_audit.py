@@ -208,3 +208,47 @@ def test_rejects_an_empty_sample_id():
 def test_invalid_input_is_a_dfd_error():
     """One catchable root for every error this package raises."""
     assert issubclass(InvalidInput, DfdError)
+
+
+def test_stage_reasons_reach_the_record():
+    r = _record(stage_reasons={"faces": "weights_absent"})
+    assert r.stage_reasons["faces"] == "weights_absent"
+
+
+def test_stage_reasons_default_to_empty_rather_than_none():
+    """Every consumer can then index the mapping without a None check."""
+    assert dict(_record().stage_reasons) == {}
+
+
+def test_stage_reasons_are_frozen():
+    r = _record(stage_reasons={"faces": "ok"})
+    with pytest.raises(TypeError):
+        r.stage_reasons["faces"] = "tampered"  # type: ignore[index]
+
+
+def test_digest_covers_stage_reasons():
+    """A field outside the digest is a field an attacker can rewrite."""
+    a = _record(stage_reasons={"faces": "ok"})
+    b = _record(stage_reasons={"faces": "weights_absent"})
+    assert record_digest(a) != record_digest(b)
+
+
+def test_stage_reasons_are_serialised():
+    payload = json.loads(_record(stage_reasons={"faces": "no_face"}).to_json())
+    assert payload["stage_reasons"] == {"faces": "no_face"}
+
+
+def test_non_string_stage_reason_values_are_refused():
+    """A nested dict here would be mutable state inside a frozen record."""
+    with pytest.raises(InvalidInput, match="stage_reasons"):
+        _record(stage_reasons={"faces": {"nested": "value"}})
+
+
+def test_non_string_stage_reason_keys_are_refused():
+    with pytest.raises(InvalidInput, match="stage_reasons"):
+        _record(stage_reasons={1: "ok"})
+
+
+def test_schema_version_is_two_now_that_the_record_gained_a_field():
+    """A consumer parsing a schema-1 record will not find stage_reasons."""
+    assert _record().schema_version == "2"
