@@ -22,7 +22,7 @@ rulings made during the build, each with what it costs if wrong. The spec
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
-python3 -m pytest -q          # 502 passed
+python3 -m pytest -q          # 553 passed
 ```
 
 **Corrected 2026-09-21.** A previous version of this handoff said the suite ends in "1 warning"
@@ -289,11 +289,23 @@ Four acceptance criteria are **unmet**, now disclosed in the plan's Known-gaps b
 - **Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
   never reaches `RunRecord`.
 
-Four more limitations, each recorded with its severity:
+Five more limitations, each recorded with its severity:
 
 - **The CI asset gate provides no protection in CI.** Weight files are gitignored, so it runs with
   `allow_empty=True`. It protects only where run with assets present. **A green CI run is not
   evidence that criterion 6 holds.**
+- **The benchmark's quality measurements are computed from fabricated landmarks, not detected
+  ones (found 2026-09-21, in fix round 1 of this task).** `bench/runner.py:111` builds every
+  `Observation` via `lm = np.array([[w * 0.35, h * 0.4], [w * 0.65, h * 0.4]])` — two eye positions
+  fixed at 35%/65% of frame width and 40% of frame height, on every record, regardless of where (or
+  whether) a face is actually in the frame — then passes `lm` and a whole-frame `roi = (0, 0, w, h)`
+  to `measure_quality`. No detector produced these points; `bench/runner.py` never calls
+  `detect_faces` or `normalize()` (see above — it bypasses ingest entirely). Consequence: every
+  quality number the benchmark reports — interocular distance, and everything `measure_quality`
+  derives from it, hence every quality band — is computed against these two fixed, fabricated
+  points rather than a real face's real landmarks. This is exactly what the next item, quality
+  banding's blindness to the robustness surface, is measured against: that finding was never
+  checked against a real interocular distance to begin with.
 - **Quality banding is blind to every perturbation in the robustness surface.** Blur halves
   high-frequency energy and bands identically; so do both re-capture paths. The abstention
   mechanism will never route a recaptured sample to manual review on quality grounds. Note the
