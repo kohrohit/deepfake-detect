@@ -10,7 +10,7 @@ from dfd.detectors.base import (
     abstain,
     filter_by_quality_floor,
 )
-from dfd.detectors.registry import Registry
+from dfd.detectors.registry import Registry, default_registry
 from dfd.types import Modality, Observation, Quality
 
 
@@ -298,3 +298,25 @@ def test_select_subset_rejects_negative_k():
 
     with pytest.raises(ValueError, match="k must be >= 0"):
         reg.select_subset(k=-1, seed=99)
+
+
+def test_default_registry_composes_exactly_the_two_declared_detectors():
+    """The one function that decides what evidence the product consults, and
+    nothing asserted its composition: deleting either `registry.register(...)`
+    call left all 553 tests green. `names()` is sorted, so the expected list is
+    alphabetical rather than registration order.
+
+    Two distinct physics per spec §6 — NPR's upsampling fingerprint (slot C)
+    and EfficientNet-B4's learned appearance (slot E). A single-detector
+    ensemble is not the designed product, and `fuse`'s disagreement signal is
+    meaningless with one contributor.
+    """
+    assert default_registry().names() == ["effnet_b4", "npr"]
+
+
+def test_default_registry_returns_the_detectors_it_registered():
+    """`names()` alone would still pass if both entries were the same class
+    registered twice under two names. Retrieving each one pins the identity."""
+    registry = default_registry()
+    assert type(registry.get("npr")).__name__ == "NPRDetector"
+    assert type(registry.get("effnet_b4")).__name__ == "EffNetDetector"

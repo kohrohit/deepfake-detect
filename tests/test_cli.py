@@ -79,6 +79,17 @@ def test_stdout_is_exactly_one_json_object(png, capsys):
     assert out.count("\n") == 1, "stdout must carry the record and nothing else"
 
 
+def test_the_record_carries_one_evidence_row_per_default_detector(png, capsys):
+    """The CLI's registry is `default_registry()`, whose composition nothing
+    asserted. Two detectors in, two evidence rows out — dropping either
+    `register(...)` call silently halves the evidence the product consults,
+    and `insufficient_evidence` looks identical either way."""
+    main(["score", str(png), "--face-model", MISSING_FACE_MODEL])
+    record = json.loads(capsys.readouterr().out)
+    assert [row["detector"] for row in record["evidence"]] == ["effnet_b4", "npr"]
+    assert sorted(record["model_versions"]) == ["effnet_b4", "npr"]
+
+
 def test_the_human_summary_goes_to_stderr_not_stdout(png, capsys):
     main(["score", str(png)])
     captured = capsys.readouterr()
