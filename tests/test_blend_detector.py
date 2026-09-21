@@ -306,3 +306,78 @@ def test_scores_the_roi_crop_not_the_whole_frame(tmp_path: Path) -> None:
     assert not r_cropped.abstained and not r_embedded.abstained and not r_whole.abstained
     assert r_embedded.score == pytest.approx(r_cropped.score)
     assert r_whole.score != pytest.approx(r_embedded.score)
+
+
+def _textured_face(size: int) -> np.ndarray:
+    """A richer, noisier fixture than `_ring_crop`: fixed-kernel residual and
+    Laplacian statistics are sensitive to fine texture in a way a smooth
+    ring is not, so this is what actually exercises the scale-skew this
+    module's fix addresses."""
+    rng = np.random.default_rng(42)
+    img = rng.integers(30, 220, (size, size, 3)).astype(np.uint8)
+    img = cv2.GaussianBlur(img, (5, 5), 0)
+    cv2.circle(img, (size // 2, size // 2), int(size * 0.29), (200, 60, 60), max(2, size // 45))
+    return cv2.GaussianBlur(img, (9, 9), 0)
+
+
+def _embed_same_face_at(native_size: int, canonical: np.ndarray,
+                        x: int = 50, y: int = 40) -> Observation:
+    """The SAME face content as `canonical` (448x448), downsampled to
+    `native_size` the way a lower-resolution capture would produce it, then
+    embedded in its own frame with an ROI matching its native size. Two
+    calls with different `native_size` are "the same face at two different
+    ROI sizes" -- what BlendDetector.score must now treat equivalently."""
+    content = cv2.resize(canonical, (native_size, native_size),
+                         interpolation=cv2.INTER_AREA)
+    frame = np.full((native_size + 200, native_size + 200, 3), 90, dtype=np.uint8)
+    frame[y:y + native_size, x:x + native_size] = content
+    quality = Quality(inter_ocular_px=40.0, blur_var=120.0, yaw_deg=0.0,
+                      pitch_deg=0.0, exposure=0.5, band="high")
+    return Observation(t=0.0, payload=frame, roi=(x, y, native_size, native_size),
+                       quality=quality, source_id=f"native{native_size}")
+
+
+def test_scores_the_same_face_at_different_roi_sizes(tmp_path: Path) -> None:
+    """Pins the resize fix. Measured directly: with the resize, scores at
+    ROI 224 vs 80 for the same face content are 0.50434 vs 0.50421 (delta
+    0.00012); WITHOUT the resize (the pre-fix behaviour) the same pair
+    scored 0.50434 vs 0.50606 (delta 0.00172) -- about 14x larger, and
+    well outside the tolerance below. `_model()`'s default (coef=ones,
+    scale=1e5) is used deliberately: the same config the module's other
+    tests use to keep logits off the sigmoid's saturated tails."""
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(), p)
+    detector = BlendDetector(weights_path=p)
+
+    canonical = _textured_face(448)
+    small = detector.score([_embed_same_face_at(80, canonical)])
+    large = detector.score([_embed_same_face_at(224, canonical)])
+
+    assert not small.abstained and not large.abstained
+    assert small.score == pytest.approx(large.score, abs=5e-4)
+
+
+def test_the_224_path_is_unchanged_by_the_resize(tmp_path: Path) -> None:
+    """Regression guard: resizing a crop that is ALREADY 224x224 must be a
+    no-op (cv2.resize at a 1:1 ratio returns the input unchanged -- verified
+    directly: `cv2.resize(x, x.shape[:2], interpolation=cv2.INTER_AREA)` is
+    bit-identical to `x` for a random array), so the already-correct case
+    from before this fix must score exactly what computing the feature
+    vector directly, with no crop/resize step at all, gives."""
+    from dfd.detectors.blend import seam_features
+
+    p = tmp_path / "m.npz"
+    m = _model(coef=np.linspace(-1, 1, len(FEATURE_NAMES)))
+    save_blend_model(m, p)
+    detector = BlendDetector(weights_path=p)
+
+    crop = _ring_crop()
+    expected = m.predict_proba(seam_features(crop))
+
+    direct = detector.score([Observation(
+        t=0.0, payload=crop, roi=(0, 0, 224, 224),
+        quality=Quality(inter_ocular_px=40.0, blur_var=120.0, yaw_deg=0.0,
+                        pitch_deg=0.0, exposure=0.5, band="high"),
+        source_id="s")])
+    assert not direct.abstained
+    assert direct.score == pytest.approx(expected)

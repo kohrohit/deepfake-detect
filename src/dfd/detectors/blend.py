@@ -28,6 +28,7 @@ against any baseline. No published claim may rest on them without measurement.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
+from ..faces import align
 from ..types import Modality, Observation, RawScore
 from .base import OK, WEIGHTS_ABSENT, abstain, filter_by_quality_floor
 
@@ -230,32 +232,68 @@ def save_blend_model(model: BlendModel, path: str | Path) -> None:
     logger.info("wrote blend model v%s to %s", model.version, p)
 
 
+#: The crop size training actually used. Derived from `dfd.faces.align`'s
+#: own default rather than a duplicated literal, so the two can never
+#: silently drift apart: `corpora/face_pool.py` builds every training crop
+#: by calling `align(..., size=224)` (its own default), and the serving
+#: path below must reproduce that transform, not merely approximate it.
+_ALIGN_SIZE: int = inspect.signature(align).parameters["size"].default
+
+
 def _crop_to_roi(
     payload: npt.NDArray[np.uint8],
     roi: tuple[int, int, int, int] | None,
 ) -> npt.NDArray[np.uint8] | None:
-    """Crop `payload` to `roi`, clamped to the frame bounds.
+    """Crop `payload` to `roi`, clamped to the frame bounds, then resize.
 
-    Mirrors `dfd.faces.align`'s clamping exactly (`max(0, ...)` /
-    `min(dim, ...)`, then a degenerate check), so a partially out-of-bounds
-    ROI is handled the same way in both places in this codebase: clamp
-    first, and treat an empty result as "no usable crop" rather than
-    raising or falling back to scoring something else.
+    Clamping mirrors `dfd.faces.align`'s (`max(0, ...)` / `min(dim, ...)`,
+    then a degenerate check) — but the two do NOT then handle a degenerate
+    result the same way. `align` returns a black `_ALIGN_SIZE`-square image
+    for a box that does not intersect the frame, and that image gets
+    scored, with nothing to say it was synthetic. `_crop_to_roi` instead
+    returns `None`, so `BlendDetector.score` abstains. Abstaining is the
+    correct behaviour here — scoring a fabricated black square as though
+    it were a face is worse than saying nothing — so this deliberately
+    differs from `align` rather than matching it.
 
-    No resize: `seam_features` normalises its annulus radii by the crop's
-    own height and width (see `ANNULI` and the radius computation below),
-    so a crop that is not 224x224 is still scored correctly as-is —
-    `tests/test_blend_features.py::test_works_at_a_size_other_than_224`
-    proves this at 96px. Resizing here would be extra work bought for
-    nothing.
+    After clamping, the crop is resized to `(_ALIGN_SIZE, _ALIGN_SIZE)`
+    with `cv2.INTER_AREA`, exactly as `align` resizes every training crop.
+    This is not optional. `seam_features` normalises its annulus
+    GEOMETRY by the image's own height and width (see `ANNULI` and the
+    radius computation below), so the annulus BOUNDARIES are scale-free —
+    but the statistics computed inside those annuli are not: the residual
+    uses a fixed 5px Gaussian kernel and the Laplacian a fixed kernel too,
+    both operating at the crop's native resolution, so the same face
+    content at a different resolution produces different residual/
+    Laplacian statistics even though the annulus geometry lines up.
+    Measured directly (40 photo-like fixtures, native-ROI features vs.
+    224-square features, deltas in training-set standard deviations):
+
+        ROI 448 -> mean 1.44 sd,  worst residual_std_b3    10.7 sd
+        ROI 112 -> mean 15.6 sd,  worst laplacian_var_b3   178.8 sd
+        ROI  80 -> mean 27.7 sd,  worst laplacian_var_b3   370.4 sd
+
+    Fed through a model fitted on 224-square crops, mean P(fake) moved
+    0.5003 -> 0.95 at ROI 448 and -> 1.0000 at ROI 112 and 80.
+    `residual_logratio_b1_b2` — a log-ratio, the exact kind of term the
+    module docstring names as carrying the seam signal — moved 0.047 ->
+    0.307. The 6 LAB-mean features are scale-stable; the 12 residual/
+    Laplacian features are not. `tests/test_blend_features.py::
+    test_works_at_a_size_other_than_224` does NOT show a non-224 crop is
+    "scored correctly as-is": it asserts only shape and finiteness at
+    96px and never compares a 96px feature vector to a 224px one, so it
+    cannot and does not support that claim.
+    `tests/test_blend_detector.py::test_scores_the_same_face_at_different_roi_sizes`
+    pins the fix: the same face content at two different ROI sizes must
+    now score the same to a tight tolerance.
 
     Args:
         payload: the observation's image, HWC.
         roi: `(x, y, w, h)` in `payload`'s own coordinates, or None.
 
     Returns:
-        The cropped view, or None if `roi` is None or the clamped region
-        is empty.
+        The cropped-and-resized view, or None if `roi` is None or the
+        clamped region is empty.
     """
     if roi is None:
         return None
@@ -265,7 +303,9 @@ def _crop_to_roi(
     x1, y1 = min(w, x + rw), min(h, y + rh)
     if x1 <= x0 or y1 <= y0:
         return None
-    return payload[y0:y1, x0:x1]
+    crop = payload[y0:y1, x0:x1]
+    return cv2.resize(crop, (_ALIGN_SIZE, _ALIGN_SIZE),
+                      interpolation=cv2.INTER_AREA).astype(np.uint8)
 
 
 def load_blend_model(path: str | Path) -> BlendModel:
