@@ -2492,3 +2492,66 @@ a drive-by edit at the tail of an unrelated plan. Cost if wrong: the spec keeps 
 framing — including a "ScoreMe to supply" placeholder that ScoreMe will never supply — until that
 cycle runs, with the handoff contradicting it in one clearly-dated, clearly-labelled place in the
 interim.
+
+---
+
+## Final whole-branch review and its single fix wave (2026-09-21)
+
+These decisions postdate the Task 6 entries above. They were made after the composition-root plan's
+six tasks were complete, during the whole-branch review and the one fix wave it triggered.
+
+Ruling: the final whole-branch review was scoped to `3e35eb6..165c19e` — this plan's spec, plan and
+task commits — rather than to `merge-base main..HEAD`, which would have been 101 commits. The
+earlier P0 work on this branch already had its own whole-branch review in a previous session
+(verdict "Ready with follow-ups, 6 must-fix", all six fixed and recorded above), and re-reviewing it
+would have diluted attention across code unchanged since. Integration risk stayed covered because
+this plan's diffs into the previously-reviewed modules (`fusion.py`, `audit.py`,
+`detectors/registry.py`) all sit inside the chosen range. Cost if wrong: a defect introduced by the
+earlier P0 work, and untouched by this plan, got no second look.
+
+**What that review found.** 0 Critical, 5 Important. The two that mattered: the video path through
+`decide()` had never executed — it was the only uncovered line in `pipeline.py`, and `load_video`'s
+`max_frames`/`seed` were passed positionally as two `int`s, so a swap was invisible to
+`mypy --strict` and to every test; and the band used for calibration is not the band the detector was
+scored on, demonstrated by execution (31 `high` frames plus one `reject`, detector floor `low`,
+calibrator fitted on `high` → the detector scores the 31, `decide` calibrates on `reject`, evidence
+collapses to `uncalibrated_for_band` with llr 0.0).
+
+Ruling F1: fix Important 1 (video path, keyword arguments, real video test), 3 (`default_registry`'s
+composition asserted by nothing — deleting a `register` call left all 553 tests green), 4 (one
+raising detector aborted the whole decision, contradicting parent-spec principle 8), 5 (the CLI
+configured no logging, so its "stderr carries one line" contract was false in the default checkout),
+and the cheap deferred items. Each closes a hole the suite could not see.
+
+Ruling F2: do NOT change calibration-band semantics in a fix wave. Correct the spec's cost statement
+and record the defect instead. Changing which band a detector calibrates on alters decision
+semantics and belongs to the calibration milestone with its own design pass. The design spec §4.2
+previously claimed the cost was "systematically pessimistic calibration ... the safe direction";
+that is wrong and has been replaced — the real outcome is *no* calibration at all, because no
+`reject`-band curve will ever be fitted, since detectors abstain there by design. Cost if wrong: the
+defect stays latent until a calibrator is first fitted, which is the next milestone.
+
+Ruling F3: defer the remaining minors into the known-gaps block rather than the fix wave — the dead
+`IngestAdapter` Protocol matching neither adapter, `model_versions` vs `raw.version` as two sources
+for one version string, `Detector.modalities` declared by every detector and consumed by nothing,
+`normalize` never supplying yaw/pitch (so `Quality.yaw_deg`/`pitch_deg` are `0.0` in every record and
+`quality.MAX_YAW_HIGH` is permanently inert), and per-detector latency captured only to a DEBUG log,
+leaving acceptance criterion 5 no path out of `decide`. Cost if wrong: they persist as documented
+gaps rather than silent ones.
+
+Ruling: accept the fix wave's deferral of a characterisation test pinning today's
+`uncalibrated_for_band` behaviour. A green test asserting that reason would read as a specification
+rather than a symptom, forcing the next engineer to delete a *passing* test in order to fix a
+documented defect — inverting the usual signal. The re-reviewer agreed and raised a real
+counter-point, recorded here: a docs-only record can drift silently if `_worst_band` or
+`filter_by_quality_floor` change shape, where a characterisation test would fail loudly and force
+the docs to be revisited at that moment. Cost if wrong: the gap's documentation goes stale without
+anything going red.
+
+**Outcome.** 565 tests (up from 553), coverage 95.12%, `pipeline.py` at 100%, ruff and
+`mypy --strict` clean, both CI legs green on `f52ac9a`. The suite was re-run with the YuNet `.onnx`
+moved aside: same 565 passing, so no test depends on weights that exist on one machine and not in
+CI. 13 mutations were run across the wave; one first-draft test survived its mutation and was
+strengthened to assert the literal `"detector_error"`. The scoped re-review re-ran those mutations
+itself in a scratch copy rather than trusting the report, and verified the `except Exception` wraps
+only `detector.score` — calibration and record-building stay unshielded.
