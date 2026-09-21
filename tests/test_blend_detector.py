@@ -5,12 +5,14 @@ import warnings
 import zipfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 from dfd.detectors.base import WEIGHTS_ABSENT
 from dfd.detectors.blend import (
     FEATURE_NAMES,
+    NO_ROI,
     BlendDetector,
     BlendModel,
     load_blend_model,
@@ -34,11 +36,12 @@ def _model(coef: np.ndarray | None = None) -> BlendModel:
         intercept=0.0, feature_names=FEATURE_NAMES, version="test-1")
 
 
-def _obs(band: str = "high", seed: int = 0) -> Observation:
+def _obs(band: str = "high", seed: int = 0,
+         roi: tuple[int, int, int, int] | None = (0, 0, 224, 224)) -> Observation:
     rng = np.random.default_rng(seed)
     return Observation(
         t=0.0, payload=rng.integers(0, 255, (224, 224, 3), dtype=np.uint8),
-        roi=None,
+        roi=roi,
         quality=Quality(inter_ocular_px=40.0, blur_var=120.0, yaw_deg=0.0,
                         pitch_deg=0.0, exposure=0.5, band=band),
         source_id="s1")
@@ -245,3 +248,61 @@ def test_two_observations_are_averaged_not_only_the_first(tmp_path: Path) -> Non
     two = d.score([_obs(seed=1), _obs(seed=2)])
     assert one.score is not None and two.score is not None
     assert one.score != two.score
+
+
+def test_abstains_when_roi_is_none(tmp_path: Path) -> None:
+    """Train/serve skew guard (finding 1). Scoring `o.payload` whole would
+    silently put the annuli over whatever the caller ingested -- a full
+    frame in production -- instead of the aligned face crop the model was
+    fitted on. An observation carrying no ROI must abstain, not be scored
+    on the wrong pixels."""
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(), p)
+    r = BlendDetector(weights_path=p).score([_obs(roi=None)])
+    assert r.abstained and r.score is None and r.reason == NO_ROI
+
+
+def _ring_crop(size: int = 224) -> np.ndarray:
+    """A small textured face-like crop: a soft-edged bright annulus on a
+    flat field, distinguishable from a flat background by seam_features."""
+    img = np.full((size, size, 3), 128, dtype=np.uint8)
+    cv2.circle(img, (size // 2, size // 2), int(size * 0.3), (200, 200, 200), 6)
+    return cv2.GaussianBlur(img, (7, 7), 0)
+
+
+def test_scores_the_roi_crop_not_the_whole_frame(tmp_path: Path) -> None:
+    """The assertion that pins finding 1's fix.
+
+    A crop is embedded off-centre in a much larger, differently-textured
+    frame. Scoring through the ROI must equal scoring the same crop passed
+    alone (same pixels, same features, same score); scoring the whole
+    frame -- what the pre-fix code did, since it read `o.payload` and
+    ignored `o.roi` -- must NOT equal either, because the annuli then fall
+    mostly over background rather than over the face-like crop.
+    """
+    p = tmp_path / "m.npz"
+    save_blend_model(_model(coef=np.linspace(-1, 1, len(FEATURE_NAMES))), p)
+    detector = BlendDetector(weights_path=p)
+
+    crop = _ring_crop()
+    frame = np.full((480, 640, 3), 60, dtype=np.uint8)
+    x0, y0 = 120, 90
+    frame[y0:y0 + 224, x0:x0 + 224] = crop
+    roi = (x0, y0, 224, 224)
+    quality = Quality(inter_ocular_px=40.0, blur_var=120.0, yaw_deg=0.0,
+                      pitch_deg=0.0, exposure=0.5, band="high")
+
+    cropped_alone = Observation(t=0.0, payload=crop, roi=(0, 0, 224, 224),
+                                quality=quality, source_id="a")
+    embedded = Observation(t=0.0, payload=frame, roi=roi,
+                           quality=quality, source_id="b")
+    whole_frame = Observation(t=0.0, payload=frame, roi=(0, 0, 640, 480),
+                              quality=quality, source_id="c")
+
+    r_cropped = detector.score([cropped_alone])
+    r_embedded = detector.score([embedded])
+    r_whole = detector.score([whole_frame])
+
+    assert not r_cropped.abstained and not r_embedded.abstained and not r_whole.abstained
+    assert r_embedded.score == pytest.approx(r_cropped.score)
+    assert r_whole.score != pytest.approx(r_embedded.score)

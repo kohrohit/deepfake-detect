@@ -154,6 +154,17 @@ _REQUIRED_KEYS = (
 #: the same contract NPR and EffNet already keep.
 DEFAULT_BLEND_WEIGHTS = Path("assets/models/blend_seam.npz")
 
+#: The observation carried no usable ROI: either `roi` was None, or it was
+#: present but degenerate/out-of-bounds after clamping to the payload (see
+#: `_crop_to_roi`). Distinct from NO_QUALITY/BELOW_FLOOR, which are about
+#: capture quality rather than about knowing which pixels are the face, and
+#: distinct from WEIGHTS_ABSENT, which means the detector never ran at all.
+#: This exists because `seam_features` assumes an aligned face crop (module
+#: docstring): scoring a whole frame instead would put the annuli over
+#: mostly background, not face, and silently score the wrong pixels rather
+#: than say so.
+NO_ROI = "roi_absent"
+
 
 @dataclass(frozen=True)
 class BlendModel:
@@ -165,6 +176,16 @@ class BlendModel:
     scikit-learn fits this model (see training/fit_blend.py) and is then
     discarded: only the numbers are kept, and `np.load(..., allow_pickle=False)`
     cannot execute anything.
+
+    `frozen=True` stops a caller from rebinding `model.coef = ...` or any
+    other field, but it does NOT stop in-place mutation of the numpy arrays
+    themselves (`model.coef[:] = ...` or `model.coef *= 2` both work fine
+    despite the frozen dataclass). That gap is safe today only because
+    `BlendDetector.score` calls `load_blend_model` fresh on every call — a
+    new, unshared array set each time — and becomes unsafe the day anyone
+    adds a load cache, as `dfd.detectors.loading.load_model` already does
+    for NPR and EffNet: a cached `BlendModel` shared across calls would let
+    one caller's in-place edit corrupt every other caller's scores.
     """
     mean: npt.NDArray[np.float64]
     scale: npt.NDArray[np.float64]
@@ -207,6 +228,44 @@ def save_blend_model(model: BlendModel, path: str | Path) -> None:
         version=np.array(model.version, dtype=np.str_),
     )
     logger.info("wrote blend model v%s to %s", model.version, p)
+
+
+def _crop_to_roi(
+    payload: npt.NDArray[np.uint8],
+    roi: tuple[int, int, int, int] | None,
+) -> npt.NDArray[np.uint8] | None:
+    """Crop `payload` to `roi`, clamped to the frame bounds.
+
+    Mirrors `dfd.faces.align`'s clamping exactly (`max(0, ...)` /
+    `min(dim, ...)`, then a degenerate check), so a partially out-of-bounds
+    ROI is handled the same way in both places in this codebase: clamp
+    first, and treat an empty result as "no usable crop" rather than
+    raising or falling back to scoring something else.
+
+    No resize: `seam_features` normalises its annulus radii by the crop's
+    own height and width (see `ANNULI` and the radius computation below),
+    so a crop that is not 224x224 is still scored correctly as-is —
+    `tests/test_blend_features.py::test_works_at_a_size_other_than_224`
+    proves this at 96px. Resizing here would be extra work bought for
+    nothing.
+
+    Args:
+        payload: the observation's image, HWC.
+        roi: `(x, y, w, h)` in `payload`'s own coordinates, or None.
+
+    Returns:
+        The cropped view, or None if `roi` is None or the clamped region
+        is empty.
+    """
+    if roi is None:
+        return None
+    h, w = payload.shape[:2]
+    x, y, rw, rh = roi
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(w, x + rw), min(h, y + rh)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return payload[y0:y1, x0:x1]
 
 
 def load_blend_model(path: str | Path) -> BlendModel:
@@ -299,8 +358,24 @@ class BlendDetector:
         if reason is not None:
             return abstain(self.name, self.version, reason)
 
+        # Crop to the face ROI before reading seam features. `seam_features`
+        # assumes an aligned face crop (module docstring): the inner face
+        # sits near the centre so the concentric annuli straddle the seam.
+        # Scoring `o.payload` directly would score whatever the caller
+        # ingested — a whole frame in production (`pipeline.normalize`
+        # attaches `roi` but leaves `payload` as the frame) — which moves
+        # the annuli mostly over background and violates that premise
+        # silently. An observation with no usable ROI is not scored on the
+        # wrong pixels; it abstains instead, same as filter_by_quality_floor
+        # drops observations it cannot use and only abstains once none
+        # remain.
+        crops = [c for c in (_crop_to_roi(o.payload, o.roi) for o in usable)
+                 if c is not None]
+        if not crops:
+            return abstain(self.name, self.version, NO_ROI)
+
         model = load_blend_model(path)
-        probs = [model.predict_proba(seam_features(o.payload)) for o in usable]
+        probs = [model.predict_proba(seam_features(c)) for c in crops]
         score = float(np.mean(probs))
         return RawScore(detector=self.name, version=self.version, score=score,
                         abstained=False, reason=OK,
