@@ -29,10 +29,17 @@ against any baseline. No published claim may rest on them without measurement.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
 import numpy.typing as npt
+
+from ..types import Modality, Observation, RawScore
+from .base import OK, WEIGHTS_ABSENT, abstain, filter_by_quality_floor
 
 logger = logging.getLogger(__name__)
 
@@ -128,3 +135,139 @@ def seam_features(img: npt.NDArray[np.uint8]) -> npt.NDArray[np.float32]:
                  for b in range(len(ANNULI) - 1))
 
     return np.asarray(feats, dtype=np.float32)
+
+
+#: On-disk format version for the model file. Bump when the array set changes.
+MODEL_FILE_VERSION = 1
+
+#: Where a deployment is expected to place the fitted model. Gitignored and
+#: absent in this repo, so the detector abstains on every fresh checkout —
+#: the same contract NPR and EffNet already keep.
+DEFAULT_BLEND_WEIGHTS = Path("assets/models/blend_seam.npz")
+
+
+@dataclass(frozen=True)
+class BlendModel:
+    """A standardiser and a linear model, as plain arrays.
+
+    Deliberately not a pickled sklearn estimator. `joblib.load` and
+    `pickle.load` execute arbitrary code from the file they read, and a
+    detector's weight file is exactly the artefact an attacker would swap.
+    scikit-learn fits this model (see training/fit_blend.py) and is then
+    discarded: only the numbers are kept, and `np.load(..., allow_pickle=False)`
+    cannot execute anything.
+    """
+    mean: npt.NDArray[np.float64]
+    scale: npt.NDArray[np.float64]
+    coef: npt.NDArray[np.float64]
+    intercept: float
+    feature_names: tuple[str, ...]
+    version: str
+
+    def predict_proba(self, features: npt.NDArray[np.float32]) -> float:
+        """P(fake) for one feature vector.
+
+        Args:
+            features: vector aligned to `feature_names`.
+
+        Returns:
+            A probability in [0, 1].
+        """
+        z = (features.astype(np.float64) - self.mean) / np.where(
+            self.scale == 0.0, 1.0, self.scale)
+        logit = float(np.dot(z, self.coef) + self.intercept)
+        return float(1.0 / (1.0 + np.exp(-logit)))
+
+
+def save_blend_model(model: BlendModel, path: str | Path) -> None:
+    """Write the model as an npz of plain arrays."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        p,
+        format_version=np.array(MODEL_FILE_VERSION),
+        mean=model.mean, scale=model.scale, coef=model.coef,
+        intercept=np.array(model.intercept),
+        feature_names=np.array(model.feature_names, dtype=np.str_),
+        version=np.array(model.version, dtype=np.str_),
+    )
+    logger.info("wrote blend model v%s to %s", model.version, p)
+
+
+def load_blend_model(path: str | Path) -> BlendModel:
+    """Read a model file, refusing one that does not match this code.
+
+    Args:
+        path: npz written by `save_blend_model`.
+
+    Returns:
+        The model.
+
+    Raises:
+        ValueError: if the file's format version or feature names disagree
+            with this build. A stale model file is worse than none: it would
+            score confidently against columns that no longer mean what it
+            was fitted on.
+    """
+    data = np.load(Path(path), allow_pickle=False)
+    version = int(data["format_version"])
+    if version != MODEL_FILE_VERSION:
+        raise ValueError(
+            f"blend model format version {version} != {MODEL_FILE_VERSION}")
+    names = tuple(str(n) for n in data["feature_names"])
+    if names != FEATURE_NAMES:
+        raise ValueError(
+            "blend model feature names do not match this build: "
+            f"file has {len(names)}, code expects {len(FEATURE_NAMES)}")
+    return BlendModel(
+        mean=np.asarray(data["mean"], dtype=np.float64),
+        scale=np.asarray(data["scale"], dtype=np.float64),
+        coef=np.asarray(data["coef"], dtype=np.float64),
+        intercept=float(data["intercept"]),
+        feature_names=names,
+        version=str(data["version"]),
+    )
+
+
+@dataclass(frozen=True)
+class BlendDetector:
+    """Slot A. Scores the blending seam with a linear model over seam features.
+
+    Frozen, like every other detector, so the registry's name→detector
+    invariant cannot be broken by mutating identity after registration.
+    """
+    weights_path: str | Path = DEFAULT_BLEND_WEIGHTS
+
+    name: str = "blend_seam"
+    slot: str = "A"
+    version: str = "0.1.0"
+    modalities: frozenset[Modality] = field(
+        default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO}))
+    min_quality_band: Literal["low", "medium", "high"] = "medium"
+
+    def score(self, obs: Sequence[Observation]) -> RawScore:
+        """Score observations by their mean seam probability.
+
+        Args:
+            obs: observations to score.
+
+        Returns:
+            A RawScore. Abstains with `weights_absent` when the model file is
+            missing, or with the quality-floor reason when nothing is usable.
+        """
+        usable, reason = filter_by_quality_floor(obs, self.min_quality_band)
+        if reason is not None:
+            return abstain(self.name, self.version, reason)
+
+        path = Path(self.weights_path)
+        if not path.exists():
+            logger.warning("blend model absent at %s", path)
+            return abstain(self.name, self.version, WEIGHTS_ABSENT)
+
+        model = load_blend_model(path)
+        probs = [model.predict_proba(seam_features(o.payload)) for o in usable]
+        score = float(np.mean(probs))
+        return RawScore(detector=self.name, version=self.version, score=score,
+                        abstained=False, reason=OK,
+                        artifacts={"n_observations": len(probs),
+                                   "model_version": model.version})
