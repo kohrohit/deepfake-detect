@@ -184,7 +184,10 @@ def load_model(
                 "this permits arbitrary code execution from the weights file",
                 resolved,
             )
-            model = torch.load(str(resolved), map_location="cpu")
+            # weights_only MUST be explicit: torch<2.6 defaulted to False, torch>=2.6
+            # to True. Relying on the default made this branch a no-op re-run of
+            # CASE 2 on new torch, so the documented opt-in silently did nothing.
+            model = torch.load(str(resolved), map_location="cpu", weights_only=False)
             if not isinstance(model, nn.Module):
                 raise ValueError(
                     f"unsafe load: expected torch.nn.Module, "

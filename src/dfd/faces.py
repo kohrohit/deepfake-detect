@@ -95,10 +95,15 @@ def detect_faces(
     _, faces = det.detect(bgr)
     out: list[FaceBox] = []
     if faces is not None:
-        for f in faces:
-            x, y, bw, bh = (int(v) for v in f[:4])
-            lms = np.array(f[4:14], dtype=np.float64).reshape(5, 2)
-            out.append(FaceBox(x=x, y=y, w=bw, h=bh, landmarks=lms, score=float(f[14])))
+        # opencv>=5 ships stubs typing detect() as MatLike, and mypy cannot know an
+        # ndarray's ndim, so `for f in faces` infers f as a scalar. Normalise to a
+        # typed 2-D array and index rows: same iteration over axis 0, but checkable.
+        rows: npt.NDArray[np.float64] = np.asarray(faces, dtype=np.float64)
+        for i in range(rows.shape[0]):
+            row: npt.NDArray[np.float64] = rows[i]
+            x, y, bw, bh = (int(v) for v in row[:4])
+            lms = np.array(row[4:14], dtype=np.float64).reshape(5, 2)
+            out.append(FaceBox(x=x, y=y, w=bw, h=bh, landmarks=lms, score=float(row[14])))
     logger.debug("detected %d faces", len(out))
     return (out, OK) if with_reason else out
 
