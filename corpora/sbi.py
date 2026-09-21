@@ -100,7 +100,12 @@ def jitter(frame: npt.NDArray[np.uint8],
     x = cv2.warpAffine(x, m, (w, h), flags=cv2.INTER_LINEAR,
                        borderMode=cv2.BORDER_REFLECT_101)
 
-    return np.clip(x, 0, 255).astype(np.uint8)
+    # Round rather than truncate: astype(uint8) alone floors, which would
+    # give every non-integer value here a systematic ~0.5-greylevel negative
+    # bias -- an artifact that is deterministic and correlated with the seam
+    # in exactly the module whose job is to avoid teaching the detector an
+    # unintended one.
+    return np.rint(np.clip(x, 0, 255)).astype(np.uint8)
 
 
 def face_mask(shape: tuple[int, int], box: FaceBox,
@@ -161,4 +166,7 @@ def self_blend(
     m3 = mask[..., None]
     blended = source.astype(np.float32) * m3 + frame.astype(np.float32) * (1.0 - m3)
     logger.debug("self-blend: mask covers %.3f of frame", float((mask > 0.5).mean()))
-    return np.clip(blended, 0, 255).astype(np.uint8), mask
+    # Round rather than truncate, for the same reason as in jitter(): a floor
+    # would bias every blended pixel where 0 < mask < 1 by about half a
+    # greylevel, a deterministic artifact perfectly correlated with the seam.
+    return np.rint(np.clip(blended, 0, 255)).astype(np.uint8), mask
