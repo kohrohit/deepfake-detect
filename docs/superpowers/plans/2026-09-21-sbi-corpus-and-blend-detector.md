@@ -43,7 +43,7 @@ Extract face crops from capture sessions so later tasks have real faces to blend
 - Consumes: `corpora.captures.CaptureSession` and `load_capture_sessions` (existing); `dfd.faces.FaceBox`, `detect_faces`, `align`; `dfd.quality.measure_quality`; `dfd.types.Quality`.
 - Produces:
   - `FaceCrop` frozen dataclass with fields `session_id: str`, `frame_index: int`, `image: npt.NDArray[np.uint8]` (HWC uint8, `size`×`size`×3), `box: FaceBox`, `quality: Quality`, `swapped: bool`.
-  - `build_face_pool(sessions: Sequence[CaptureSession], root: str | Path, *, size: int = 224, detect: DetectFn = detect_faces, max_frames_per_session: int = 2) -> tuple[list[FaceCrop], dict[str, int]]` — returns the crops and a reason→count tally of what was skipped.
+  - `build_face_pool(sessions: Sequence[CaptureSession], *, size: int = 224, detect: DetectFn = detect_faces, max_frames_per_session: int = 2) -> tuple[list[FaceCrop], dict[str, int]]` — takes NO root: `CaptureSession.folder` is already a complete path (`corpora/captures.py:72` sets `folder=str(path.parent)`), so joining a root onto it double-prefixes — returns the crops and a reason→count tally of what was skipped.
   - `DetectFn` type alias: `Callable[[npt.NDArray[np.uint8]], list[FaceBox]]`.
   - Skip reason constants `NO_FRAMES = "no_frames"`, `NO_FACE = "no_face"`, `UNREADABLE = "unreadable"`.
 
@@ -1769,10 +1769,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("%d sessions, %d genuine and usable for training",
                 len(sessions), len(genuine))
 
-    crops, skipped = build_face_pool(genuine, args.captures)
+    crops, skipped = build_face_pool(genuine)
     if not crops:
-        logger.error("no face crops extracted (skipped: %s); "
-                     "is the YuNet weight file present?", skipped)
+        # Name both causes. The skip tally distinguishes them — NO_FACE means
+        # the detector ran and found nothing (or has no weights), NO_FRAMES
+        # means the folders held no frame_NN.jpg at all — and a message that
+        # guesses one cause sends the reader past the tally that answers it.
+        logger.error("no face crops extracted; skip tally: %s. NO_FACE means "
+                     "the detector returned nothing (check the YuNet weights at "
+                     "assets/models/face_detection_yunet_2023mar.onnx); "
+                     "NO_FRAMES means the session folders held no frames.",
+                     skipped)
         return 1
 
     samples = build_sbi_corpus(crops, seed=args.seed)
