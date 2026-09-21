@@ -184,8 +184,10 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
    `training/fit_blend.py` (the fitter) are implemented and tested. `default_registry()` now
    registers three detectors — `blend_seam`, `npr`, `effnet_b4` — instead of two, and
    `assets/manifest.yaml` carries `blend_seam_weights` as an owned asset at the fixed path
-   `assets/models/blend_seam.npz` (`source: "owned"`, no third-party dataset or generator weight
-   contributes to it). **The fitter has not been run against the real capture corpus.** No model
+   `assets/models/blend_seam.npz`, licensed `owned` (no third-party dataset or model contributed)
+   and `commercial_use: true`, with its provenance — fitted in this repo by `training/fit_blend.py`
+   from the project's own capture corpus — recorded in that entry's `source` field.
+   **The fitter has not been run against the real capture corpus.** No model
    file exists on this machine, so there is no accuracy number — not measured, not estimated, not
    implied — and `bench/blend_seam_report.json` does not exist. The only measurement that exists is
    on synthetic fixtures in the test suite, and it is explicitly not a detector claim: it documents
