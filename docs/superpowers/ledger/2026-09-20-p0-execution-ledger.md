@@ -2382,3 +2382,113 @@ WORKSPACE NOT DELETED, deliberately, against the skill's default. The committed
 ledger carries every ruling, but the per-task reports are gitignored and would
 be destroyed — and the branch is not merged, so nobody has read them yet.
 Deleting the reasoning before the decision it informs is the wrong order.
+
+---
+
+# Ledger continued — plan: docs/superpowers/plans/2026-09-21-composition-root.md
+
+Spec: docs/superpowers/specs/2026-09-21-composition-root-design.md (also binding; the earlier
+spec above remains binding for everything it already covers)
+Branch: p0-evidence-core (same branch, continued). BASE at start of this plan: 928ad63
+
+## Task 1: Policy becomes an object fusion applies (thresholds become auditable configuration)
+
+Ruling: `fake_threshold`, `real_threshold` and `disagreement_ood` move off `fusion.py`'s module
+constants into a frozen `Policy` dataclass (`DEFAULT_POLICY`), and `fuse()` takes `policy=` so the
+exact object that decided a verdict is the one object that reaches `build_audit_record` — a
+record's stated threshold is provably the one applied, not a constant that could have drifted
+between decision and audit. Fix round 1 required after review: the plan's own Step 3 snippet
+deleted the constants' rationale comments (1.0 nat ≈ 73% posterior; the REAL-side symmetry; the
+§7.2 "6-of-10 split vendors average away" framing for disagreement) rather than relocating them.
+Spec §7.1 requires these thresholds be "versioned, auditable configuration"; configuration whose
+derivation is undocumented is not auditable, so the plan was wrong here and the spec's method won.
+Restored into `Policy`'s per-field docstrings. Cost if wrong: a caller could construct
+`Policy(fake_threshold=X)` and have the audit record's stated threshold silently fail to match what
+`fuse()` actually used — the record's "provably applied" guarantee would be false while still
+looking true.
+
+## Task 2: AuditRecord gains stage_reasons; AUDIT_SCHEMA_VERSION bumps "1" -> "2"
+
+Ruling: `AuditRecord.stage_reasons: Mapping[str, str]` is added, frozen and digest-covered, so a
+record can name which stage (faces, quality, calibration) could not measure, instead of only
+carrying a verdict with no explanation for an abstention. `AUDIT_SCHEMA_VERSION` moves to `"2"`
+because this changes the wire format of an audit record — an existing consumer must not be able to
+parse a schema-2 record as if it were schema-1 and silently drop the new field without noticing the
+shape changed underneath it. Cost if wrong (bump omitted): a schema-1-aware parser deserialises a
+schema-2 record successfully, silently discards `stage_reasons`, and never learns the record's
+shape changed — the same silent-drift failure class the predecessor plan's whole environment-drift
+section exists to eliminate, reintroduced on the data side instead of the dependency side.
+
+## Task 3: normalize() clamps face ROIs to non-negative origins before cropping
+
+Ruling: `_clamp_roi`'s `max(0, ...)` on the box origin is kept, and given its own dedicated test and
+mutation, after the task reviewer showed the clamp could be deleted with all 11 of the task's
+original tests still green — the missing coverage was the plan's gap (its own Step 1 test file
+never constructed a face box with a negative origin), not the implementer's. Without the clamp, a
+face box straddling the frame edge (a detector reporting a negative x/y) silently crops the wrong
+region: `reasons["faces"]` still reads `"ok"`, the record reports success, and every downstream
+detector scores a crop offset from the face it claims to observe — verified by execution, not
+assertion: `(50,20,3)` vs `(50,256,3)`, different pixels, same "ok" reason. Cost if wrong: a wrong
+answer that is indistinguishable from a right one at the audit-record boundary — exactly the
+~30-unfalsifiable-tests failure class §6 of the handoff exists to name.
+
+## Task 4a: decide()'s ValueError -> InvalidInput translation is scoped to the ingest adapter call only
+
+Ruling: the `except ValueError` around `load_image`/`load_video` in `decide()` wraps only that
+adapter call, not the surrounding ingest block. Surfaced by a disclosed implementer deviation: the
+plan's own undecodable-file fixture (`b"not an image"`) is rejected by Pillow's header probe
+*before* the adapter's `ValueError` branch is ever reached, so it could not have exercised this
+translation regardless of scope — the implementer swapped in a fixture truncated mid-`IDAT` chunk
+that genuinely reaches it, and the reviewer independently reproduced both the original fixture's
+miss and the replacement's hit. A `try/except` scoped around the whole ingest block instead of just
+the adapter call would also relabel unrelated `ValueError`s from other ingest code as
+"invalid input," hiding where they actually came from. Cost if wrong (scope too wide): a genuine bug
+elsewhere in ingest reports as "bad input" in the audit record and gets debugged in the wrong place,
+or never gets debugged at all, because the record's own error type misattributes the fault.
+
+## Task 4b: ood_score carries FusedResult.disagreement, not an out-of-distribution score
+
+Ruling (a documented compromise, not a defect): P0 has no Mahalanobis- or energy-based OOD head.
+`disagreement` — `min(positive evidence, negative evidence)` — is the only OOD-shaped quantity
+`fuse()` already computes, so `decide()` reports it under the `ood_score` field rather than adding a
+fourth field nobody populates, or blocking the composition root on an OOD head that does not exist.
+Documented in `decide()`'s own docstring and named again in this plan's known-gaps block, not left
+for a caller to discover only by reading source. Cost if wrong (a caller trusts the field name over
+the docstring): a threshold built on `ood_score` for OOD rejection is actually thresholding detector
+disagreement — a plausible-looking number with the wrong semantics, silently wrong until someone
+reads past the field name to the docstring.
+
+## Task 5: dfd score exit codes — 0 for every verdict (including abstention), 2 for DfdError, 1 (uncaught) for anything else
+
+Ruling: `main()` catches `DfdError` specifically and exits 2; it does not catch bare `Exception`.
+Verified by mutation: deleting the `try`/`except` entirely lets an `InvalidInput` traceback
+propagate uncaught instead of becoming an exit code, proving the `except` clause — not Python's
+default — is what produces 2. Exit 0 covers `insufficient_evidence` deliberately: an abstaining
+verdict is the pipeline succeeding at its job (correctly declining to decide), not the CLI failing,
+so a caller scripting on exit code must not read 0 as "a real verdict was reached." Exit 1 for
+anything unexpected has no code of its own — it is Python's ordinary behaviour when
+`sys.exit(main())` (in `__main__.py`) is reached via an uncaught exception, which already satisfies
+"1 for unexpected failure" without a matching `except` clause to maintain. Cost if wrong (0 conflated
+with a real verdict): a caller scripting `if exit_code == 0: act_on_verdict()` would act on
+`insufficient_evidence` as though it were a decision, in a system whose entire premise is that
+abstention must route to manual review rather than be treated as an answer.
+
+## Task 6: commit without pushing; record three corrected project facts without touching the spec
+
+Ruling: Task 6 commits `docs/HANDOFF.md` and this ledger but does not run `git push` — the branch
+carries open PR #1, so pushing is an outward-facing action the controller performs after reviewing
+the commit, not something a dispatched task does unsupervised. Cost if wrong (pushed anyway): a diff
+nobody reviewed lands on a branch with an open, green, `MERGEABLE` PR, discovered only after the
+fact.
+
+Ruling: the user corrected three project facts mid-execution — this product is NOT for ScoreMe;
+dataset EULA requests will be sent by `kohrohit@gmail.com`; hardware is CPU-only for now, a GPU may
+come later. These are recorded in `docs/HANDOFF.md` as a dated correction block. The spec
+(`docs/superpowers/specs/2026-09-20-deepfake-detection-design.md`) is deliberately NOT edited: it is
+the binding authority every review in this plan and its predecessor judged against, and rewriting
+its ScoreMe framing mid-plan would retroactively invalidate those reviews. Re-framing §1/§7.1/§9/§11/
+§12 for an independent, non-ScoreMe product is a substantial change that deserves its own cycle, not
+a drive-by edit at the tail of an unrelated plan. Cost if wrong: the spec keeps a stale sponsor
+framing — including a "ScoreMe to supply" placeholder that ScoreMe will never supply — until that
+cycle runs, with the handoff contradicting it in one clearly-dated, clearly-labelled place in the
+interim.

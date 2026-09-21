@@ -1,13 +1,20 @@
 # Handoff — P0 Evidence Core and Benchmark Harness
 
-**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 502 tests green,
-ruff clean, `mypy --strict` clean, coverage ~93% against a ≥85% gate. Pushed. **The plan is
-finished; the branch has not been merged.**
+**As of 2026-09-21.** Branch `p0-evidence-core`. The original **22-of-22-task plan** below is
+finished; a second, 6-task plan (composition root — §2, §3) landed on top of it the same day and is
+also finished. **553 tests green**, ruff clean, `mypy --strict` clean, coverage 94.94% local /
+95.08% floor against a ≥85% gate — all measured 2026-09-21, see "Verified by hand" under §2. The
+22-task plan's commits are pushed; the composition-root plan's Task 6 commit (this documentation)
+is **not yet pushed** as of this line — deliberately, per that plan's own Task 6 ruling: the branch
+carries an open PR, so pushing is left to whoever reviews the commit. **Neither plan's branch has
+been merged.**
 
-(The "95%" a previous version of this line claimed is not what the tool reports. Measured
-2026-09-21: 92.7% locally, 93.4% in the pinned floor venv — the two environments' coverage
-tooling counts 868 and 858 statements respectively. Both clear the gate with room; the discrepancy
-is unexplained and nobody has looked into it.)
+(The "95%" a previous version of this line claimed is not what the tool reported at the time.
+Measured 2026-09-21 (before the composition-root plan): 92.7% locally, 93.4% in the pinned floor
+venv — the two environments' coverage tooling counted 868 and 858 statements respectively. The
+composition-root plan's own measurement, above, is a later and different number — more statements
+now exist. Both sets of numbers clear the gate with room; the local/floor discrepancy is unexplained
+in both and nobody has looked into it.)
 
 Read this, then `docs/superpowers/ledger/2026-09-20-p0-execution-ledger.md` — it carries all 106
 rulings made during the build, each with what it costs if wrong. The spec
@@ -67,9 +74,55 @@ and transitive dependencies still float in both files. The opencv floor reads `>
 To reproduce what CI sees: build a venv from `requirements-dev.txt` (or `requirements-floor.txt`
 for the other leg) with no local site-packages and run all four gates there.
 
+### Three project facts corrected, 2026-09-21 — read before trusting the spec's framing
+
+The project owner corrected these mid-session, while Task 6 of the composition-root plan was in
+flight. None of the three is reflected in the spec
+(`docs/superpowers/specs/2026-09-20-deepfake-detection-design.md`), and the spec is **deliberately
+left unedited** — it is the binding authority every review in this plan and the previous one judged
+against, so rewriting its framing now would retroactively invalidate those reviews. This block is
+where the correction lives until re-framing the spec becomes its own cycle.
+
+1. **This product is not for ScoreMe.** The spec frames the entire problem around ScoreMe's v-CIP
+   fraud (its opening paragraph, the 442-session capture table, and measurement (a) below), and its
+   open questions table says outright: "Fraud-loss and friction figures for policy calibration —
+   Placeholders; **ScoreMe to supply**" (spec line 696; also §9's `E[loss | decision]` framing at
+   line 407-419). That sponsor framing is now stale. The engine itself (`src/dfd/`) is
+   sponsor-agnostic — nothing in `Policy`, `fuse`, or `decide` names ScoreMe — so nothing in
+   `src/dfd/` needed to change. What is stale is the *problem statement*: whose fraud-loss and
+   friction numbers calibrate `Policy`, and who the P0 acceptance criteria are ultimately for.
+2. **Dataset EULA requests will be sent by `kohrohit@gmail.com`.** Say the consequence honestly
+   rather than assuming it away: FF++, Celeb-DF and DFDC agreements generally expect an
+   institutional signatory and an institutional email address, so a request from a personal Gmail
+   address may be refused outright or simply go unanswered. Separately, and regardless of who signs:
+   all three are research-only licences (spec line 614, "research-licensed datasets and
+   non-commercial weights"; `assets/manifest.yaml` marks the equivalent weight entries
+   `"research-only — VERIFY before any commercial release"`), which matters once this is a
+   commercial product rather than an internal ScoreMe tool. Nothing in this build works around that
+   — `assert_all_assets_registered` (`src/dfd/asset_scan.py`, wired into CI as the asset registration
+   gate) already fails closed on anything not registered as commercially cleared in
+   `assets/manifest.yaml`, so an uncleared dataset or weight file cannot silently enter a release.
+3. **Hardware is CPU-only for now; a GPU may come later.** Consequence: training EfficientNet-B4 or
+   SBI from scratch is not feasible on CPU in any reasonable time, so the first realistic detector to
+   actually train (rather than run pretrained-and-abstaining, as today) is a handcrafted-feature
+   approach — NPR-style upsampling-fingerprint features and DCT/SRM residuals feeding a light
+   classifier — which trains on CPU in minutes. This does not touch P0 inference: inference was
+   always specified as CPU-bound (acceptance criterion 5 pins per-detector p95 latency on the target
+   hardware, an i5-1235U — spec line 670), so no acceptance criterion changes. It bears on which
+   detector is realistic to *train* next, not on how `decide()` runs today.
+
 ---
 
 ## 0. Resume here (last touched 2026-09-21, end of session)
+
+**Update, later the same day (composition-root plan, Task 6 of 6): the "Nothing is uncommitted or
+unpushed" line below is no longer true.** The composition-root plan (§2, §3, §5) is complete —
+`decide()` and `dfd score` now exist — and this documentation commit sits on top of the PR branch
+**committed but deliberately not pushed** (that plan's own Task 6 ruling: pushing to a branch
+carrying an open PR is left to whoever reviews the commit). "502 tests" and "§5.3" a few lines down
+are this section's own history, from before the composition-root plan ran; they are now 553 tests
+and struck respectively (§3, §5 above). The rest of this section is left as the record of what the
+*previous* session did.
 
 **PR #1 is open and green:** https://github.com/kohrohit/deepfake-detect/pull/1 — 84+ commits,
 `MERGEABLE`, all four CI gates passing. Nothing is uncommitted or unpushed.
@@ -137,6 +190,89 @@ reviewed, and green. The additions this session:
 | `src/dfd/limits.py` | decode-bomb defence, enforced **before** allocation |
 | `src/dfd/asset_scan.py` | release gate that cannot pass without examining files |
 | CI | ruff, `mypy --strict`, coverage ≥85%, asset gate — all cleared **and** enabled |
+| `src/dfd/policy.py` | `Policy` frozen dataclass + `DEFAULT_POLICY`; `fuse` takes `policy=` |
+| `src/dfd/pipeline.py` | `normalize()` + `decide(path, ...) -> AuditRecord` — the composition root |
+| `src/dfd/cli.py`, `__main__.py`, `[project.scripts] dfd` | `dfd score <path>` runs from a shell |
+
+### Verified by hand, 2026-09-21: `dfd score` end to end
+
+All four gates green in both environments (local venv and the pinned `requirements-floor.txt`
+venv): `ruff check src bench corpora`, `mypy --config-file mypy.ini`, and
+`pytest -q --cov=src/dfd --cov-fail-under=85` — **553 tests passed** in both, coverage 94.94% local
+/ 95.08% floor (both comfortably clear the 85% gate; the two environments still count a slightly
+different statement total, 1067 vs 1057, the same unexplained-but-harmless discrepancy noted above
+for the previous session). `mypy --strict`: "Success: no issues found in 25 source files" in both.
+
+This machine (not CI) has `assets/models/face_detection_yunet_2023mar.onnx` on disk — it is
+gitignored and absent in CI. That changes the *face* stage's reason but not the outcome: no detector
+weights exist anywhere (also gitignored, also absent everywhere), so both detectors abstain
+regardless, and the verdict is `insufficient_evidence` either way.
+
+Ran exactly this, on this machine:
+
+```
+$ python3 -c "
+import cv2, numpy as np
+rng = np.random.default_rng(0)
+cv2.imwrite('/tmp/dfd-demo.png', rng.integers(0, 255, (256, 256, 3), dtype=np.uint8))
+"
+$ python3 -m dfd score /tmp/dfd-demo.png | python3 -m json.tool ; echo "exit=${PIPESTATUS[0]}"
+```
+
+stderr (the CLI's human-readable summary line), then stdout piped through `json.tool`, verbatim:
+
+```
+verdict=insufficient_evidence llr=0.00 band=unmeasured contributing=0/2 faces=no_face digest=0326b982
+{
+    "created_at": "2026-09-21T10:21:49.606609+00:00",
+    "evidence": [
+        {
+            "abstained": true,
+            "detector": "effnet_b4",
+            "llr": 0.0,
+            "raw_score": null,
+            "reason": "weights_absent",
+            "version": "0.1.0"
+        },
+        {
+            "abstained": true,
+            "detector": "npr",
+            "llr": 0.0,
+            "raw_score": null,
+            "reason": "weights_absent",
+            "version": "0.1.0"
+        }
+    ],
+    "input_sha256": "414543ee013c9b57f0f79ebfc8c3bb2d4b302ea62bd0c9d19c5e05ba5c53ca93",
+    "llr_total": 0.0,
+    "model_versions": {
+        "effnet_b4": "0.1.0",
+        "npr": "0.1.0"
+    },
+    "ood_score": 0.0,
+    "policy_version": "p0-default-v0",
+    "posterior": 0.5,
+    "quality_band": "unmeasured",
+    "sample_id": "dfd-demo",
+    "schema_version": "2",
+    "stage_reasons": {
+        "faces": "no_face",
+        "frames_with_face": "0/1",
+        "max_faces_in_frame": "0"
+    },
+    "threshold": 1.0,
+    "verdict": "insufficient_evidence"
+}
+exit=0
+```
+
+`faces=no_face` here (not `weights_absent`) is because YuNet's `.onnx` **is** present on this
+machine — it ran, and found no face in random noise, which is the correct outcome for that input on
+this machine's weight state. A CI checkout, with no YuNet weights, would instead report
+`faces=weights_absent` for the same reason the two detectors do. Either way, both detectors abstain
+(`weights_absent`, always, everywhere — no detector weights are vendored anywhere), `llr_total` stays
+0.0, and the verdict is `insufficient_evidence` — as expected, since nothing exists yet that could
+produce any other verdict. `input_sha256` matches `sha256sum /tmp/dfd-demo.png` exactly (checked).
 
 ---
 
@@ -168,10 +304,20 @@ Four more limitations, each recorded with its severity:
 - **`DfdError` is not yet the root of everything.** 19 bare `ValueError`/`RuntimeError` sites remain
   in `fusion.py`, `calibration.py`, `detectors/`, `ingest/`. The `errors.py` docstring says so.
 
-**There is no composition root.** No `__main__`, no CLI, no `[project.scripts]`. `fuse`,
-`Calibrator.to_evidence`, `build_audit_record`, `load_image`/`load_video` and `detect_faces` have no
-non-test callers. The runner builds `Observation`s directly from dicts, bypassing ingest — so Task
-21's decode-bomb defences are exercised by their unit tests and by nothing else.
+**The composition root now exists (2026-09-21).** `src/dfd/pipeline.py` has `normalize()` (faces +
+quality onto observations, with ROI clamping) and `decide(path, ...) -> AuditRecord`, which wires
+ingest → faces → quality → detectors → calibration → fusion → audit into one runnable path. `dfd
+score <path>` (`src/dfd/cli.py`, `src/dfd/__main__.py`, `[project.scripts] dfd = "dfd.cli:main"`) runs
+it from a shell. `fuse`, `Calibrator.to_evidence`, `build_audit_record`, `load_image`/`load_video` and
+`detect_faces` now all have a non-test caller — `decide` is the first. Task 21's decode-bomb defences
+are exercised through `decide`, so they now have a caller outside their own unit tests too.
+
+What is still **not** true: the benchmark runner (`bench/runner.py`) still builds `Observation`s
+directly from dicts and still bypasses ingest entirely — it does not call `decide` or `normalize` —
+so criteria 4 and 11 remain unmet exactly as before; wiring a composition root did not wire the
+benchmark to it. And because no detector weights are vendored on any machine that matters (gitignored
+locally, absent in CI), every real call to `decide` abstains on both detectors and returns
+`insufficient_evidence` — the path runs end-to-end, but it cannot yet produce any other verdict.
 
 ---
 
@@ -189,12 +335,14 @@ non-test callers. The runner builds `Observation`s directly from dicts, bypassin
 
 1. **Open the PR.** The branch is review-clean and pushed.
 2. **Start the EULA requests** — in parallel with everything else, or the wait becomes sequential.
-3. **A composition root**: wire ingest → detectors → calibration → fusion → audit into one runnable
-   path. Most of the unmet criteria are wiring, not new mechanism.
-4. **An embedder for criterion 2.** Note `check_identity_disjoint` now *refuses* ids with no
+3. **An embedder for criterion 2.** Note `check_identity_disjoint` now *refuses* ids with no
    embedding rather than skipping them — a partial-embedding pipeline must omit unembeddable ids
    explicitly, which is the point.
-5. **The RD adapter for criterion 4** — the 24 cached results are free and already labelled.
+4. **The RD adapter for criterion 4** — the 24 cached results are free and already labelled.
+
+("A composition root" was step 3 here; it is done — see §3 above — and struck from this list
+2026-09-21. The benchmark runner still does not call it, which is why criteria 4 and 11 are still
+open and still numbered above as the next two steps.)
 
 ---
 
