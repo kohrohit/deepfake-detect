@@ -202,3 +202,39 @@ def test_n_frames_validation():
 
     with pytest.raises(ValueError, match="n_frames must be >= 1"):
         fuse([_ev(1.0)], n_frames=-5)
+
+
+from dfd.policy import Policy
+from dfd import fusion
+
+
+def test_reexported_constants_match_the_default_policy():
+    """Two homes for one number is how they drift. This is the only thing
+    stopping fusion's module constants and Policy's fields diverging."""
+    assert fusion.FAKE_THRESHOLD == fusion.DEFAULT_POLICY.fake_threshold
+    assert fusion.REAL_THRESHOLD == fusion.DEFAULT_POLICY.real_threshold
+    assert fusion.DISAGREEMENT_OOD == fusion.DEFAULT_POLICY.disagreement_ood
+
+
+def test_a_custom_policy_moves_the_fake_boundary():
+    """Evidence that is FAKE under the default must be INSUFFICIENT under a
+    stricter policy, or the policy argument is decorative."""
+    evidence = [_ev(1.5, "a")]
+    assert fuse(evidence, n_frames=1).verdict is Verdict.FAKE
+    strict = Policy(fake_threshold=2.0, real_threshold=-2.0)
+    assert fuse(evidence, n_frames=1, policy=strict).verdict is Verdict.INSUFFICIENT_EVIDENCE
+
+
+def test_a_custom_policy_moves_the_real_boundary():
+    evidence = [_ev(-1.5, "a")]
+    assert fuse(evidence, n_frames=1).verdict is Verdict.REAL
+    strict = Policy(fake_threshold=2.0, real_threshold=-2.0)
+    assert fuse(evidence, n_frames=1, policy=strict).verdict is Verdict.INSUFFICIENT_EVIDENCE
+
+
+def test_a_custom_policy_moves_the_disagreement_trigger():
+    """Disagreement overrides both thresholds, so it needs its own proof."""
+    evidence = [_ev(2.0, "a"), _ev(-2.0, "b")]
+    assert fuse(evidence, n_frames=1).verdict is Verdict.INSUFFICIENT_EVIDENCE
+    touchy = Policy(disagreement_ood=1.0)
+    assert fuse(evidence, n_frames=1, policy=touchy).verdict is Verdict.OUT_OF_DISTRIBUTION

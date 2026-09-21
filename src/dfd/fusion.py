@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import numpy.typing as npt
 
+from .policy import DEFAULT_POLICY, Policy
 from .types import Evidence, Verdict
 
 logger = logging.getLogger(__name__)
@@ -25,19 +26,12 @@ logger = logging.getLogger(__name__)
 # Confidence at ±20 nats ≈ 99.99% posterior. Spec §9.3.
 MAX_TOTAL_LLR = 20.0
 
-# LLR threshold to emit FAKE verdict. Spec §7.1.
-# 1.0 nat ≈ 73% posterior (logit(1.0) = 0.731). Conservative threshold to require
-# multi-detector agreement or strong single evidence before claiming FAKE.
-FAKE_THRESHOLD = 1.0
-
-# LLR threshold to emit REAL verdict. Spec §7.1.
-# -1.0 nat ≈ 27% posterior (logit(-1.0) = 0.269). Symmetric with FAKE_THRESHOLD.
-REAL_THRESHOLD = -1.0
-
-# Evidence pulling hard in both directions means off-distribution, not 'average them'.
-# Two detectors at full opposite confidence is 6-of-10 split case the spec says
-# vendors wrongly average away. Spec §7.2.
-DISAGREEMENT_OOD = 3.0
+# Re-exported so callers that imported these names before `Policy` existed keep
+# working. `tests/test_fusion.py::test_reexported_constants_match_the_default_policy`
+# asserts each equals its Policy field — two homes for one number is how they drift.
+FAKE_THRESHOLD = DEFAULT_POLICY.fake_threshold
+REAL_THRESHOLD = DEFAULT_POLICY.real_threshold
+DISAGREEMENT_OOD = DEFAULT_POLICY.disagreement_ood
 
 
 @dataclass(frozen=True)
@@ -92,7 +86,8 @@ def effective_sample_size(series: npt.NDArray[np.float64] | list[float]) -> floa
     return float(min(float(n), max(1.0, ess)))
 
 
-def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) -> FusedResult:
+def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None,
+         policy: Policy = DEFAULT_POLICY) -> FusedResult:
     """Combine Evidence into a single verdict.
 
     CONTRACT (critical): This function assumes one of two mutually exclusive patterns:
@@ -124,6 +119,11 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
                   evidence list contains one entry per frame.
         ess: Effective sample size for discount. Applied only when n_frames > 1.
              If None and n_frames > 1, defaults to 1.0 (maximum discount; conservative).
+        policy: thresholds to apply. Defaults to DEFAULT_POLICY, which holds the
+            values this function used as module constants before policies
+            existed, so an unchanged caller gets unchanged behaviour. Pass the
+            same object to `build_audit_record` so the record's threshold is
+            the one applied rather than a copy of it.
 
     Returns:
         FusedResult with verdict, aggregate LLR, posterior, disagreement, counts.
@@ -189,12 +189,13 @@ def fuse(evidence: list[Evidence], n_frames: int = 1, ess: float | None = None) 
     posterior = 1.0 / (1.0 + math.exp(-total))
 
     # Verdict logic. Disagreement wins (signals OOD).
-    if disagreement >= DISAGREEMENT_OOD:
+    if disagreement >= policy.disagreement_ood:
         verdict = Verdict.OUT_OF_DISTRIBUTION
-        logger.debug("Disagreement %s >= %s; OUT_OF_DISTRIBUTION", disagreement, DISAGREEMENT_OOD)
-    elif total >= FAKE_THRESHOLD:
+        logger.debug("Disagreement %s >= %s; OUT_OF_DISTRIBUTION",
+                     disagreement, policy.disagreement_ood)
+    elif total >= policy.fake_threshold:
         verdict = Verdict.FAKE
-    elif total <= REAL_THRESHOLD:
+    elif total <= policy.real_threshold:
         verdict = Verdict.REAL
     else:
         verdict = Verdict.INSUFFICIENT_EVIDENCE
