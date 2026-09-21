@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import Detector, Registry, SyntheticDetector, abstain  # noqa: F401
+from .blend import DEFAULT_BLEND_WEIGHTS, BlendDetector
 from .effnet import EffNetDetector
 from .npr import NPRDetector
 
@@ -14,23 +15,26 @@ DEFAULT_EFFNET_WEIGHTS = Path("assets/models/effnet_b4_ffpp.pt")
 
 
 def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,
-                     effnet_weights: str | Path = DEFAULT_EFFNET_WEIGHTS) -> Registry:
+                     effnet_weights: str | Path = DEFAULT_EFFNET_WEIGHTS,
+                     blend_weights: str | Path = DEFAULT_BLEND_WEIGHTS) -> Registry:
     """The detector set the CLI consults.
 
-    Two distinct physics, per spec §6: NPR's upsampling fingerprint (slot C)
-    and EfficientNet-B4's learned appearance (slot E). Both abstain when their
-    weights are absent, which is every checkout of this repo.
+    Three distinct physics, per spec §6: NPR's upsampling fingerprint (slot C),
+    the blending seam (slot A), and EfficientNet-B4's learned appearance
+    (slot E). All three abstain when their weights are absent, which is every
+    fresh checkout of this repo — `blend_seam` is the first of the three whose
+    weights this project can actually produce, because it is fitted on a corpus
+    manufactured from the project's own captures (corpora/sbi.py) rather than
+    on a licensed dataset.
 
     Raises:
-        ValueError: from `Registry.register` if a detector with the same
-            name is already registered. Unreachable today: this function
-            registers exactly two detectors under two distinct, hardcoded
-            names ("npr" and "effnet_b4"), which cannot collide with each
-            other. It becomes reachable if a future change adds a third
-            detector or parameterises either name.
+        ValueError: from `Registry.register` if a detector with the same name
+            is already registered. Unreachable today: three distinct hardcoded
+            names ("npr", "blend_seam", "effnet_b4") cannot collide.
     """
     registry = Registry()
     registry.register(NPRDetector(weights_path=npr_weights))
+    registry.register(BlendDetector(weights_path=blend_weights))
     registry.register(EffNetDetector(name="effnet_b4", slot="E",
                                      weights_path=effnet_weights))
     return registry

@@ -179,9 +179,27 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
    benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
 3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
    rather than skipping them; a partial-embedding pipeline must omit unembeddable ids explicitly.
-4. **A swap corpus**, per the paragraph above, before any detector training is attempted.
+4. **The blend-seam detector now exists and is wired in.** `corpora/sbi.py` (the self-blend corpus
+   builder), `src/dfd/detectors/blend.py` (`seam_features`, `BlendDetector`, slot A) and
+   `training/fit_blend.py` (the fitter) are implemented and tested. `default_registry()` now
+   registers three detectors — `blend_seam`, `npr`, `effnet_b4` — instead of two, and
+   `assets/manifest.yaml` carries `blend_seam_weights` as an owned asset at the fixed path
+   `assets/models/blend_seam.npz` (`source: "owned"`, no third-party dataset or generator weight
+   contributes to it). **The fitter has not been run against the real capture corpus.** No model
+   file exists on this machine, so there is no accuracy number — not measured, not estimated, not
+   implied — and `bench/blend_seam_report.json` does not exist. The only measurement that exists is
+   on synthetic fixtures in the test suite, and it is explicitly not a detector claim: it documents
+   that pure-noise features passed the old `> 0.5` bar on 19 of 40 seeds, which is why that test's
+   bar is now 0.9. Running the fitter for real, against
+   `/home/rohit/Desktop/agents/fraud_gff/deepfake_detection`, is the next step and is a decision the
+   project owner has reserved — it produces the first model file and the first honest accuracy
+   number together.
 
-**Do not read "it runs" as "it detects".** Every real input still abstains, correctly — see §3.
+**Do not read "it runs" as "it detects".** Every real input still abstains, correctly — see §3. This
+now applies to `blend_seam` too: even once a model file exists at `assets/models/blend_seam.npz`,
+`dfd score` will keep returning `insufficient_evidence` on every real input, because
+`Calibrator.to_evidence` still returns `uncalibrated_for_band` for every band — no calibration curve
+has been fitted yet. A third detector in the registry does not mean the pipeline decides anything.
 
 ---
 
