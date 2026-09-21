@@ -125,7 +125,51 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-21, end of session)
+## 0. Resume here (last touched 2026-09-21, after the merge)
+
+**PR #1 IS MERGED.** `main` is at merge commit `f6ddeaf`; the composition-root plan is complete and
+in. 565 tests green on merged `main`, coverage 95.12%, ruff and `mypy --strict` clean, both CI legs
+(`gates (dev)` and `gates (floor)`) green on `f52ac9a`. Everything below this block is the layered
+history of earlier sessions — read it for *why*, not for current state.
+
+```bash
+git clone git@github.com:kohrohit/deepfake-detect.git && cd deepfake-detect   # main has it all
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt && pip install -e .
+python3 -m pytest -q                                      # 565 passed
+python3 -m dfd score <any jpg or png>                      # insufficient_evidence, exit 0
+```
+
+**What exists now that did not:** `decide()` in `src/dfd/pipeline.py` — the composition root — plus
+`normalize()`, a `Policy` object applied by `fuse` and recorded by the audit record, `stage_reasons`
+on `AuditRecord` (schema 2), and the `dfd score` CLI. `fuse`, `Calibrator.to_evidence`,
+`build_audit_record`, `load_image`/`load_video` and `detect_faces` have non-test callers for the
+first time, and the decode-bomb limits are finally exercised through a real caller.
+
+**Three things to do next, in order:**
+
+1. **Merge PR #2** — https://github.com/kohrohit/deepfake-detect/pull/2, docs only. It appends the
+   final review's rulings to the committed ledger. §7 below says to delete the `.superpowers/sdd/`
+   workspaces once the PR merges, on the stated rationale that the ledger holds every ruling — which
+   was not true until PR #2, because the fix wave never touched the ledger. Merge it, then the
+   workspaces are safe to delete.
+2. **Decide: commercial or research?** This settles the entire data strategy. Research → the
+   FF++/Celeb-DF/DFDC EULAs are worth pursuing (with the personal-address friction noted in §1's
+   correction block). Commercial → those datasets are off the table regardless of EULA approval, and
+   the plan becomes licence-clean real faces plus self-generated swaps. The asset-scan gate already
+   enforces this.
+3. **Confirm the data.** Are the 442-session capture corpus and the 24 cached Reality Defender
+   results still available, with rights? They are the only labelled data here, and every measurement
+   in §1 came from them. If yes, the CPU-feasible first detector (NPR-style upsampling fingerprints
+   and DCT/SRM residuals with a light classifier — minutes to train on CPU) can be built against
+   them now. If no, the first job is generating a swap corpus, and §1 and the spec both overstate
+   what evidence is reachable.
+
+**Do not read "it runs" as "it detects".** Every real input abstains, correctly — see §3.
+
+---
+
+## 0b. Previous resume block (2026-09-21, before the merge)
 
 **Update, later the same day (composition-root plan, Task 6 of 6): the "Nothing is uncommitted or
 unpushed" line below is no longer true.** The composition-root plan (§2, §3, §5) is complete —
