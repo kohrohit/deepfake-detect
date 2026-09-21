@@ -41,6 +41,31 @@ def png(tmp_path):
     return p
 
 
+@pytest.fixture
+def mp4(tmp_path):
+    """A real decodable clip, so the video branch of the CLI is exercised."""
+    p = tmp_path / "clip.mp4"
+    vw = cv2.VideoWriter(str(p), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (256, 256))
+    rng = np.random.default_rng(0)
+    for _ in range(30):
+        vw.write(rng.integers(0, 255, (256, 256, 3), dtype=np.uint8))
+    vw.release()
+    return p
+
+
+def test_the_video_flags_reach_the_pipeline(mp4, capsys):
+    """`--max-frames` and `--seed` had no test that passed them at all, so
+    nothing connected the flags to `decide`'s arguments. The frame count in
+    `stage_reasons` is the observable end of `--max-frames`; `--seed`'s effect
+    on which frames are chosen is asserted in
+    tests/test_pipeline.py::test_the_video_seed_reaches_the_frame_sampler,
+    which can inspect the score rather than only the record."""
+    assert main(["score", str(mp4), "--face-model", MISSING_FACE_MODEL,
+                 "--max-frames", "3", "--seed", "5"]) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["stage_reasons"]["frames_with_face"] == "0/3"
+
+
 def test_a_decision_exits_zero_even_when_it_abstains(png, capsys):
     """Exit status says whether the tool ran, never what the verdict was."""
     assert main(["score", str(png)]) == 0

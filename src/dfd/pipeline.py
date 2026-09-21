@@ -206,7 +206,11 @@ def _ingest(path: Path, context: Context, limits: Limits, max_frames: int,
     try:
         if suffix in IMAGE_SUFFIXES:
             return load_image(path, context, limits)
-        return load_video(path, context, max_frames, seed, limits)
+        # Keyword arguments, not positional: `max_frames` and `seed` are both
+        # int, so a swap type-checks cleanly under mypy --strict and would
+        # silently score every video from the wrong frame indices.
+        return load_video(path, context, max_frames=max_frames, seed=seed,
+                          limits=limits)
     except ValueError as exc:
         # Both adapters document a bare ValueError for an undecodable file or a
         # zero-frame video — one of errors.py's 19 un-migrated raise sites,

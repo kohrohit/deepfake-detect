@@ -305,3 +305,60 @@ def test_the_record_is_json_serialisable_end_to_end(png):
     record = decide(png, registry=_registry(SyntheticDetector(name="s")),
                     detect=_detector([]), created_at=FIXED_TIME)
     assert json.loads(record.to_json())["schema_version"] == "2"
+
+
+@pytest.fixture
+def mp4(tmp_path):
+    """A real, decodable 30-frame clip (the working pattern from test_ingest).
+
+    The video branch of `_ingest` is the one line of `pipeline.py` that no test
+    reached, so a synthetic Sample will not do: the point is to execute
+    `load_video` through `decide` with the arguments `decide` actually passes.
+    """
+    p = tmp_path / "clip.mp4"
+    vw = cv2.VideoWriter(str(p), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (256, 256))
+    for i in range(30):
+        vw.write(_noise(seed=i))
+    vw.release()
+    return p
+
+
+def test_the_video_path_runs_end_to_end_and_honours_max_frames(mp4):
+    """`decide` passed `max_frames` and `seed` POSITIONALLY into `load_video`,
+    where they are adjacent ints — a swap type-checks under mypy --strict and
+    changes which frames are scored. `max_frames=2` must yield exactly two
+    observations; under the swap it becomes `max_frames=0`, `load_video` finds
+    no frames to keep and raises, and `_ingest` relabels that as an
+    undecodable file. Asserting the count, not merely that a record exists, is
+    what makes the swap visible.
+    """
+    record = decide(mp4, registry=_registry(SyntheticDetector(name="s")),
+                    detect=_detector([_box()]), max_frames=2, seed=0,
+                    created_at=FIXED_TIME)
+    assert record.sample_id == "clip"
+    assert record.stage_reasons["faces"] == "ok"
+    assert record.stage_reasons["frames_with_face"] == "2/2"
+
+
+def test_the_video_path_carries_every_frame_when_under_the_cap(mp4):
+    """A multi-frame sample reaches the record: the clip holds 30 frames and
+    the default cap is 32, so every frame is sampled and counted."""
+    record = decide(mp4, registry=_registry(SyntheticDetector(name="s")),
+                    detect=_detector([_box()]), created_at=FIXED_TIME)
+    assert record.stage_reasons["frames_with_face"] == "30/30"
+    assert record.stage_reasons["max_faces_in_frame"] == "1"
+
+
+def test_the_video_seed_reaches_the_frame_sampler(mp4):
+    """`seed` is the other half of the swapped pair. Two seeds must select
+    different frames, which a payload-hashing detector turns into different
+    scores; if `seed` never arrived, both runs would score identically."""
+    def score_with(seed):
+        record = decide(mp4, registry=_registry(SyntheticDetector(name="s", seed=0)),
+                        detect=_detector([_box()]), max_frames=4, seed=seed,
+                        created_at=FIXED_TIME)
+        return record.evidence[0]["raw_score"]
+
+    a, b = score_with(0), score_with(7)
+    assert a is not None and b is not None, "the detector must not abstain here"
+    assert a != b, "different seeds must sample different frames"
