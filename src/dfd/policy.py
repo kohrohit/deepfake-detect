@@ -25,9 +25,17 @@ class Policy:
 
     Attributes:
         fake_threshold: llr_total at or above which the verdict is FAKE, in nats.
+            Spec §7.1. 1.0 nat ≈ 73% posterior (logit(1.0) = 0.731). Conservative
+            threshold to require multi-detector agreement or strong single evidence
+            before claiming FAKE.
         real_threshold: llr_total at or below which the verdict is REAL, in nats.
+            Spec §7.1. -1.0 nat ≈ 27% posterior (logit(-1.0) = 0.269). Symmetric
+            with fake_threshold.
         disagreement_ood: disagreement at or above which the verdict is
-            OUT_OF_DISTRIBUTION, overriding both thresholds.
+            OUT_OF_DISTRIBUTION, overriding both thresholds. Spec §7.2. Evidence
+            pulling hard in both directions means off-distribution, not 'average
+            them'. Two detectors at full opposite confidence is the 6-of-10 split
+            case the spec says vendors wrongly average away.
         version: identifier recorded in every audit record this policy decides.
     """
 
