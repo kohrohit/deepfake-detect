@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Python `>=3.10`.** Dependency ranges are fixed in `pyproject.toml` and must not be widened: `numpy>=1.26.4,<3`, `opencv-python-headless>=4.10.0.84,<6`, `pillow>=11.0,<13`, `pyyaml>=6.0.3,<7`, `scikit-learn>=1.5,<2`, `torch>=2.4.1,<3`. **Adding any new dependency is out of scope for this plan** — three tests in `tests/test_ci_gates.py` enforce pin/range integrity and will fail.
-- **`mypy --strict` must stay clean** across all files, and `ruff` clean. Both are CI gates.
+- **`mypy --strict` must stay clean**, and `ruff check .` clean. Both are CI gates. Note the scope: `mypy.ini` sets `files = src/dfd`, so the gate checks 25 files in the installed package only. `corpora/` and `bench/` carry 41 pre-existing `--strict` errors and are NOT in the gate — do not attempt to fix them here, and do not widen `mypy.ini`. New code under `corpora/` and `training/` must additionally pass `mypy --strict --follow-imports=skip <file>` on its own, so the new work is held to the gate's bar even though its directory is not.
 - **Coverage gate is ≥85%.** Currently 95.12%.
 - **No test may depend on a weight file existing.** `assets/models/face_detection_yunet_2023mar.onnx` is gitignored and absent in CI. Every function that needs face detection takes the detector as an injected callable, defaulting to the real one. Tests inject a stub.
 - **Never train on the evaluation set.** The 5 `swapped AND approved` sessions (`20260826-221956-387743`, `20260827-104716-349039`, `20260829-010524-969870`, `20260831-142514-700890`, `20260831-142708-227903`) and the 2 further `swapped` sessions are **evaluation only** and must never enter a training split. This is enforced in code, not by convention (Task 3).
@@ -293,7 +293,7 @@ For each test, break the implementation, watch it fail for the right reason, res
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/face_pool.py tests/corpora/test_face_pool.py
 git commit -m "feat: aligned face crops with the provenance a split needs"
 ```
@@ -324,7 +324,6 @@ Create `tests/corpora/test_sbi.py`:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from corpora.sbi import face_mask, jitter, self_blend
 from dfd.faces import FaceBox
@@ -625,7 +624,7 @@ Expected: 9 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/sbi.py tests/corpora/test_sbi.py
 git commit -m "feat: self-blended pseudo-fakes, from one real frame and nothing else"
 ```
@@ -651,20 +650,24 @@ Turn the face pool into benchmark records. This task is where the evaluation set
 
 Create `tests/corpora/test_sbi_corpus.py`:
 
-Create `tests/test_sbi_corpus_helpers.py` first, so the subprocess test below can import the same fixture the in-process tests use:
+Create `tests/corpora/test_sbi_corpus.py`:
 
 ```python
-"""Shared crop fixture. Importable from a subprocess, unlike a local closure."""
+"""The corpus builder's job is split discipline, not image processing."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from corpora.face_pool import FaceCrop
+from corpora.sbi import SBI_GENERATOR, EvaluationOnlySessionError, build_sbi_corpus
 from dfd.faces import FaceBox
-from dfd.types import Quality
+from dfd.types import Modality, Quality
 
 
-def crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCrop:
+def _crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCrop:
     lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
                     [75.0, 125.0], [105.0, 125.0]])
     rng = np.random.default_rng(len(session_id) * 1000 + frame_index)
@@ -677,22 +680,6 @@ def crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCr
                         pitch_deg=0.0, exposure=0.5, band="high"),
         swapped=swapped,
     )
-```
-
-Then `tests/corpora/test_sbi_corpus.py`:
-
-```python
-"""The corpus builder's job is split discipline, not image processing."""
-from __future__ import annotations
-
-from pathlib import Path
-
-import numpy as np
-import pytest
-
-from corpora.sbi import SBI_GENERATOR, EvaluationOnlySessionError, build_sbi_corpus
-from dfd.types import Modality
-from tests.test_sbi_corpus_helpers import crop as _crop
 
 
 def test_each_crop_yields_one_real_and_one_fake() -> None:
@@ -749,26 +736,41 @@ def test_reproducibility_survives_a_different_hash_seed() -> None:
     str hashing is salted per process, and a corpus seeded from it would be
     irreproducible between runs while every in-process test stayed green.
     """
+    import os
     import subprocess
     import sys
     import textwrap
 
-    script = textwrap.dedent('''
+    repo_root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent("""
         import numpy as np
-        from tests.test_sbi_corpus_helpers import crop
+        from corpora.face_pool import FaceCrop
         from corpora.sbi import build_sbi_corpus
-        s = build_sbi_corpus([crop("s1")], seed=5)
+        from dfd.faces import FaceBox
+        from dfd.types import Quality
+        lms = np.array([[70., 80.], [110., 80.], [90., 100.],
+                        [75., 125.], [105., 125.]])
+        img = np.random.default_rng(11).integers(40, 210, (224, 224, 3),
+                                                 dtype=np.uint8)
+        crop = FaceCrop(session_id="s1", frame_index=0, image=img,
+                        box=FaceBox(x=55, y=55, w=70, h=90, landmarks=lms,
+                                    score=0.99),
+                        quality=Quality(inter_ocular_px=40.0, blur_var=120.0,
+                                        yaw_deg=0.0, pitch_deg=0.0,
+                                        exposure=0.5, band="high"),
+                        swapped=False)
+        s = build_sbi_corpus([crop], seed=5)
         fake = next(x for x in s if x.context.label == 1)
         print(int(fake.observations[0].payload.astype(np.int64).sum()))
-    ''')
+    """)
     outs = set()
     for hashseed in ("0", "1", "12345"):
-        env = {**__import__("os").environ, "PYTHONHASHSEED": hashseed}
+        env = {**os.environ, "PYTHONHASHSEED": hashseed}
         r = subprocess.run([sys.executable, "-c", script], capture_output=True,
-                           text=True, env=env, cwd=str(Path(__file__).parent.parent))
+                           text=True, env=env, cwd=str(repo_root))
         assert r.returncode == 0, r.stderr
         outs.add(r.stdout.strip())
-    assert len(outs) == 1, f"corpus changed with PYTHONHASHSEED: {outs}" 
+    assert len(outs) == 1, f"corpus changed with PYTHONHASHSEED: {outs}"
 
 
 def test_a_different_seed_changes_the_fakes_but_not_the_reals() -> None:
@@ -931,7 +933,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/sbi.py tests/corpora/test_sbi_corpus.py
 git commit -m "feat: SBI corpus with the ids the split protocol requires"
 ```
@@ -1185,7 +1187,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add src/dfd/detectors/blend.py tests/test_blend_features.py
 git commit -m "feat: concentric-annulus seam features, slot A"
 ```
@@ -1487,7 +1489,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add src/dfd/detectors/blend.py tests/test_blend_detector.py
 git commit -m "feat: blend-seam detector with an inert model file"
 ```
@@ -1519,9 +1521,24 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from corpora.face_pool import FaceCrop
 from corpora.sbi import build_sbi_corpus
-from tests.test_sbi_corpus_helpers import crop as _crop
+from dfd.faces import FaceBox
+from dfd.types import Quality
 from training.fit_blend import evaluate, fit_blend_model, split_by_subject
+
+
+def _crop(session_id: str) -> FaceCrop:
+    lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
+                    [75.0, 125.0], [105.0, 125.0]])
+    rng = np.random.default_rng(len(session_id) * 1000)
+    return FaceCrop(session_id=session_id, frame_index=0,
+                    image=rng.integers(40, 210, (224, 224, 3), dtype=np.uint8),
+                    box=FaceBox(x=55, y=55, w=70, h=90, landmarks=lms, score=0.9),
+                    quality=Quality(inter_ocular_px=40.0, blur_var=120.0,
+                                    yaw_deg=0.0, pitch_deg=0.0, exposure=0.5,
+                                    band="high"),
+                    swapped=False)
 
 
 def _corpus(n: int = 20):
@@ -1790,7 +1807,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench training
+python3 -m pytest -q && ruff check . && mypy --strict && mypy --strict --follow-imports=skip training/fit_blend.py
 git add training tests/test_fit_blend.py
 git commit -m "feat: fit the blend model, with subject-disjoint splitting in the fitter"
 ```
@@ -1920,7 +1937,7 @@ In `docs/HANDOFF.md` §0, replace next-step 4 ("A swap corpus…") with a statem
 ```bash
 python3 -m pytest -q
 ruff check .
-mypy --strict src corpora bench training
+mypy --strict && mypy --strict --follow-imports=skip training/fit_blend.py
 python3 -m pytest --cov=src --cov=corpora --cov=bench --cov-fail-under=85 -q
 git add -A
 git commit -m "feat: register the blend-seam detector and its owned model asset"
