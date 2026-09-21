@@ -12,16 +12,27 @@ without a cause is not an audit trail.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 
+from .audit import AuditRecord, build_audit_record
+from .calibration import Calibrator
+from .detectors.base import Registry
+from .errors import InvalidInput
 from .faces import DEFAULT_MODEL, FaceBox, detect_faces
+from .fusion import fuse
+from .ingest.image import load_image
+from .ingest.video import DEFAULT_MAX_FRAMES, load_video
+from .limits import DEFAULT_LIMITS, Limits
+from .policy import DEFAULT_POLICY, Policy
 from .quality import measure_quality
-from .types import QUALITY_BANDS, Observation, Sample
+from .types import QUALITY_BANDS, Context, Evidence, Observation, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -150,3 +161,151 @@ def normalize(sample: Sample, *, detect: FaceDetectFn = _detect_with_reason,
     return (Sample(sample_id=sample.sample_id, modality=sample.modality,
                    observations=tuple(out), context=sample.context),
             stage_reasons)
+
+
+#: Extensions routed to each ingest adapter. An unlisted extension is refused
+#: rather than guessed: `load_image` on a video returns the first frame with no
+#: indication that the rest of the file was ignored.
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+
+
+def _sha256(path: Path) -> str:
+    """Hash the file in chunks, before anything decodes it.
+
+    Raises:
+        InvalidInput: if the file cannot be read. Without this translation a
+            missing path raises OSError, which the CLI would report as an
+            unexpected failure rather than as bad input.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise InvalidInput(f"cannot read {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+def _ingest(path: Path, context: Context, limits: Limits, max_frames: int,
+            seed: int) -> Sample:
+    """Route to an ingest adapter by extension.
+
+    Raises:
+        InvalidInput: if the extension is not one this package ingests, or if
+            the adapter reports the file is undecodable.
+        ResourceLimitExceeded: propagated from the adapters' header-first
+            checks, deliberately untouched.
+    """
+    suffix = path.suffix.lower()
+    if suffix not in IMAGE_SUFFIXES and suffix not in VIDEO_SUFFIXES:
+        raise InvalidInput(
+            f"unsupported file extension {suffix!r} for {path.name}; "
+            f"images: {sorted(IMAGE_SUFFIXES)}, videos: {sorted(VIDEO_SUFFIXES)}")
+    try:
+        if suffix in IMAGE_SUFFIXES:
+            return load_image(path, context, limits)
+        return load_video(path, context, max_frames, seed, limits)
+    except ValueError as exc:
+        # Both adapters document a bare ValueError for an undecodable file or a
+        # zero-frame video — one of errors.py's 19 un-migrated raise sites,
+        # translated here at the boundary that needs it. Scoped to the adapter
+        # call alone, NOT wrapped around the rest of the pipeline: a blanket
+        # except ValueError would relabel genuine bugs as bad input.
+        raise InvalidInput(f"could not decode {path.name}: {exc}") from exc
+
+
+def decide(
+    path: str | Path,
+    *,
+    registry: Registry,
+    calibrators: Mapping[str, Calibrator] | None = None,
+    policy: Policy = DEFAULT_POLICY,
+    context: Context | None = None,
+    limits: Limits = DEFAULT_LIMITS,
+    detect: FaceDetectFn = _detect_with_reason,
+    face_model: str | Path = DEFAULT_MODEL,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+    seed: int = 0,
+    created_at: str | None = None,
+) -> AuditRecord:
+    """Score one file and return its immutable audit record.
+
+    The stages: hash, ingest (limits enforced from the header, before decode),
+    normalize (faces and quality), score every registered detector, calibrate
+    each raw score on the sample's worst measured band, fuse under `policy`,
+    and record — with the same `policy` object, so the record's threshold is
+    the one applied rather than a copy of it.
+
+    `n_frames=1` is passed to `fuse` because every detector in this repo
+    aggregates internally; passing the frame count would apply the ESS
+    discount to already-aggregated evidence, which `fuse` documents as misuse.
+
+    `ood_score` carries `FusedResult.disagreement`. P0 has no Mahalanobis or
+    energy OOD head, and disagreement is the only OOD-shaped quantity that
+    exists; the field name overstates what it holds. Revisit when P1 lands the
+    real head.
+
+    Args:
+        path: file to score.
+        registry: detectors to consult.
+        calibrators: fitted calibrators by detector name. A detector with no
+            entry calibrates through an unfitted `Calibrator`, which returns
+            llr 0.0 and `uncalibrated_for_band` — the honest answer to "I was
+            never calibrated in this regime".
+        policy: thresholds to apply and to record.
+        context: sample metadata; defaults to an empty `Context`.
+        limits: decode limits, enforced before allocation.
+        detect: face detection seam.
+        face_model: path passed to `detect`.
+        max_frames: frame cap for video ingest.
+        seed: frame-selection seed for video ingest.
+        created_at: ISO-8601 timestamp; injectable so two records describing
+            the same decision are genuinely identical.
+
+    Returns:
+        An `AuditRecord`. A refusal produces no record: a refused input is not
+        a decision.
+
+    Raises:
+        InvalidInput: unreadable file, unsupported extension, undecodable file.
+        ResourceLimitExceeded: the input exceeds a decode limit.
+    """
+    file_path = Path(path)
+    input_sha256 = _sha256(file_path)
+    sample = _ingest(file_path, context or Context(), limits, max_frames, seed)
+    sample, stage_reasons = normalize(sample, detect=detect, face_model=face_model)
+    band = _worst_band(sample.observations)
+
+    fitted = dict(calibrators or {})
+    evidence: list[Evidence] = []
+    model_versions: dict[str, str] = {}
+    for name in registry.names():
+        detector = registry.get(name)
+        started = time.perf_counter()
+        raw = detector.score(sample.observations)
+        logger.debug("detector %s scored in %.1f ms", name,
+                     (time.perf_counter() - started) * 1000.0)
+        model_versions[name] = detector.version
+        calibrator = fitted.get(name) or Calibrator(name)
+        evidence.append(calibrator.to_evidence(raw, band))
+
+    fused = fuse(evidence, n_frames=1, policy=policy)
+    logger.info("decided %s: verdict=%s band=%s contributing=%d",
+                sample.sample_id, fused.verdict.value, band, fused.n_contributing)
+    return build_audit_record(
+        sample_id=sample.sample_id,
+        input_sha256=input_sha256,
+        verdict=fused.verdict,
+        llr_total=fused.llr_total,
+        posterior=fused.posterior,
+        evidence=evidence,
+        quality_band=band,
+        ood_score=fused.disagreement,
+        policy_version=policy.version,
+        threshold=policy.fake_threshold,
+        model_versions=model_versions,
+        stage_reasons=stage_reasons,
+        created_at=created_at,
+    )

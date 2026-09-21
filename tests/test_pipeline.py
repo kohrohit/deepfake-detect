@@ -1,12 +1,21 @@
+import hashlib
+import json
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 import pytest
 
+from dfd.calibration import Calibrator
+from dfd.detectors.base import Registry, SyntheticDetector
+from dfd.errors import InvalidInput, ResourceLimitExceeded
 from dfd.faces import FaceBox
+from dfd.limits import Limits
 from dfd.pipeline import (DEGENERATE_BOX, NO_FACE, NO_OBSERVATIONS,
-                          UNMEASURED, _worst_band, normalize)
-from dfd.types import Context, Modality, Observation, Quality, Sample
+                          UNMEASURED, _worst_band, decide, normalize)
+from dfd.policy import Policy
+from dfd.types import (Context, Modality, Observation, Quality, RawScore,
+                       Sample, Verdict)
 
 
 def _noise(size=256, seed=0):
@@ -141,3 +150,158 @@ def test_a_sample_with_no_observations_reports_no_observations():
     assert reasons["faces"] == NO_OBSERVATIONS
     assert reasons["frames_with_face"] == "0/0"
     assert reasons["max_faces_in_frame"] == "0"
+
+
+FIXED_TIME = "2026-09-21T10:00:00+00:00"
+
+
+@pytest.fixture
+def png(tmp_path):
+    p = tmp_path / "subject.png"
+    cv2.imwrite(str(p), _noise())
+    return p
+
+
+@dataclass(frozen=True)
+class _FixedDetector:
+    """Returns a chosen score without needing weights or quality."""
+    name: str = "fixed"
+    version: str = "test-1"
+    modalities: frozenset = frozenset({Modality.IMAGE})
+    min_quality_band: str = "low"
+    value: float = 0.99
+
+    def score(self, obs):
+        return RawScore(detector=self.name, version=self.version, score=self.value,
+                        abstained=False, reason="ok")
+
+
+def _registry(*detectors):
+    r = Registry()
+    for d in detectors:
+        r.register(d)
+    return r
+
+
+def _fitted_calibrator(name="fixed", band="high"):
+    """Separable training data so a 0.99 score earns a strongly positive llr."""
+    scores = [0.95 + 0.001 * i for i in range(20)] + [0.01 * i for i in range(20)]
+    labels = [1] * 20 + [0] * 20
+    return Calibrator(name).fit(scores, labels, [band] * 40)
+
+
+def test_the_path_runs_end_to_end_and_abstains_for_stated_reasons(png):
+    """Today's real behaviour: no face weights, no detector weights, no
+    calibration. The value is that the record names all three separately."""
+    record = decide(png, registry=_registry(SyntheticDetector(name="synthetic")),
+                    detect=_detector([], reason="weights_absent"),
+                    created_at=FIXED_TIME)
+    assert record.verdict == Verdict.INSUFFICIENT_EVIDENCE.value
+    assert record.stage_reasons["faces"] == "weights_absent"
+    assert record.quality_band == UNMEASURED
+    assert [e["reason"] for e in record.evidence] != []
+
+
+def test_the_path_can_actually_reach_a_verdict(png):
+    """THE load-bearing test. Every other test here passes on a pipeline that
+    always abstains; this is the only one that does not. Without it, 'correctly
+    abstaining' and 'broken in a way abstention hides' are indistinguishable."""
+    record = decide(
+        png,
+        registry=_registry(_FixedDetector()),
+        calibrators={"fixed": _fitted_calibrator()},
+        detect=_detector([_box()]),
+        created_at=FIXED_TIME,
+    )
+    assert record.quality_band == "high", "the injected face must band high"
+    assert record.verdict == Verdict.FAKE.value
+    assert record.llr_total > 1.0
+    assert record.evidence[0]["abstained"] is False
+
+
+def test_input_sha256_is_the_hash_of_the_file(png):
+    expected = hashlib.sha256(png.read_bytes()).hexdigest()
+    record = decide(png, registry=_registry(SyntheticDetector(name="s")),
+                    detect=_detector([]), created_at=FIXED_TIME)
+    assert record.input_sha256 == expected
+
+
+def test_the_recorded_threshold_is_the_one_applied(png):
+    strict = Policy(fake_threshold=4.0, real_threshold=-4.0, version="strict-v1")
+    record = decide(png, registry=_registry(SyntheticDetector(name="s")),
+                    detect=_detector([]), policy=strict, created_at=FIXED_TIME)
+    assert record.threshold == 4.0
+    assert record.policy_version == "strict-v1"
+
+
+def test_the_policy_recorded_is_the_one_fuse_actually_applied(png):
+    """`record.threshold` alone cannot catch `fuse` being called under a
+    different policy than the one recorded: with an all-abstained detector
+    (as above) llr_total is 0.0, which is INSUFFICIENT_EVIDENCE under both a
+    lenient and a strict policy, so a `policy` argument dropped on the way
+    into `fuse` would go unnoticed. This uses evidence with llr_total ~1.53
+    (see test_the_path_can_actually_reach_a_verdict): FAKE under
+    DEFAULT_POLICY's threshold of 1.0, but still INSUFFICIENT_EVIDENCE under
+    a stricter threshold of 4.0. If `fuse` silently used DEFAULT_POLICY while
+    the record claimed strict-v1, the verdict would betray it."""
+    strict = Policy(fake_threshold=4.0, real_threshold=-4.0, version="strict-v1")
+    record = decide(
+        png,
+        registry=_registry(_FixedDetector()),
+        calibrators={"fixed": _fitted_calibrator()},
+        detect=_detector([_box()]),
+        policy=strict,
+        created_at=FIXED_TIME,
+    )
+    assert record.verdict == Verdict.INSUFFICIENT_EVIDENCE.value
+
+
+def test_an_unknown_extension_is_refused_by_name(png):
+    other = png.with_suffix(".xyz")
+    other.write_bytes(png.read_bytes())
+    with pytest.raises(InvalidInput, match=r"\.xyz"):
+        decide(other, registry=_registry(SyntheticDetector(name="s")))
+
+
+def test_a_missing_file_is_a_dfd_error_not_an_oserror(tmp_path):
+    with pytest.raises(InvalidInput, match="missing"):
+        decide(tmp_path / "missing.png", registry=_registry(SyntheticDetector(name="s")))
+
+
+def test_an_undecodable_file_is_invalid_input_not_a_bare_valueerror(tmp_path):
+    """`b"not an image"` alone exercises the wrong branch: Pillow cannot even
+    identify its header, so `check_image_before_decode` raises its own
+    InvalidInput ("could not read image header...") before `_ingest`'s
+    ValueError translation is ever reached. To reach the branch this test
+    names, the header must be valid (so the limits gate passes and cv2 is
+    asked to decode) while the pixel data is not: keep the PNG signature and
+    IHDR chunk but cut the file right after the IDAT chunk header, dropping
+    the compressed pixel data cv2 needs."""
+    p = tmp_path / "broken.png"
+    good = tmp_path / "good.png"
+    cv2.imwrite(str(good), _noise())
+    data = good.read_bytes()
+    p.write_bytes(data[: data.find(b"IDAT") + 8])
+    with pytest.raises(InvalidInput, match="decode"):
+        decide(p, registry=_registry(SyntheticDetector(name="s")))
+
+
+def test_the_decode_bomb_defence_is_reachable_through_decide(png):
+    """Task 21's limits were exercised by their own unit tests and nothing
+    else. This is the caller that makes them real."""
+    with pytest.raises(ResourceLimitExceeded):
+        decide(png, registry=_registry(SyntheticDetector(name="s")),
+               limits=Limits(max_pixels=16))
+
+
+def test_model_versions_name_every_registered_detector(png):
+    record = decide(png, registry=_registry(SyntheticDetector(name="a"),
+                                            SyntheticDetector(name="b")),
+                    detect=_detector([]), created_at=FIXED_TIME)
+    assert set(record.model_versions) == {"a", "b"}
+
+
+def test_the_record_is_json_serialisable_end_to_end(png):
+    record = decide(png, registry=_registry(SyntheticDetector(name="s")),
+                    detect=_detector([]), created_at=FIXED_TIME)
+    assert json.loads(record.to_json())["schema_version"] == "2"
