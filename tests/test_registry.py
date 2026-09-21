@@ -331,7 +331,7 @@ def test_default_registry_composes_three_distinct_physics() -> None:
 
     registry = default_registry()
     assert registry.names() == ["blend_seam", "effnet_b4", "npr"]
-    slots = {registry.get(n).slot for n in registry.names()}  # type: ignore[attr-defined]
+    slots = {registry.get(n).slot for n in registry.names()}
     assert slots == {"A", "C", "E"}
 
 
