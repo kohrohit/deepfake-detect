@@ -168,11 +168,13 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
 
 **Next, in order:**
 
-1. **Decide which of the three EULA routes to take — read §4 first, it was rewritten today against
-   the primary sources and the answer is not "send three emails".** FF++'s form requires a lab and a
-   named PI; Celeb-DF states the download goes to an academic address; and FF++ clause 6 binds a
-   for-profit *employer* regardless of which mailbox submits the form. Only DFDC is reachable as
-   things stand. §4 lays out the three options and what each costs.
+1. **Find an academic signatory** — the owner's ruling, 2026-09-21, after §4 showed only DFDC is
+   reachable alone. The working packet is `docs/EULA-ACCESS.md`: what each agreement requires, an
+   outreach note to a prospective PI, and form text ready to paste. It also records the constraint
+   that decides what these datasets are *for* — a model trained on FF++ or Celeb-DF is "derived
+   data" under their terms and can never ship commercially, so the research route buys a
+   **benchmark**, not training data. Settle the FF++ clause 6 / employer question in §2 of that file
+   before anything is submitted.
 2. **Criterion 4 — the RD adapter.** The 24 cached results are free, already labelled, and the
    benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
 3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
@@ -544,7 +546,9 @@ before relying on it, and record what it says here.
 
 **Only DFDC is realistically reachable today.** FF++ needs an affiliation and a PI; Celeb-DF needs
 an academic address; both are non-commercial-only in terms that bind an employer if there is one.
-Three ways forward, and this is the owner's call, not an engineering one:
+Three ways forward were put to the owner; **they ruled option 2, find an academic signatory**
+(2026-09-21). `docs/EULA-ACCESS.md` carries the packet for it. The other two are kept here because
+option 2 can fail, and because option 3 is required regardless:
 
 1. **Pursue DFDC alone** and accept a single-source benchmark — which undercuts the
    leave-one-generator-out protocol the build already implements, since LOGO needs several
