@@ -144,3 +144,61 @@ def test_subject_id_is_accepted_and_does_not_change_sample_identity(png, capsys)
     record. See known gap 6 — do not rename this test to imply otherwise."""
     main(["score", str(png), "--subject-id", "applicant-7"])
     assert json.loads(capsys.readouterr().out)["sample_id"] == "subject"
+
+
+def test_logging_reaches_stderr_formatted_and_never_touches_the_record(png):
+    """The whole point of the stdout/stderr split is that log output must
+    never contaminate the record. Run as a real subprocess, at the loudest
+    verbosity, because in-process pytest installs its own root handlers and
+    `basicConfig` is then a deliberate no-op — only a subprocess shows what a
+    shell actually sees.
+
+    The `WARNING dfd.faces:` prefix is the assertion that matters: before
+    `main` configured logging, that line arrived through Python's lastResort
+    handler as a bare message with no level and no logger name, and every
+    INFO/DEBUG diagnostic in `decide` was unreachable from the only entry
+    point that exists.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "dfd", "score", str(png),
+         "--face-model", MISSING_FACE_MODEL, "-vv"],
+        capture_output=True, text=True, check=False)
+
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["schema_version"] == "2"
+    assert proc.stdout.count("\n") == 1, \
+        "stdout must carry exactly one JSON object even with logging on"
+    assert f"WARNING dfd.faces: Face detector weights absent at {MISSING_FACE_MODEL}" \
+        in proc.stderr
+    assert "DEBUG dfd.pipeline:" in proc.stderr
+    assert "INFO dfd.pipeline:" in proc.stderr
+    assert proc.stderr.rstrip().splitlines()[-1].startswith("verdict="), \
+        "the human summary stays the last line of stderr"
+
+
+def test_the_default_verbosity_keeps_stderr_quiet(png):
+    """Default is WARNING: a script parsing stderr must not suddenly receive
+    every stage's DEBUG line because logging was switched on."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "dfd", "score", str(png),
+         "--face-model", MISSING_FACE_MODEL],
+        capture_output=True, text=True, check=False)
+
+    assert proc.returncode == 0
+    assert "DEBUG" not in proc.stderr
+    assert "INFO" not in proc.stderr
+    assert "WARNING dfd.faces:" in proc.stderr
+    assert proc.stderr.rstrip().splitlines()[-1].startswith("verdict=")
+
+
+def test_max_frames_below_one_is_a_usage_error_not_a_corrupt_file(png, capsys):
+    """`--max-frames 0` reached `load_video`, which raised its zero-frame
+    ValueError, which `_ingest` relabelled `could not decode <file>` — telling
+    a user who mistyped a flag that their video is corrupt. Rejected at the
+    parser now, with the flag named."""
+    with pytest.raises(SystemExit) as exc:
+        main(["score", str(png), "--max-frames", "0"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--max-frames" in err and "must be >= 1" in err
+    assert "could not decode" not in err

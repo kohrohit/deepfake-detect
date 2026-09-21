@@ -206,22 +206,49 @@ the detector list, corrupting `n_contributing` and every downstream count).
 
 ```
 dfd score PATH [--subject-id ID] [--max-frames N] [--seed N]
-               [--face-model PATH] [--pretty]
+               [--face-model PATH] [-v|-vv] [--pretty]
 ```
 
 - **stdout carries the record JSON and nothing else**, so it pipes into `jq`.
   `--pretty` reformats that JSON for reading and is display-only: the digest is
   always taken over the canonical `to_json()` output, never over the
-  pretty-printed bytes, or the same record would digest two ways.
-- **stderr carries one line**:
+  pretty-printed bytes, or the same record would digest two ways. This holds at
+  every verbosity: log records go to stderr, never stdout.
+- **stderr carries the one-line human summary, plus any log record at or above
+  the configured level.** The summary is always the last line:
   `verdict=insufficient_evidence llr=0.00 band=unmeasured contributing=0/2 faces=weights_absent digest=a3f1…`
+
+  `main` calls `logging.basicConfig(level=..., stream=sys.stderr,
+  format="%(levelname)s %(name)s: %(message)s")`. Default is **WARNING**, `-v`
+  is INFO, `-vv` is DEBUG. So the default checkout — no YuNet weights — emits
+  two stderr lines, not one:
+
+  ```
+  WARNING dfd.faces: Face detector weights absent at assets/models/face_detection_yunet_2023mar.onnx
+  verdict=insufficient_evidence llr=0.00 band=unmeasured contributing=0/2 faces=weights_absent digest=a3f1…
+  ```
+
+  **Corrected 2026-09-21.** This section previously claimed stderr carries one
+  line. That was only ever true on a machine that happened to have the YuNet
+  weights on disk — the minority case, and the opposite of CI. Worse, the
+  warning arrived through Python's `lastResort` handler with no level and no
+  logger name, because nothing configured logging; and every `logger.info` /
+  `logger.debug` diagnostic in `decide` was unreachable from the only entry
+  point that exists. Configuring logging in `main` is what makes the described
+  contract true rather than accidental. `-vv` also admits third-party library
+  loggers (PIL, torch) — verbose output is a debugging aid, not an interface.
+
+- **`--max-frames` is validated at the parser and must be at least 1.** `0`
+  otherwise reached `load_video`, which raised its zero-frame `ValueError`,
+  which `_ingest` relabelled `could not decode <file>` — a mistyped flag
+  reported as a corrupt video.
 
 **Exit codes**
 
 | Code | Meaning |
 |---|---|
 | `0` | a decision was produced — **any** verdict, `INSUFFICIENT_EVIDENCE` included |
-| `2` | input refused (`DfdError`) — message on stderr, no traceback |
+| `2` | input refused (`DfdError`) — message on stderr, no traceback; also an `argparse` usage error, which exits 2 by its own convention |
 | `1` | unexpected failure |
 
 The verdict is deliberately **not** encoded in the exit status. `if dfd score f`
