@@ -1,6 +1,6 @@
 # Handoff — P0 Evidence Core and Benchmark Harness
 
-**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 495 tests green,
+**As of 2026-09-21.** Branch `p0-evidence-core`, **22 of 22 tasks complete**, 498 tests green,
 ruff clean, `mypy --strict` clean, coverage 95%. Pushed. **The plan is finished; the branch has
 not been merged.**
 
@@ -10,7 +10,7 @@ rulings made during the build, each with what it costs if wrong. The spec
 
 ```bash
 cd /home/rohit/Desktop/agents/deepfake && git checkout p0-evidence-core
-python3 -m pytest -q          # 495 passed
+python3 -m pytest -q          # 498 passed
 ```
 
 **Corrected 2026-09-21.** A previous version of this handoff said the suite ends in "1 warning"
@@ -23,15 +23,32 @@ had already failed one branch above. The documented escape hatch did not work on
 evidence that the unsafe path is unsafe was never that warning; it is the unconditional
 `logger.warning` immediately above the call, which is untouched.
 
-### Environment drift is unguarded
+### Environment drift — what happened, and what now guards it
 
-Every dependency in `pyproject.toml` and `requirements-dev.txt` is a floor with no ceiling. Local
-resolves numpy 1.26.4 / opencv 4.x / torch 2.4.1; CI resolved numpy 2.2.6 / opencv 5.0.0 /
-torch 2.14.0. The first CI run failed on `mypy --strict` for this reason alone, and because Types
-runs before Tests, the suite had never executed under the CI resolution at all — which is how the
-`torch.load` defect stayed hidden. **Green locally is not evidence of green in CI.** To reproduce
-what CI sees, build a venv from `requirements-dev.txt` with no local site-packages and run all four
-gates there. Consider pinning ceilings, or this recurs on the next upstream release.
+Every dependency used to be a floor with no ceiling. Local resolved numpy 1.26.4 / opencv 4.10 /
+torch 2.4.1; CI resolved numpy 2.2.6 / opencv 5.0.0 / torch 2.14.0. The first CI run failed on
+`mypy --strict` for that reason alone, and because Types runs before Tests, **the suite had never
+executed under the CI resolution at all** — which is how the `torch.load` defect stayed hidden
+behind it.
+
+Now: `requirements-dev.txt` is **exactly `==`-pinned** to the set all four gates were verified
+against, and `pyproject.toml` carries consumer-facing ranges with ceilings at the next major.
+The floors were raised too — `numpy>=1.24`, `opencv>=4.8`, `pillow>=10.0`, `scikit-learn>=1.3`,
+`torch>=2.2` had never been run by anyone, and are now the oldest versions actually exercised.
+
+**Do not over-read the ceilings.** They would not have caught the failure that prompted them: torch
+flipped the `weights_only` default in **2.6, a minor release**, which `torch<3` admits. The exact
+pins are the guard, and only for direct dependencies — transitive ones still float. Three tests in
+`tests/test_ci_gates.py` enforce that pins stay pinned, that ranges stay bounded, and that every pin
+sits inside its range (otherwise the `pip install -e .` CI runs after the pinned install would
+quietly re-resolve it).
+
+**Still not guarded:** nothing exercises the declared floors automatically. Both ends are tested
+today only because two machines happen to sit at opposite ends; CI runs the upper end alone. A
+second CI leg installing the floor versions would turn that from coincidence into a gate.
+
+To reproduce what CI sees: build a venv from `requirements-dev.txt` with no local site-packages and
+run all four gates there.
 
 ---
 
