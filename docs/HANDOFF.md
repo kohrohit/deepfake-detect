@@ -125,7 +125,7 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-22, after the detector was fitted and measured)
+## 0. Resume here (last touched 2026-09-23, after the service was built and gated)
 
 `main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
 the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
@@ -389,6 +389,80 @@ fitted on could never have told it otherwise: FairFace photographs are clean Fli
 `below_quality_floor`, 494 of them banded `reject` — overwhelmingly the 256px images, of which only
 350 of 836 were scored at all. On a corpus where a sixth of the evidence is refused, an operating
 point set from the scored sixth-fewer is not the operating point the field will see.
+
+### The one public detector on this machine is at chance. Measured 2026-09-23.
+
+`assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
+classifier, Apache-2.0, commercially usable, 343 MB, registered in the manifest and wired into
+**nothing**. It was the only unexercised asset in the repo that could plausibly have made the system
+work, so it was measured before any more was built on top of the seam detector.
+
+Scored all 3,207 DF40 records through the same aligned crops the benchmark uses:
+
+| | dima806 ViT on DF40 |
+|---|---|
+| AUC | **0.5214** |
+| TPR@FPR=1% | 0.053 |
+| mean P(fake) on **reals** | 0.961 |
+| mean P(fake) on **fakes** | 0.952 |
+
+It is not merely at chance, it is **saturated**: it calls essentially everything fake, with almost
+no separation between the two classes. A model that outputs 0.95 for every input has an AUC near
+0.5 for the same reason a stopped clock has no correlation with the time.
+
+**Not wired in, deliberately.** Adding it would mean adding `transformers` to a dependency set this
+repo pins exactly and gates at both ends of every range, in exchange for a detector measured to
+carry no information. It is recorded in `bench/evidence_card.json` so that the next person who
+notices the weights sitting there finds the measurement instead of repeating it.
+
+That closes the list. Every detector reachable from this machine is now measured:
+
+| detector | weights | measured AUC | decides? |
+|---|---|---|---|
+| `blend_seam` | fitted here, FairFace self-blends | **0.289** (inverted) | no |
+| `dima806_vit` | on disk, Apache-2.0 | **0.521** (chance) | not wired |
+| `npr` | absent | — | no |
+| `effnet_b4` | absent (obtainable weights are NonCommercial) | — | no |
+
+**Nothing on this deployment can tell a deepfake from a real face.** That is the finding, and the
+service built in §0 is built around it rather than in spite of it.
+
+### The service. Built 2026-09-23, and gated so that it cannot lie.
+
+`src/dfd/service/` — watch a folder, score what lands in it, record an immutable audit record, serve
+the results. Installed as a systemd **user** unit (`ops/install.sh`), no root, bound to 127.0.0.1,
+`Restart=always`. Stdlib only: `http.server`, `sqlite3`, one HTML string. Full operator
+documentation in `docs/SERVICE.md`.
+
+The design problem was not the plumbing. It was this: a service that prints a verdict for every file
+it is given, while every detector behind it is at or below chance, is precisely the product this
+project exists to not build. The answer is the **evidence gate**:
+
+`bench/evidence_card.json` records the measured AUC of every detector and the corpus it was measured
+on. At startup the service keeps a calibration curve **only** for detectors at or above a floor
+(0.75). A detector below the floor still runs, and its raw score still reaches the audit record —
+that data is worth accumulating — but with no curve it contributes `llr 0.0` with
+`uncalibrated_for_band` and cannot move a verdict. Today that is every detector, so every verdict is
+`insufficient_evidence`, which is the truth.
+
+Three properties make it a gate rather than a preference:
+
+- **Unmeasured fails closed** (`auc: null` never decides), exactly as an unregistered asset is
+  treated as non-commercial by `assets/manifest.yaml`.
+- **The card cannot lower the floor**, only raise it. A bar set by the thing being gated is not a bar.
+- **A missing or malformed card is an error, not an empty gate.** Both end with nothing deciding;
+  only the error distinguishes a misconfigured deployment from an honest one.
+
+And `tests/service/test_evidence.py::test_no_detector_currently_clears_the_floor` asserts the
+present state. The day something is measured above 0.75 that test goes red, and a person has to come
+here and delete it on purpose. That is the moment this service starts issuing real verdicts — made
+deliberately, by a human, in a commit.
+
+Verified end to end on the installed unit, 2026-09-23: a 1024px DF40 fake dropped in the inbox is
+detected, cropped, scored (`blend_seam` raw 0.803), calibrated to `llr 0.0`
+(`uncalibrated_for_band`), recorded with a digest, and served — verdict `insufficient_evidence`.
+Both numbers are kept on purpose: 0.803 is evidence about the detector, 0.0 is the decision about
+the file.
 
 ### The domain-shift explanation is refuted too. Two controls, 2026-09-22.
 
