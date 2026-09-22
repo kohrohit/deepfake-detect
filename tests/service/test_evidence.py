@@ -157,3 +157,40 @@ def test_the_committed_card_declares_training_provenance_for_every_detector(
     card = load_card(EVIDENCE_CARD_PATH)
     for name, entry in card["detectors"].items():
         assert "trained_on" in entry, f"{name} does not say what it trained on"
+
+
+def test_a_corpus_id_must_be_a_registered_asset(tmp_path: Path) -> None:
+    """Free-text corpus names let val-vs-test look like cross-corpus.
+
+    `trained_on: "df40 val"` against `corpus: "df40 test"` are different
+    strings and the same distribution, which is precisely the in-dataset
+    number the previous test rejects. Requiring both to be ids from
+    `assets/manifest.yaml` collapses them onto one name, so the gate sees
+    what is actually true.
+    """
+    card = load_card(_card(tmp_path, {
+        "sneaky": {"auc": 0.93, "corpus": "df40 test split",
+                   "trained_on": "df40 val split", "note": ""}}))
+    assert gated_detectors(card) == set()
+
+
+def test_registered_asset_ids_on_both_sides_pass(tmp_path: Path) -> None:
+    card = load_card(_card(tmp_path, {
+        "honest": {"auc": 0.93, "corpus": "df40_eval_subset",
+                   "trained_on": "fairface_corpus", "note": ""}}))
+    assert gated_detectors(card) == {"honest"}
+
+
+def test_the_committed_card_names_only_registered_assets() -> None:
+    import yaml
+    manifest = yaml.safe_load(
+        (EVIDENCE_CARD_PATH.parent.parent / "assets/manifest.yaml").read_text())
+    known = set(manifest["assets"])
+    for name, entry in load_card(EVIDENCE_CARD_PATH)["detectors"].items():
+        for field in ("corpus", "trained_on"):
+            value = entry.get(field)
+            if value is None:
+                continue
+            assert value in known, (
+                f"{name}.{field} is {value!r}, which is not an id in "
+                "assets/manifest.yaml")

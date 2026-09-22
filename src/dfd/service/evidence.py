@@ -25,6 +25,8 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 #: Minimum measured AUC, on a corpus the detector did not train on, before a
@@ -37,8 +39,14 @@ DEFAULT_AUC_FLOOR = 0.75
 
 CARD_FORMAT_VERSION = 1
 
-#: The committed card, relative to the repository root.
-EVIDENCE_CARD_PATH = Path(__file__).resolve().parents[3] / "bench" / "evidence_card.json"
+#: The repository root, as seen from an editable install.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: The committed card.
+EVIDENCE_CARD_PATH = _REPO_ROOT / "bench" / "evidence_card.json"
+
+#: The asset manifest. Corpus names in the card must be ids from it.
+MANIFEST_PATH = _REPO_ROOT / "assets" / "manifest.yaml"
 
 
 class CardError(ValueError):
@@ -75,8 +83,25 @@ def load_card(path: str | Path = EVIDENCE_CARD_PATH) -> dict[str, Any]:
     return cast("dict[str, Any]", data)
 
 
+def registered_assets(path: str | Path = MANIFEST_PATH) -> set[str]:
+    """Asset ids from `assets/manifest.yaml`, or an empty set if unreadable.
+
+    Empty is the safe failure here, not the dangerous one: with no known ids
+    every corpus name fails the check in `gated_detectors` and nothing
+    decides.
+    """
+    try:
+        data = yaml.safe_load(Path(path).read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning("cannot read the asset manifest %s: %s", path, exc)
+        return set()
+    assets = data.get("assets") if isinstance(data, dict) else None
+    return set(assets) if isinstance(assets, dict) else set()
+
+
 def gated_detectors(card: dict[str, Any],
-                    floor: float = DEFAULT_AUC_FLOOR) -> set[str]:
+                    floor: float = DEFAULT_AUC_FLOOR,
+                    known_assets: set[str] | None = None) -> set[str]:
     """Names allowed to contribute evidence, by measured AUC.
 
     Args:
@@ -92,6 +117,7 @@ def gated_detectors(card: dict[str, Any],
         closed, exactly as an unregistered asset does in the manifest.
     """
     effective = max(float(floor), float(card.get("auc_floor", floor)))
+    known = registered_assets() if known_assets is None else known_assets
     allowed: set[str] = set()
     for name, entry in card["detectors"].items():
         auc = entry.get("auc")
@@ -114,10 +140,21 @@ def gated_detectors(card: dict[str, Any],
             logger.info("detector %s: does not declare what it trained on, "
                         "cannot decide", name)
             continue
-        if trained_on == entry.get("corpus"):
+        corpus = entry.get("corpus")
+        if trained_on == corpus:
             logger.info("detector %s: measured on %s, which is what it "
                         "trained on — that is memorisation, not "
                         "generalisation; cannot decide", name, trained_on)
+            continue
+        # BOTH sides must be ids from assets/manifest.yaml. Free text lets
+        # "df40 val split" and "df40 test split" read as two corpora when
+        # they are two halves of one distribution — which is the in-dataset
+        # number the check above exists to reject, wearing a different name.
+        unknown = [v for v in (corpus, trained_on) if v not in known]
+        if unknown:
+            logger.info("detector %s: corpus name(s) %s are not ids in the "
+                        "asset manifest, so disjointness cannot be checked; "
+                        "cannot decide", name, unknown)
             continue
         allowed.add(name)
     return allowed

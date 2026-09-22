@@ -18,7 +18,8 @@
       "weights": "fitted on 9974 FairFace crops, 19948 self-blended samples",
       "evidence": "bench/df40_report.md",
       "note": "INVERTED, not merely weak: ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none.",
-      "trained_on": "fairface_corpus (self-blended)"
+      "trained_on": "fairface_corpus",
+      "trained_on_note": "self-blended (corpora/sbi.py) from FairFace crops"
     },
     "npr": {
       "auc": null,
@@ -45,7 +46,8 @@
       "weights": "assets/models/dima806 (Apache-2.0, on disk)",
       "evidence": "docs/HANDOFF.md \u00a70",
       "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately \u2014 a detector at chance adds a dependency and no information.",
-      "trained_on": "unknown \u2014 the HuggingFace model card does not say; treated as unknown, which cannot pass the gate"
+      "trained_on": null,
+      "trained_on_note": "unknown \u2014 the HuggingFace model card does not say. Unknown cannot pass the gate."
     }
   }
 }
