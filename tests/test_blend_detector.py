@@ -11,6 +11,7 @@ import pytest
 
 from dfd.detectors.base import WEIGHTS_ABSENT
 from dfd.detectors.blend import (
+    CODE_VERSION,
     FEATURE_NAMES,
     NO_ROI,
     BlendDetector,
@@ -381,3 +382,44 @@ def test_the_224_path_is_unchanged_by_the_resize(tmp_path: Path) -> None:
         source_id="s")])
     assert not direct.abstained
     assert direct.score == pytest.approx(expected)
+
+
+def test_the_reported_version_is_the_version_of_the_weights_on_disk(
+        tmp_path: Path) -> None:
+    """A run record naming `0.1.0` for any weights file cannot be reproduced.
+
+    `bench.runner` writes `detector.version` into `model_versions`, which is
+    the field a reader uses to answer "which model produced this AUC". A
+    hardcoded code version answers it wrongly the moment the weights are
+    refitted, and refitting is the normal case for this detector — it is the
+    one whose weights this project produces itself.
+    """
+    path = tmp_path / "blend.npz"
+    save_blend_model(_model_versioned("2.0.0-fairface10k"), path)
+    assert BlendDetector(weights_path=path).version == "2.0.0-fairface10k"
+
+
+def test_refitting_the_weights_changes_the_reported_version(
+        tmp_path: Path) -> None:
+    """Whatever caching the lookup uses must not outlive the file it read."""
+    path = tmp_path / "blend.npz"
+    det = BlendDetector(weights_path=path)
+    save_blend_model(_model_versioned("1.0.0"), path)
+    assert det.version == "1.0.0"
+    save_blend_model(_model_versioned("1.1.0"), path)
+    assert det.version == "1.1.0"
+
+
+def test_the_version_falls_back_to_the_code_version_when_weights_are_absent(
+        tmp_path: Path) -> None:
+    """An abstention still carries a version, and must not raise reading it."""
+    det = BlendDetector(weights_path=tmp_path / "missing.npz")
+    assert det.version == CODE_VERSION
+    assert det.score([_obs()]).version == CODE_VERSION
+
+
+def _model_versioned(version: str) -> BlendModel:
+    n = len(FEATURE_NAMES)
+    return BlendModel(mean=np.zeros(n), scale=np.full(n, 1e5),
+                      coef=np.ones(n), intercept=0.0,
+                      feature_names=FEATURE_NAMES, version=version)

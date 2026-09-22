@@ -125,7 +125,7 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-22, after the corpus was measured rather than counted)
+## 0. Resume here (last touched 2026-09-22, after the detector was fitted and measured)
 
 `main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
 the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
@@ -325,6 +325,70 @@ the second time today a headline licence claim failed on contact with its source
 - **DeepfakeBench / SBI pretrained weights** — both obtainable, both NonCommercial (verified above).
   Worth having as research-track baselines, but each needs its author's framework wired in to run,
   which is a task, not a download.
+
+### The detector is fitted, and measured on an unseen corpus it is worse than a coin. 2026-09-22.
+
+Everything above this line was about supply. This is the first section in this document that reports
+what the detector **does**, because until today there were no weights to ask.
+
+**Fitted.** `training/fit_blend.py` over 10,000 FairFace sessions: 9,974 aligned crops (23 no face,
+3 duplicate), self-blended by `corpora/sbi.py` into 19,948 samples, split 13,964 train / 5,984 test
+over 9,974 subjects — subject-disjoint, never row-disjoint, because a crop and the pseudo-fake made
+from it share a face. **Held-out AUC 0.870.** That is the number to be careful with: the fakes it
+was tested on are self-blends of the same FairFace photographs the model trained on, so 0.870 says
+the seam features separate *a FairFace face from a warped copy of itself*. It is an in-family number.
+
+**Measured on DF40.** `python3 -m bench.eval_df40` over the ungated DF40 test split — 3,207 records
+from 3,212 files (2 no face, 3 duplicate crops), a corpus this model has never seen and whose fakes
+were made by techniques it has never seen. `bench/df40_report.md` is committed. The result:
+
+| | blend_seam on DF40 |
+|---|---|
+| AUC | **0.289** |
+| TPR@FPR=1% | **0.000** |
+| ECE | 0.485 |
+| abstained | 15.4% (495 records, all below the quality floor) |
+| n | 3,207 |
+
+**0.289 is not "bad", it is inverted.** A coin is 0.500. This model ranks DF40's *real* frames as
+more fake than its fakes: mean score 0.148 on reals against 0.027 on fakes. Nothing here is
+salvageable by flipping the sign — a sign chosen because it helps on the test set is the test set
+fitting the model.
+
+**The obvious explanation is wrong, which matters.** DF40's labels are not balanced across
+resolution (fakes run 559 at 256px / 1,000 at 512px / 42 at 1,024px; reals 277 / 1,329 / 0), so
+resolution is the first thing to suspect. It does not explain it. Sliced by source resolution:
+
+| bucket | n scored | AUC |
+|---|---|---|
+| 256px | 350 | 0.494 — chance |
+| 512px | 2,320 | **0.232** — inverted |
+| 1,024px | 42 | all fake, unmeasurable |
+
+Controlling for resolution leaves the inversion exactly where it was. So this is not a resampling
+artifact; it is the features. The seam features read high-frequency energy in concentric annuli, and
+on DF40 the thing with the most high-frequency structure is a *real* compressed video frame from a
+forensics corpus, not a synthesised face — DF40's entire-face-synthesis and reenactment fakes are
+smooth. The detector is reading compression and texture, calling that a seam, and the corpus it was
+fitted on could never have told it otherwise: FairFace photographs are clean Flickr stills, so
+"clean means real" was never contradicted in training.
+
+**What this measurement does and does not license you to say:**
+
+- It *is* honest cross-corpus evidence, over an unseen multi-technique corpus. That is strictly more
+  than this project had yesterday, when the pipeline abstained and there was nothing to measure.
+- It is *not* a leave-one-generator-out result, and it is guard-waived — two of the five spec §8.2
+  guards cannot pass on this data (see the waiver block at the top of the report). Do not quote the
+  number without the waiver.
+- It *is* a refutation of one specific claim: that a seam detector fitted on licence-clean real
+  faces alone transfers to fakes in the wild. Measured, it does not. The SBI paper's own result
+  stands on FF++ frames as the real half; swapping in Flickr portraits is not the same experiment,
+  and this is what that substitution costs.
+
+**The quality floor also matters more than expected.** 495 of 3,207 records (15.4%) abstained at
+`below_quality_floor`, 494 of them banded `reject` — overwhelmingly the 256px images, of which only
+350 of 836 were scored at all. On a corpus where a sixth of the evidence is refused, an operating
+point set from the scored sixth-fewer is not the operating point the field will see.
 
 ### The licence questions the manifest said to VERIFY are now verified
 
@@ -877,6 +941,26 @@ spends the only labelled fraud this project has.
 ("A composition root" was step 3 here; it is done — see §3 above — and struck from this list
 2026-09-21. The benchmark runner still does not call it, which is why criteria 4 and 11 are still
 open and still numbered above as the next two steps.)
+
+**Reordered 2026-09-22, after the DF40 measurement.** The list above was written when nothing had
+been measured. It now has a step 0 in front of it, because AUC 0.289 changes which problem is
+binding:
+
+0. **Fix the training distribution before fitting anything else.** The failure measured in §0 is not
+   a shortage of fakes — it is that the model's *reals* (clean Flickr portraits) and the field's
+   reals (compressed video frames) are different populations, so "clean" became the model's proxy
+   for "real". Two experiments settle it, both code-only and both cheap:
+   - Fit the same seam model on self-blends of DF40's own **real** half, evaluate on its fake half,
+     splitting so no source frame appears on both sides. If the AUC recovers, the defect is domain
+     shift and the fix is real-face supply that matches the field, not more fakes. Note the
+     resulting weights would be CC BY-NC (DF40 reals are encumbered) — a **diagnostic artifact that
+     must never be written to `assets/models/blend_seam.npz`**, which the manifest registers as
+     commercially usable.
+   - Degrade FairFace to match: re-encode each crop through the compression and resolution ladder
+     the capture path actually produces, then refit. Licence-clean, and it tests the same
+     hypothesis from the other side.
+
+   Only after one of these moves the number is there any point spending a EULA on more fakes.
 
 ---
 

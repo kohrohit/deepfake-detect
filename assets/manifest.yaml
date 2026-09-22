@@ -128,8 +128,20 @@ assets:
   # checks *discovered* paths against the manifest, and this path is not
   # discovered until the fitter actually runs.
   blend_seam_weights:
-    source: "Fitted in this repo by training/fit_blend.py from self-blended crops of the project's own capture corpus. No external dataset or generator weight file contributes to it."
-    license: "owned — no third-party dataset or model contributed to these coefficients"
+    # PROVENANCE CHANGED 2026-09-22. The shipped coefficients are no longer
+    # fitted on the capture corpus: that corpus holds 19 usable genuine crops
+    # (docs/HANDOFF.md §0), which cannot fit anything. They are fitted on
+    # FairFace instead — 9,974 crops from 10,000 sessions, self-blended by
+    # corpora/sbi.py. The previous wording ("the project's own capture
+    # corpus") is kept nowhere: it would now be false, and a stale provenance
+    # line is worse than none.
+    source: "Fitted in this repo by training/fit_blend.py from self-blended crops of the FairFace corpus (see fairface_corpus above). No generator weight file and no licensed deepfake dataset contributes to them."
+    # NOT "owned" any more. FairFace is CC BY 4.0 and these coefficients are
+    # derived from those photographs, so the attribution condition travels
+    # with them: anything that ships this file must carry the FairFace
+    # attribution the fairface_corpus entry records. CC BY permits commercial
+    # use, so commercial_use stays true — but on a condition, not freely.
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship"
     # `owned` covers the third-party question only: no licensed dataset, weight
     # file or encumbered code reaches these coefficients (audited by provenance
     # chain 2026-09-21). It does NOT by itself establish the right to fit and
@@ -137,6 +149,10 @@ assets:
     # derived from. That rests on the owner's attestations, recorded below and
     # in docs/HANDOFF.md §0. Nobody with legal standing has reviewed it.
     commercial_use: true
+    # MEASURED, not assumed: these coefficients score 0.289 AUC on the DF40
+    # eval subset — inverted, not merely weak (docs/HANDOFF.md §0,
+    # bench/df40_report.md). The licence permits shipping them; the
+    # measurement says there is nothing here worth shipping yet.
     owner_attestation: "2026-09-21: the 442-session capture corpus and the 24 cached Reality Defender results are available with rights. 2026-09-22: this product is not ScoreMe's. Both stated by the project owner; not independently verified, and no legal review has been done on whether captures recorded in a v-CIP context may train a model for an unrelated product."
     evidence_url: "docs/EULA-ACCESS.md"
     date_checked: "2026-09-22"

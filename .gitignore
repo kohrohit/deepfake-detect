@@ -15,3 +15,4 @@ htmlcov/
 .ruff_cache/
 assets/models/blend_seam.npz
 bench/blend_seam_report.json
+bench/df40_report.json
