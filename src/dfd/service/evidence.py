@@ -102,5 +102,22 @@ def gated_detectors(card: dict[str, Any],
             logger.info("detector %s: measured AUC %.3f below the %.2f floor, "
                         "cannot decide", name, float(auc), effective)
             continue
+        # CROSS-CORPUS, or it does not count. Spec §8.1: in-dataset AUC
+        # measures memorisation. Without this check the floor is opened by
+        # the easiest number in the field to produce — fit on a corpus's val
+        # split, measure on its test split, score 0.93 — and the gate would
+        # wave through exactly the detector it exists to stop. A missing
+        # `trained_on` is treated as a failure, not as a pass: silence about
+        # provenance is not evidence of disjointness.
+        trained_on = entry.get("trained_on")
+        if not trained_on:
+            logger.info("detector %s: does not declare what it trained on, "
+                        "cannot decide", name)
+            continue
+        if trained_on == entry.get("corpus"):
+            logger.info("detector %s: measured on %s, which is what it "
+                        "trained on — that is memorisation, not "
+                        "generalisation; cannot decide", name, trained_on)
+            continue
         allowed.add(name)
     return allowed

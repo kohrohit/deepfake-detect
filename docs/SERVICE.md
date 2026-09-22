@@ -133,6 +133,27 @@ Other reasons you will see, and what each actually means:
 A failed row is a refusal, not a verdict: unsupported extension, undecodable
 file, or over a decode limit. The message is recorded verbatim.
 
+## Calibration
+
+`training/fit_calibration.py` fits the per-band curves that turn a raw score
+into nats, and writes them as plain JSON:
+
+```bash
+python3 -m training.fit_calibration \
+    --corpus ~/Desktop/agents/datasets/df40_eval/extracted/val/val \
+    --out assets/models/calibration.json
+```
+
+The corpus is split by **source** before anything is fitted, the curves see
+only the fit side, and every number in the report comes from the holdout
+side — spec §8.2 guard 5, made structural rather than remembered.
+
+**No calibration file ships with this repository, deliberately.** Every
+detector is currently gated out, so a curve on disk would imply a readiness
+that does not exist. Run the fitter when a detector clears the gate. Fitting
+a curve is not a licence to decide: that is the gate's job, and it reads
+measured cross-corpus AUC, not this file.
+
 ## Operations
 
 - **Crash recovery.** A submission is `running` only while a worker holds it.

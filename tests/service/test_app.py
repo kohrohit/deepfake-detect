@@ -44,7 +44,8 @@ def test_a_calibration_file_is_loaded_when_present(tmp_path: Path) -> None:
         tmp_path,
         calibration_path=_calibration_for(tmp_path, "blend_seam"),
         evidence_path=_card(tmp_path, {
-            "blend_seam": {"auc": 0.93, "corpus": "df40", "note": ""}})))
+            "blend_seam": {"auc": 0.93, "corpus": "df40",
+                           "trained_on": "fairface", "note": ""}})))
     assert "blend_seam" in service.calibrators
     service.close()
 
@@ -161,7 +162,8 @@ def test_a_detector_above_the_evidence_floor_keeps_its_calibration(
         tmp_path,
         calibration_path=_calibration_for(tmp_path, "blend_seam"),
         evidence_path=_card(tmp_path, {
-            "blend_seam": {"auc": 0.93, "corpus": "df40", "note": ""}})))
+            "blend_seam": {"auc": 0.93, "corpus": "df40",
+                           "trained_on": "fairface", "note": ""}})))
     assert "blend_seam" in service.calibrators
     service.close()
 

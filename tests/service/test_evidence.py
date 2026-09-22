@@ -37,7 +37,8 @@ def _card(tmp_path: Path, detectors: dict) -> Path:
 def test_a_detector_above_the_floor_is_allowed_to_decide(
         tmp_path: Path) -> None:
     card = load_card(_card(tmp_path, {
-        "good": {"auc": 0.91, "corpus": "df40_eval_subset", "note": ""}}))
+        "good": {"auc": 0.91, "corpus": "df40_eval_subset",
+                 "trained_on": "fairface_corpus", "note": ""}}))
     assert gated_detectors(card) == {"good"}
 
 
@@ -117,3 +118,42 @@ def test_no_detector_currently_clears_the_floor() -> None:
     point at which the service starts issuing real verdicts.
     """
     assert gated_detectors(load_card(EVIDENCE_CARD_PATH)) == set()
+
+
+def test_a_detector_measured_on_the_corpus_it_trained_on_cannot_decide(
+        tmp_path: Path) -> None:
+    """In-dataset AUC measures memorisation. It must not open the gate.
+
+    This is the loophole a high number closes over: fit on a corpus's val
+    split, measure on its test split, score 0.93, and the floor waves it
+    through. Spec §8.1 calls in-dataset AUC memorisation for exactly this
+    reason, and the gate has to encode that rather than trust whoever fills
+    in the card.
+    """
+    card = load_card(_card(tmp_path, {
+        "memoriser": {"auc": 0.93, "corpus": "df40_eval_subset",
+                      "trained_on": "df40_eval_subset", "note": ""}}))
+    assert gated_detectors(card) == set()
+
+
+def test_a_detector_measured_on_a_corpus_it_did_not_train_on_can_decide(
+        tmp_path: Path) -> None:
+    card = load_card(_card(tmp_path, {
+        "honest": {"auc": 0.93, "corpus": "df40_eval_subset",
+                   "trained_on": "fairface_corpus", "note": ""}}))
+    assert gated_detectors(card) == {"honest"}
+
+
+def test_a_detector_that_does_not_say_what_it_trained_on_cannot_decide(
+        tmp_path: Path) -> None:
+    """Silence about provenance is not evidence of disjointness."""
+    card = load_card(_card(tmp_path, {
+        "vague": {"auc": 0.93, "corpus": "df40_eval_subset", "note": ""}}))
+    assert gated_detectors(card) == set()
+
+
+def test_the_committed_card_declares_training_provenance_for_every_detector(
+        ) -> None:
+    card = load_card(EVIDENCE_CARD_PATH)
+    for name, entry in card["detectors"].items():
+        assert "trained_on" in entry, f"{name} does not say what it trained on"

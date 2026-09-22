@@ -17,7 +17,8 @@
       "measured_on": "2026-09-22",
       "weights": "fitted on 9974 FairFace crops, 19948 self-blended samples",
       "evidence": "bench/df40_report.md",
-      "note": "INVERTED, not merely weak: ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none."
+      "note": "INVERTED, not merely weak: ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none.",
+      "trained_on": "fairface_corpus (self-blended)"
     },
     "npr": {
       "auc": null,
@@ -25,7 +26,8 @@
       "measured_on": null,
       "weights": "absent",
       "evidence": null,
-      "note": "No weights on this deployment. Abstains with weights_absent."
+      "note": "No weights on this deployment. Abstains with weights_absent.",
+      "trained_on": null
     },
     "effnet_b4": {
       "auc": null,
@@ -33,15 +35,17 @@
       "measured_on": null,
       "weights": "absent",
       "evidence": null,
-      "note": "No weights on this deployment. Abstains with weights_absent. The obtainable weights (SBI, DeepfakeBench) are NonCommercial and FF++-derived; see assets/manifest.yaml."
+      "note": "No weights on this deployment. Abstains with weights_absent. The obtainable weights (SBI, DeepfakeBench) are NonCommercial and FF++-derived; see assets/manifest.yaml.",
+      "trained_on": null
     },
     "dima806_vit": {
       "auc": 0.5214,
       "corpus": "df40_eval_subset",
       "measured_on": "2026-09-23",
       "weights": "assets/models/dima806 (Apache-2.0, on disk)",
-      "evidence": "docs/HANDOFF.md §0",
-      "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately — a detector at chance adds a dependency and no information."
+      "evidence": "docs/HANDOFF.md \u00a70",
+      "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately \u2014 a detector at chance adds a dependency and no information.",
+      "trained_on": "unknown \u2014 the HuggingFace model card does not say; treated as unknown, which cannot pass the gate"
     }
   }
 }
