@@ -177,7 +177,9 @@ measured cross-corpus AUC, not this file.
 ## Security
 
 There is **no authentication**, deliberately and only because the service
-binds `127.0.0.1`. `POST /api/scan` writes caller-chosen bytes into the
+binds `127.0.0.1`. Binding anything else is **refused** unless you pass
+`--allow-remote-access`, which exists so that exposing the port is a decision
+somebody made rather than four characters in a unit file nobody re-read. `POST /api/scan` writes caller-chosen bytes into the
 workdir and spends CPU decoding them. Do not move it off the loopback
 interface without an authenticating reverse proxy in front.
 

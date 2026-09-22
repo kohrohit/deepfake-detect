@@ -20,6 +20,7 @@ from ..detectors.registry import (
     DEFAULT_NPR_WEIGHTS,
     default_registry,
 )
+from ..errors import InvalidInput
 from ..faces import DEFAULT_MODEL
 from ..limits import DEFAULT_LIMITS, Limits
 from ..pipeline import decide
@@ -55,6 +56,10 @@ class ServiceConfig:
     worker_threads: int = 1
     #: Days to keep taken files. The audit records are kept regardless.
     retain_days: int = 30
+    #: Required to bind anything but loopback. There is no authentication
+    #: (see dfd/service/api.py), so exposing the port must be a decision
+    #: somebody made, not four characters in a unit file nobody re-read.
+    allow_remote_access: bool = False
     max_frames: int = 32
     #: Minimum measured AUC before a detector may contribute evidence. The
     #: card cannot lower it (see `dfd.service.evidence.gated_detectors`).
@@ -122,10 +127,23 @@ class Service:
         self.httpd.server_close()  # type: ignore[attr-defined]
 
 
+#: Hostnames and addresses that reach only this machine. `localhost` is
+#: included by name because that is what people type; anything else — an
+#: interface address, a wildcard, a hostname — is treated as remote.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "ip6-localhost"})
+
+
+def _is_loopback(host: str) -> bool:
+    return host.strip().lower() in _LOOPBACK
+
+
 def build_service(config: ServiceConfig) -> Service:
     """Wire the whole service. Does not start it.
 
     Raises:
+        InvalidInput: if `host` is not loopback and `allow_remote_access` is
+            not set. See the check itself for why that is a refusal rather
+            than a warning.
         ValueError: if a calibration file is present but unreadable by this
             code. Starting anyway would give every sample zero evidence and
             the verdict `insufficient_evidence`, which is indistinguishable
@@ -133,6 +151,18 @@ def build_service(config: ServiceConfig) -> Service:
             for as long as nobody looked.
     """
     warnings: list[str] = []
+
+    if not _is_loopback(config.host):
+        if not config.allow_remote_access:
+            raise InvalidInput(
+                f"refusing to bind {config.host!r}: this service has no "
+                "authentication, and POST /api/scan writes caller-chosen "
+                "bytes to disk and decodes them. Put an authenticating "
+                "reverse proxy in front and keep the service on loopback, "
+                "or pass --allow-remote-access to say you meant it.")
+        warnings.append(
+            f"bound to {config.host} with no authentication: anyone who can "
+            "reach this port can submit files and read every verdict")
 
     registry = default_registry(npr_weights=config.npr_weights,
                                 effnet_weights=config.effnet_weights,

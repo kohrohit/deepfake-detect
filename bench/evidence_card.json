@@ -7,7 +7,7 @@
       "records": 3207,
       "fakes": 1601,
       "source": "DF40 test split, ungated repackaging; see assets/manifest.yaml",
-      "caveat": "Guard-waived: one unlabelled compression level, one unknown generator. Not a leave-one-generator-out result."
+      "caveat": "Guard-waived: one unlabelled compression level, one unknown generator. Not a leave-one-generator-out result. SHORTCUT, measured 2026-09-23: Lab colour means alone separate this corpus's real and fake halves at AUC 0.843 on a val-fit/test-report split. Its halves come from different upstream sources, so any in-distribution number here measures source identification at least as much as forensics."
     }
   },
   "detectors": {
@@ -17,7 +17,7 @@
       "measured_on": "2026-09-22",
       "weights": "fitted on 9974 FairFace crops, 19948 self-blended samples",
       "evidence": "bench/df40_report.md",
-      "note": "INVERTED, not merely weak: ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none.",
+      "note": "INVERTED, not merely weak: ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none. Refitting the SAME features on DF40 val reaches 0.800 on DF40 test, so the features are not blind \u2014 the self-blend training target was wrong. That number is in-distribution and mostly the colour shortcut above; it cannot pass this gate, by design.",
       "trained_on": "fairface_corpus",
       "trained_on_note": "self-blended (corpora/sbi.py) from FairFace crops"
     },

@@ -75,22 +75,28 @@ this system starts issuing real verdicts.
 
 Measured, not guessed — see `docs/HANDOFF.md §0` for the controls behind each:
 
-1. **A swap-only evaluation subset.** Slot A finds composite boundaries;
+1. **Licence-clean fakes to train on.** Refitting the *same* seam features
+   on DF40's own fakes reaches **0.800** where self-blending reached 0.289 —
+   the physics was never the binding constraint, the supervision was. SFHQ
+   (~425k synthetic faces, MIT upstream) needs one Kaggle account; everything
+   else found is NonCommercial.
+2. **A swap-only evaluation subset.** Slot A finds composite boundaries;
    three quarters of DF40 is synthesis and reenactment, which have none. This
    needs per-technique labels the ungated repackaging does not carry — the
    full DF40 (a form) or FF++ (an academic signatory).
-2. **A second slot with different physics** for everything that is not a
-   swap. Slot C is declared and weightless; fitting it needs generated fakes.
-3. **Licence-clean fake supply.** SFHQ (~425k synthetic faces, MIT upstream)
-   needs a Kaggle account. Everything else found is NonCommercial.
+3. **A second slot with different physics** for everything that is not a
+   swap. Slot C is declared and weightless.
 
-More real faces will not help. That experiment was run: refitting on the
-evaluation corpus's own reals moves the AUC from 0.289 to 0.344, which is
-still the wrong side of chance.
+Two things that will *not* help, both measured rather than assumed. **More
+real faces:** refitting on the evaluation corpus's own reals moves the AUC
+from 0.289 to 0.344, still the wrong side of chance. **Tuning on DF40:** its
+real and fake halves are separable at AUC 0.843 by Lab colour means alone, so
+anything trained there finds that shortcut first and loses it the moment real
+and fake share a camera and a codec.
 
 ## Gates
 
-`ruff`, `mypy --strict`, 752 tests, 85% coverage floor, an asset-registration
+`ruff`, `mypy --strict`, 759 tests, 85% coverage floor, an asset-registration
 gate, and dependency pins tested at both ends of every declared range. CI
 runs the whole set twice — once against the newest pinned versions, once
 against the oldest the package claims to support.

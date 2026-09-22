@@ -390,6 +390,59 @@ fitted on could never have told it otherwise: FairFace photographs are clean Fli
 350 of 836 were scored at all. On a corpus where a sixth of the evidence is refused, an operating
 point set from the scored sixth-fewer is not the operating point the field will see.
 
+### The features are not blind — the training target was wrong. And DF40 has a colour shortcut. 2026-09-23.
+
+Two sections above conclude that slot A is the wrong physics for DF40. That conclusion was reached
+by refitting the *self-blend* objective and watching it stay inverted. It left one question open,
+and it is the question that decides what to buy next: **are the seam features blind to DF40, or was
+only the objective wrong?**
+
+Fit the same 30-dimension feature vector — no new physics, no new model class — on DF40's **val**
+split and report on its **test** split:
+
+| fitted on | reported on | AUC | TPR@FPR=1% |
+|---|---|---|---|
+| FairFace self-blends | DF40 test | 0.289 | 0.000 |
+| **DF40 val** | **DF40 test** | **0.800** | 0.139 |
+
+The features carry substantial signal about DF40's fakes. What could not find it was
+self-blending — a training target built from warped copies of Flickr portraits. **Recommendation 2
+above ("stand up a second slot") is therefore not the first thing to buy. Fake data to train on
+is.** The physics was never the binding constraint; the supervision was.
+
+**But 0.800 is mostly a colour shortcut, and that is the more important half.** The feature vector
+mixes residual and laplacian statistics — the blending seam it claims to read — with Lab colour
+means per annulus. DF40's fakes and reals come from different upstream sources, so colour alone
+could separate them with no forensic content whatsoever. Ablated:
+
+| features | d | test AUC | TPR@FPR=1% |
+|---|---|---|---|
+| all | 30 | 0.800 | 0.139 |
+| seam only (residual, laplacian) | 15 | 0.750 | 0.059 |
+| **colour only (Lab means)** | **15** | **0.843** | 0.104 |
+
+**Colour alone beats everything together.** Fifteen numbers describing the average colour of four
+concentric rings separate DF40's real half from its fake half better than the forensic features do,
+and better than both combined. That is not deepfake detection; it is source identification. Any
+model tuned on this corpus will find that shortcut first, because it is the cheapest thing in the
+data, and it will evaporate the moment real and fake share a colour pipeline — which, in the field,
+they always do, because both went through the same camera and the same codec.
+
+Three consequences, all of which bind:
+
+1. **Every in-distribution number on this corpus is suspect**, including the 0.800 above. DF40's
+   halves are separable by trivial low-level statistics, so an in-dataset AUC here measures how well
+   a model found the shortcut, not whether it can detect a fake.
+2. **The evidence gate's cross-corpus rule is doing real work**, not ceremony. A val-fit/test-report
+   number of 0.800 would have cleared a naive floor comfortably. It is refused because `trained_on`
+   and `corpus` are the same manifest asset — which is exactly the case this measurement is.
+3. **The seam-only 0.750 is the honest upper bound available here**, and it is still in-distribution
+   and still possibly tracking compression rather than blending. It is a reason to pursue supervised
+   training on licence-clean fakes, not a detector.
+
+The weights from this experiment are fitted on CC BY-NC data and stay in the session scratchpad.
+Nothing was written to `assets/models/`.
+
 ### The one public detector on this machine is at chance. Measured 2026-09-23.
 
 `assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
@@ -1082,11 +1135,19 @@ binding:
    carry — the full DF40 (its own Google form, `docs/EULA-ACCESS.md`) or FF++. **This is the first
    thing a EULA actually buys**, and it changes what every later number means.
 
-0b. **Stand up a second slot, with different physics.** Whatever slot A scores on swaps, something
-   else has to cover synthesis and reenactment. Slot C (NPR, the upsampling fingerprint) is already
-   declared and has no weights; it needs generated fakes to fit, which is the supply problem, not a
-   code one. Until a second slot exists, a good slot-A number would still leave most of DF40
-   undetected — and the fusion layer has nothing to fuse.
+0b. **Supervised training on licence-clean fakes.** ~~Stand up a second slot.~~ **Reordered
+   2026-09-23.** Refitting the SAME features on DF40's own fakes reaches 0.800 where self-blending
+   reached 0.289, so the physics was never the binding constraint — the supervision was. Fake data
+   to train on is the first thing to buy, ahead of new physics. SFHQ (~425k synthetic faces, MIT
+   upstream) needs one Kaggle account; everything else found is NonCommercial.
+
+   Read that 0.800 with its ablation, though: colour means alone score 0.843 on the same split, so
+   most of it is a corpus shortcut rather than forensics. Whatever is trained must be measured
+   ACROSS corpora, which is what the evidence gate already enforces.
+
+0c. **Then a second slot, with different physics.** Slot C (NPR, the upsampling fingerprint) is
+   declared and has no weights. Until a second slot exists, a good slot-A number still leaves most
+   of DF40 undetected — and the fusion layer has nothing to fuse.
 
 ---
 

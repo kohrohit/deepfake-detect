@@ -9,13 +9,15 @@ import numpy as np
 import pytest
 
 from dfd.calibration import Calibrator, save_calibrators
-from dfd.service.app import ServiceConfig, build_service
+from dfd.errors import InvalidInput
+from dfd.service.app import ServiceConfig, _is_loopback, build_service
 
 
 def _config(tmp_path: Path, **kw) -> ServiceConfig:
     kw.setdefault("evidence_path", tmp_path / "evidence.json")
+    kw.setdefault("host", "127.0.0.1")
     return ServiceConfig(
-        host="127.0.0.1", port=0,
+        port=0,
         db_path=tmp_path / "db.sqlite3",
         inbox=tmp_path / "inbox",
         workdir=tmp_path / "work",
@@ -179,3 +181,35 @@ def test_a_missing_evidence_card_leaves_nothing_calibrated(
     assert service.calibrators == {}
     assert any("evidence card" in w for w in service.warnings)
     service.close()
+
+
+def test_binding_beyond_loopback_is_refused_without_an_explicit_waiver(
+        tmp_path: Path) -> None:
+    """There is no authentication. Exposure must be a decision, not a typo.
+
+    `POST /api/scan` writes caller-chosen bytes to disk and spends CPU
+    decoding them. On loopback that is a local tool; on 0.0.0.0 it is an
+    open door, and the difference is four characters in a unit file.
+    """
+    with pytest.raises(InvalidInput, match="no authentication"):
+        build_service(_config(tmp_path, host="0.0.0.0"))  # noqa: S104
+
+
+def test_an_explicit_waiver_allows_a_non_loopback_bind(tmp_path: Path) -> None:
+    service = build_service(_config(tmp_path, host="0.0.0.0",  # noqa: S104
+                                    allow_remote_access=True))
+    assert any("no authentication" in w for w in service.warnings)
+    service.close()
+
+
+def test_loopback_needs_no_waiver(tmp_path: Path) -> None:
+    build_service(_config(tmp_path, host="127.0.0.1")).close()
+
+
+def test_every_loopback_spelling_is_recognised_as_local() -> None:
+    """Checked without binding: `::1` needs an IPv6 stack this CI has not
+    got, and the question here is classification, not connectivity."""
+    for host in ("127.0.0.1", "localhost", "::1", "IP6-localhost", " ::1 "):
+        assert _is_loopback(host), host
+    for host in ("0.0.0.0", "192.168.1.10", "example.com", ""):  # noqa: S104
+        assert not _is_loopback(host), host

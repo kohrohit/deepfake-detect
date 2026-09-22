@@ -54,6 +54,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="worker threads (default: %(default)s)")
     p.add_argument("--poll-interval", type=float, default=1.0,
                    help="seconds between inbox scans (default: %(default)s)")
+    p.add_argument("--allow-remote-access", action="store_true",
+                   help="permit binding a non-loopback address. The service "
+                        "has NO authentication; put an authenticating proxy "
+                        "in front of it before using this.")
     p.add_argument("--retain-days", type=int, default=30,
                    help="delete scored files older than this many days; 0 "
                         "keeps everything. Audit records are never deleted "
@@ -87,6 +91,7 @@ def config_from_args(args: argparse.Namespace) -> ServiceConfig:
         worker_threads=max(1, args.workers),
         max_frames=args.max_frames,
         retain_days=args.retain_days,
+        allow_remote_access=args.allow_remote_access,
     )
 
 
