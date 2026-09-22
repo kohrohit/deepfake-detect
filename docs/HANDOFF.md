@@ -125,7 +125,105 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-21, after PR #2 merged and the three questions were answered)
+## 0. Resume here (last touched 2026-09-22, after the corpus was measured rather than counted)
+
+`main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
+the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
+Local `p0-evidence-core` and `feat/sbi-corpus-and-blend-detector` still exist, merged and harmless.
+
+### The corpus is 58 distinct images, not 442 sessions. Measured 2026-09-22, by hashing it.
+
+Every previous block in this file, this project's spec, and `corpora/captures.py`'s own module
+docstring describe "the 442-session v-CIP capture corpus". That count is real but it is a count of
+**session folders**, and nobody had ever checked what is inside them. Hashing every frame file:
+
+```
+442 session folders, 1088 frame_NN.jpg files
+   -> 58 DISTINCT images
+979 of those 1088 files are byte-identical to assets/attack/victim_id.jpg,
+   a demo asset, spread over 368 of the 442 sessions
+368 sessions consist ENTIRELY of that one image
+ 74 sessions contain any non-asset frame; they hold 57 distinct images
+   26 distinct images in the 7 swapped sessions   (the positives)
+   31 distinct images everywhere else             (the negatives)
+```
+
+Run the real face pool over it and the number that actually reaches training is smaller still:
+
+```
+build_face_pool(435 genuine sessions) -> 19 crops, skipped {duplicate: 715, no_face: 2}
+                                          from 15 distinct sessions
+build_face_pool(7 swapped sessions)   -> 12 crops, skipped nothing   (evaluation only)
+```
+
+**19 genuine face crops.** Not 435 sessions, not 870 frames — nineteen distinct faces.
+
+**What this would have done, left alone.** `training/fit_blend.py` builds its SBI corpus from that
+pool and splits it with `split_by_subject`, whose subject is the capture SESSION id. Before the fix
+below, 368 sessions each contributed the same image under a different session id, so that split
+would have placed one identical picture on **both sides of the holdout** several hundred times over.
+The fitter would have run clean, written a model file, and printed a held-out AUC that measured
+memorisation of a single demo asset and reported it as generalisation — the project's recurring
+defect (§6), this time at the corpus level rather than in a test. It was never caught because every
+guard in the chain counted sessions, and the sessions were genuinely there.
+
+**Fixed 2026-09-22.** `build_face_pool` now deduplicates crops by content hash across the whole pool
+and counts every drop under the new `DUPLICATE` skip reason, which already flows into
+`fit_blend`'s JSON report via `skipped`. The hash is over the ALIGNED CROP, not the source frame,
+because the crop is what reaches training. Test:
+`tests/corpora/test_face_pool.py::test_byte_identical_frames_across_sessions_yield_one_crop`,
+watched failing (3 crops where 1 is correct) before the guard existed.
+
+**What this does NOT fix.** Deduplication removes only byte-identical crops. Two different frames of
+the same person in the same session remain near-duplicates and still split apart, which is the
+identity-disjointness gap already recorded below — now with a much shorter corpus to hide in. And
+nothing here makes 19 negatives and 26 positives a training set. §0a's line "7 positives is not a
+training set" was correct and understated: **the negatives are the binding constraint.** Generating
+real faces, or licensing them, is not one option among several — it is the whole remaining path.
+
+### Criterion 4 cannot be built from the RD cache. Measured 2026-09-22.
+
+Every previous block calls the 24 cached Reality Defender results "free, already labelled" and makes
+the RD adapter the next engineering step. They are free; they are not joinable. The cache key is
+`sha256_file(path)` of the submitted image (`core/cache.py:34` in the source project), so the join is
+computable — and it mostly fails:
+
+```
+24 cached RD results
+10 of their source images still exist anywhere on this machine; 14 are gone
+ 8 of those 10 are assets/demo/applicant_NN.jpg or assets/attack/*.jpg, not captures
+ 2 are actual capture frames
+```
+
+So the head-to-head this criterion asks for has **n = 2**:
+
+| capture session | our label | RD verdict | RD score |
+|---|---|---|---|
+| `20260831-142708-227903` | swapped **and approved** — one of the five missed attacks | MANIPULATED | 0.98 |
+| `20260831-143114-545797` | not swapped | AUTHENTIC | 0.24 |
+
+RD got both right. Two samples is an anecdote, not a benchmark, and no adapter, table or metric
+should be built to dress it as one. **Criterion 4 is not blocked on engineering — it is blocked on
+data that no longer exists.** Closing it honestly means either re-submitting known-label captures to
+RD (spends quota, and `cache/quota.json` is the budget) or recording the criterion as unmeetable
+from the cache and saying why. That is a decision for the owner, not a task to pick up.
+
+**Next, in order:**
+
+1. **Rule on the corpus.** 19 negatives and 26 positives changes what every other step is worth.
+   The EULA route (§0a step 1, still live) now buys evaluation data this project genuinely lacks,
+   and the self-generated-swaps route (§4 option 3) needs a source of real faces that the captures
+   have turned out not to be. This supersedes the old step 2.
+2. **Find an academic signatory** — unchanged from §0a, and more load-bearing than it was.
+3. **Criterion 2 — an embedder.** Unchanged, and now cheap: 58 images is a trivial embedding job,
+   and it would settle the near-duplicate question deduplication cannot reach.
+4. **Do not run the fitter for a number yet.** It remains the owner's reserved decision (§0a item 4),
+   and the measurement above is why: with 19 genuine crops, whatever AUC it prints will be an
+   artefact of the split, not a detector claim.
+
+---
+
+## 0a. Previous resume block (2026-09-21, after PR #2 merged and the three questions were answered)
 
 **Both PRs are merged and the workspaces are gone.** `main` is at `c058934`. PR #2 (docs only —
 the final review's rulings appended to the committed ledger) was squash-merged, its branch deleted
@@ -223,7 +321,7 @@ has been fitted yet. A third detector in the registry does not mean the pipeline
 
 ---
 
-## 0a. Previous resume block (2026-09-21, after PR #1 merged)
+## 0b. Previous resume block (2026-09-21, after PR #1 merged)
 
 **PR #1 IS MERGED.** `main` is at merge commit `f6ddeaf`; the composition-root plan is complete and
 in. 565 tests green on merged `main`, coverage 95.12%, ruff and `mypy --strict` clean, both CI legs
@@ -267,7 +365,7 @@ first time, and the decode-bomb limits are finally exercised through a real call
 
 ---
 
-## 0b. Previous resume block (2026-09-21, before the merge)
+## 0c. Previous resume block (2026-09-21, before the merge)
 
 **Update, later the same day (composition-root plan, Task 6 of 6): the "Nothing is uncommitted or
 unpushed" line below is no longer true.** The composition-root plan (§2, §3, §5) is complete —
@@ -446,7 +544,10 @@ Four acceptance criteria are **unmet**, now disclosed in the plan's Known-gaps b
 - **Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
   `None`. This is the largest gap; do not close P0 without it.
 - **Criterion 4 (head-to-head vs RD).** The loaders exist and **nothing consumes them**. No adapter
-  joins them to `run_benchmark`; no RD table is rendered.
+  joins them to `run_benchmark`; no RD table is rendered. **And one cannot usefully be written** —
+  measured 2026-09-22 (§0): 14 of the 24 cached results' source images no longer exist on this
+  machine and 8 more are demo assets, leaving n=2 real capture frames. This criterion is blocked on
+  vanished data, not on the adapter.
 - **Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
   weights, so there is nothing to attack yet.
 - **Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
@@ -617,7 +718,9 @@ spends the only labelled fraud this project has.
 3. **An embedder for criterion 2.** Note `check_identity_disjoint` now *refuses* ids with no
    embedding rather than skipping them — a partial-embedding pipeline must omit unembeddable ids
    explicitly, which is the point.
-4. **The RD adapter for criterion 4** — the 24 cached results are free and already labelled.
+4. ~~**The RD adapter for criterion 4** — the 24 cached results are free and already labelled.~~
+   **Struck 2026-09-22.** They are free and labelled; they are not joinable. Only 2 of the 24 are
+   capture frames — see §0, which replaces this step with a ruling the owner has to make.
 
 ("A composition root" was step 3 here; it is done — see §3 above — and struck from this list
 2026-09-21. The benchmark runner still does not call it, which is why criteria 4 and 11 are still

@@ -11,6 +11,7 @@ no weight file. The YuNet weights are gitignored and absent in CI.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ DetectFn = Callable[[npt.NDArray[np.uint8]], list[FaceBox]]
 NO_FRAMES = "no_frames"
 NO_FACE = "no_face"
 UNREADABLE = "unreadable"
+#: A crop byte-identical to one already in the pool. Counted, never silent:
+#: on the real corpus this is the single largest skip reason by an order of
+#: magnitude (see `build_face_pool`), and a reader who cannot see it would
+#: read a pool of 58 distinct images as a pool of 1088.
+DUPLICATE = "duplicate"
 
 #: Aligned crop edge length, in pixels. 224 matches `dfd.faces.align`'s default
 #: and the resolution the seam features in `dfd.detectors.blend` assume.
@@ -78,6 +84,22 @@ def build_face_pool(
         a frame that cannot be decoded is counted, not propagated, because
         one corrupt JPEG must not cost the other 441 sessions.
 
+    Crops are DEDUPLICATED by content across the whole pool, and every drop
+    is counted under `DUPLICATE`. This is not an optimisation. Measured on
+    the real capture corpus, 2026-09-22: its 1088 frame files hold only 58
+    distinct images, and 979 of those files — spread over 368 of the 442
+    sessions — are byte-identical to `assets/attack/victim_id.jpg`, a demo
+    asset replayed as the captured frame. Without this, one image would
+    enter the pool hundreds of times under hundreds of session ids, and
+    `training.fit_blend.split_by_subject` — which splits on session id —
+    would place that same image on both sides of the holdout. The held-out
+    AUC would then measure memorisation of a single picture and report it
+    as generalisation. Deduplication is what makes that split mean anything.
+
+    The hash is taken over the ALIGNED CROP, not the source frame, because
+    the crop is what reaches training: two frames that differ only outside
+    the face box align to the same pixels and are the same observation.
+
     There is deliberately no `root` parameter. `CaptureSession.folder`, as
     produced by `load_capture_sessions`, is already a complete path (it is
     built there as `str(path.parent)` from a glob rooted at the caller's
@@ -93,6 +115,7 @@ def build_face_pool(
     """
     crops: list[FaceCrop] = []
     skipped: dict[str, int] = {}
+    seen: set[str] = set()
 
     def drop(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
@@ -123,10 +146,17 @@ def build_face_pool(
             quality = measure_quality(
                 frame, (box.x, box.y, box.w, box.h), box.landmarks)
             index = int(frame_path.stem.split("_")[-1])
+            aligned = align(frame, box, size=size)
+            digest = hashlib.sha256(aligned.tobytes()).hexdigest()
+            if digest in seen:
+                logger.debug("duplicate crop from %s", frame_path)
+                drop(DUPLICATE)
+                continue
+            seen.add(digest)
             crops.append(FaceCrop(
                 session_id=session.session_id,
                 frame_index=index,
-                image=align(frame, box, size=size),
+                image=aligned,
                 box=box,
                 quality=quality,
                 swapped=session.swapped,
