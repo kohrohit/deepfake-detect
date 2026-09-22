@@ -390,6 +390,57 @@ fitted on could never have told it otherwise: FairFace photographs are clean Fli
 350 of 836 were scored at all. On a corpus where a sixth of the evidence is refused, an operating
 point set from the scored sixth-fewer is not the operating point the field will see.
 
+### The domain-shift explanation is refuted too. Two controls, 2026-09-22.
+
+The section above proposed that the inversion came from the *real* half: FairFace portraits are
+clean Flickr stills, the field's reals are compressed video frames, so "clean" became the model's
+proxy for "real". That was the leading hypothesis and the recommended next step. It was tested the
+same day, and it is wrong.
+
+**Control 1 — is the serving path faithful to the fitter?** A preprocessing mismatch between fitting
+and scoring would look exactly like a mysterious collapse. Scored 500 FairFace sessions held out of
+the fit entirely (indices 10,000-10,499), through `BlendDetector.score` — the same path the
+benchmark uses, not the fitter's internal one. **AUC 0.913** over 386 scored rows. The serving path
+is faithful; the label convention is right (`corpora/sbi.py` labels the blend 1, and
+`predict_proba` is P(fake)). Whatever DF40 exposes, it is not a wiring defect.
+
+**Control 2 — refit on DF40's own real frames.** If the real distribution were the problem, giving
+the model the field's reals should fix it. Built self-blends from DF40's *own* `test/real` half,
+split by **video prefix** so no source video straddles (the `#_#.png` family is video_frame; 79
+videos, ~19 frames each, greedily balanced to 762 frames a side). Fitted: held-out AUC 0.955 —
+in-family, and inflated further because `split_by_subject` splits on session id while frames from
+one video share an identity. Then evaluated on the prefix-disjoint other half plus every fake:
+
+| fitted on | evaluated on | AUC | TPR@FPR=1% | abstained |
+|---|---|---|---|---|
+| FairFace self-blends | DF40 test (all) | 0.289 | 0.000 | 15.4% |
+| **DF40 real self-blends** | **DF40, prefix-disjoint half + all fakes** | **0.344** | 0.007 | 17.8% |
+
+Same domain, same codec, same capture pipeline, same corpus — **still inverted**. Matching the real
+distribution moved the number by 0.055 and did not change its side of 0.5.
+
+**So the defect is the pseudo-fake, not the real.** Self-blending teaches a model to find a
+*composite boundary*. DF40 is 40 techniques of which only 10 are face swaps; the other 30 are
+reenactment, entire-face-synthesis and editing, and an entirely synthesised face **has no boundary
+to find**. The model is being asked a question most of this corpus does not contain, and it answers
+it by ranking whatever has the most high-frequency structure as fake — which, across DF40, is the
+real compressed frame.
+
+This is a **slot** result, not a tuning result, and it is the most useful thing measured so far:
+
+- Slot A (blending seam, spec §6) is the right physics for **face swaps** and close to useless
+  against synthesis and reenactment. SBI's published result is on FF++, which is swaps. Substituting
+  a corpus that is three-quarters not-swaps is not the same experiment.
+- No amount of more real faces fixes this. Control 2 is that experiment, already run.
+- The step that would: measure slot A on a **swap-only** subset — which needs the per-technique
+  labels this repackaging does not carry — and stand up a second slot with different physics
+  (learned appearance, or the upsampling fingerprint in slot C) for everything that is not a swap.
+
+The diagnostic weights from control 2 are fitted on CC BY-NC data and live in the session scratchpad
+only. They are deliberately **not** written to `assets/models/blend_seam.npz`, which the manifest
+registers as commercially usable; a NonCommercial refit landing at that path would silently poison
+the shipped artifact's licence.
+
 ### The licence questions the manifest said to VERIFY are now verified
 
 Checked at source 2026-09-22, replacing two "VERIFY before any commercial release" placeholders:
@@ -946,21 +997,22 @@ open and still numbered above as the next two steps.)
 been measured. It now has a step 0 in front of it, because AUC 0.289 changes which problem is
 binding:
 
-0. **Fix the training distribution before fitting anything else.** The failure measured in §0 is not
-   a shortage of fakes — it is that the model's *reals* (clean Flickr portraits) and the field's
-   reals (compressed video frames) are different populations, so "clean" became the model's proxy
-   for "real". Two experiments settle it, both code-only and both cheap:
-   - Fit the same seam model on self-blends of DF40's own **real** half, evaluate on its fake half,
-     splitting so no source frame appears on both sides. If the AUC recovers, the defect is domain
-     shift and the fix is real-face supply that matches the field, not more fakes. Note the
-     resulting weights would be CC BY-NC (DF40 reals are encumbered) — a **diagnostic artifact that
-     must never be written to `assets/models/blend_seam.npz`**, which the manifest registers as
-     commercially usable.
-   - Degrade FairFace to match: re-encode each crop through the compression and resolution ladder
-     the capture path actually produces, then refit. Licence-clean, and it tests the same
-     hypothesis from the other side.
+0. ~~**Fix the training distribution before fitting anything else** — refit on reals that match the
+   field.~~ **Run and struck the same day.** That was the leading hypothesis for two hours; control 2
+   in §0 tested it and it is wrong. Refitting on DF40's own real frames gives 0.344, still inverted.
+   Do not spend time here.
 
-   Only after one of these moves the number is there any point spending a EULA on more fakes.
+0a. **Get a swap-only evaluation subset.** Slot A detects composite boundaries; three quarters of
+   DF40 has no boundary to detect, so the corpus is currently measuring slot A against techniques it
+   was never a candidate for. This needs the per-technique labels the ungated repackaging does not
+   carry — the full DF40 (its own Google form, `docs/EULA-ACCESS.md`) or FF++. **This is the first
+   thing a EULA actually buys**, and it changes what every later number means.
+
+0b. **Stand up a second slot, with different physics.** Whatever slot A scores on swaps, something
+   else has to cover synthesis and reenactment. Slot C (NPR, the upsampling fingerprint) is already
+   declared and has no weights; it needs generated fakes to fit, which is the supply problem, not a
+   code one. Until a second slot exists, a good slot-A number would still leave most of DF40
+   undetected — and the fusion layer has nothing to fuse.
 
 ---
 
