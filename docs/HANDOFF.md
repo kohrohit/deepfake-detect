@@ -250,13 +250,46 @@ one command away.
   `dfd.faces.clamp_roi`, and pipeline delegates to it. This is §6's "correct about the case it was
   shown, blind one level down" again. It never fired on the captures because those faces sit well
   inside the frame — it would have fired the first time anyone pointed this at a public dataset.
-- **No FairFace crop bands `high`.** Bands over the 1,995: `medium` 1135, `reject` 747, `low` 113,
-  `high` 0. The thresholds in `dfd.quality` were tuned against full v-CIP frames where interocular
-  distance is measured across a whole camera image; on a 224x224 pre-aligned crop it is a different
-  quantity. Detector quality floors and per-band calibration both read this, so **the bands must be
-  re-derived for crop-domain inputs before any fitted model is trusted**. Not fixed here: changing
-  a threshold to make a number look better, before the number exists, is how you get a detector
-  that agrees with you.
+- **No FairFace crop bands `high`, and the reason is not the one it looks like.** `dfd.quality`'s
+  docstring already asks for this ("Thresholds here are starting values ... so they can be set from
+  data rather than from intuition"), so the distribution was recorded rather than guessed. Over
+  2,990 FairFace crops and the deduped capture pool:
+
+  | corpus | n | iod p50 | blur p50 | forced `reject` by blur | by iod | bands |
+  |---|---|---|---|---|---|---|
+  | FairFace crops | 2990 | 79.2 | 29.6 | **1070** | 111 | medium 1689, reject 1132, low 169, high 0 |
+  | captures, genuine | 19 | 90.4 | 86.5 | 5 | 0 | medium 12, reject 5, low 1, high 1 |
+  | captures, **swapped** | 12 | 110.0 | **14.7** | **11** | 0 | reject 11, medium 1 |
+
+  Interocular distance does cap the `high` band — `MIN_IOD_HIGH = 96.0` against a FairFace p95 of
+  88.6 makes `high` all but unreachable on a 224x224 pre-aligned crop, where iod is a different
+  quantity than on a full camera frame. But it is **not** what drives the `reject` band: blur is.
+  1,070 crops fall below `MIN_BLUR_LOW = 20.0` against 111 below `MIN_IOD_REJECT`. Laplacian
+  variance on a downscaled, re-compressed 224x224 thumbnail is simply a smaller number than on a
+  full frame.
+
+- **The serious one: this project's only real fraud almost all bands `reject`, on blur.** 11 of the
+  12 swapped crops have `blur_var < 20`; their median is 14.7 against 86.5 for genuine crops from
+  the same corpus. Their interocular distances are fine (89-167). **A detector with any quality
+  floor above `reject` would never be consulted on the five missed attacks the whole project exists
+  to catch** — `decide` would abstain for quality reasons and never score them.
+
+  The mechanism is not a threshold being slightly off. A swapped face is generated at a fixed,
+  usually lower resolution and upsampled into the frame, which destroys exactly the high-frequency
+  detail `_laplacian_var` measures. **So the quality gate reads the artifact as an absence of
+  evidence.** Blur is confounded with the thing being detected, and the abstention mechanism is
+  anti-correlated with the signal — it is most likely to refuse to look precisely when there is
+  something to see. `corpora/sbi.py`'s `RESCALE_RANGE = (0.70, 1.00)` encodes the same physical
+  fact deliberately, as a *feature*; `dfd.quality` encodes it accidentally, as a *disqualification*.
+
+  **n = 12. Do not treat this as established** — it is one corpus, one swap tool, and a sample far
+  too small to set a threshold from. It is, however, the sharpest prediction available about what
+  the pipeline will do the first day it is calibrated, and it is cheap to test properly.
+
+  **Not fixed here, deliberately.** Re-tuning a threshold to make a number look better, before the
+  number exists, is how you get a detector that agrees with you. The right fix is probably not a
+  new constant at all: it is separating "the image carries too little information to judge" from
+  "the image carries a low-frequency signature", which are the same measurement today.
 
 ### The licence questions the manifest said to VERIFY are now verified
 
@@ -289,10 +322,11 @@ class of open question as the owner attestations, arrived at from a different di
 
 **Next, in order:**
 
-1. **Re-derive the quality bands for crop-domain inputs.** This now blocks everything downstream:
-   no FairFace crop bands `high`, detector floors and per-band calibration both read the band, and
-   a fitted model evaluated through mis-scaled bands tells you nothing. Cheapest real task on this
-   list and the one with the most leverage.
+1. **Separate "too little information" from "low-frequency signature" in `dfd.quality`.** This now
+   blocks everything downstream. The distribution is recorded above; the finding that matters is
+   that 11 of 12 swapped crops band `reject` on blur, so a quality floor above `reject` would
+   abstain on the fraud this project exists to catch. Detector floors and per-band calibration both
+   read the band. Highest leverage task on this list, and it is a design question, not a constant.
 2. **Rule on what the captures are now FOR.** With FairFace supplying negatives, the 26 positive
    images in the 7 swapped sessions are this project's only real fraud and should be spent as a
    held-out evaluation set, never as train. The EULA route (§0a step 1) now buys *evaluation*
