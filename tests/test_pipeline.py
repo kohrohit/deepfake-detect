@@ -167,6 +167,9 @@ def png(tmp_path):
 class _FixedDetector:
     """Returns a chosen score without needing weights or quality."""
     name: str = "fixed"
+    # Not a real spec slot letter (A/C/E): a `Detector` Protocol double, same
+    # reasoning as `SyntheticDetector` in src/dfd/detectors/base.py.
+    slot: str = "test"
     version: str = "test-1"
     modalities: frozenset = frozenset({Modality.IMAGE})
     min_quality_band: str = "low"
@@ -373,6 +376,9 @@ class _RaisingDetector:
     is the shape of a real production failure, not an invented one.
     """
     name: str = "broken"
+    # Not a real spec slot letter (A/C/E): a `Detector` Protocol double, same
+    # reasoning as `SyntheticDetector` in src/dfd/detectors/base.py.
+    slot: str = "test"
     version: str = "test-1"
     modalities: frozenset = frozenset({Modality.IMAGE})
     min_quality_band: str = "low"

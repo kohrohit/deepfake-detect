@@ -50,9 +50,21 @@ def test_ruff_actually_passes():
     string is in a file, not that the tree is clean — the suite would go
     green here while CI went red on the first push."""
     proc = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", "src", "bench", "corpora"],
+        [sys.executable, "-m", "ruff", "check", "src", "bench", "corpora", "training"],
         cwd=ROOT, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_ci_lints_training_too():
+    """`training/` carries the fitter (training/fit_blend.py) and is not
+    itself installed or mypy-checked (mypy.ini scopes to src/dfd only,
+    deliberately — see the plan's Global Constraints), but nothing exempts
+    it from ruff. ci.yml's lint step must actually run over it, not just
+    this test module."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    match = re.search(r"run:\s*ruff check ([^\n]+)", ci)
+    assert match is not None, "could not find the ruff check invocation in ci.yml"
+    assert match.group(1).split() == ["src", "bench", "corpora", "training"]
 
 
 def test_mypy_strict_actually_passes():

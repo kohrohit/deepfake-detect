@@ -300,23 +300,51 @@ def test_select_subset_rejects_negative_k():
         reg.select_subset(k=-1, seed=99)
 
 
-def test_default_registry_composes_exactly_the_two_declared_detectors():
+def test_default_registry_composes_exactly_the_three_declared_detectors():
     """The one function that decides what evidence the product consults, and
-    nothing asserted its composition: deleting either `registry.register(...)`
-    call left all 553 tests green. `names()` is sorted, so the expected list is
+    nothing asserted its composition: deleting any `registry.register(...)`
+    call left all tests green. `names()` is sorted, so the expected list is
     alphabetical rather than registration order.
 
-    Two distinct physics per spec §6 — NPR's upsampling fingerprint (slot C)
-    and EfficientNet-B4's learned appearance (slot E). A single-detector
-    ensemble is not the designed product, and `fuse`'s disagreement signal is
-    meaningless with one contributor.
+    Three distinct physics per spec §6 — the blending seam (slot A), NPR's
+    upsampling fingerprint (slot C), and EfficientNet-B4's learned appearance
+    (slot E). A single- or two-detector ensemble is not the designed product,
+    and `fuse`'s disagreement signal is meaningless with fewer contributors.
     """
-    assert default_registry().names() == ["effnet_b4", "npr"]
+    assert default_registry().names() == ["blend_seam", "effnet_b4", "npr"]
 
 
 def test_default_registry_returns_the_detectors_it_registered():
-    """`names()` alone would still pass if both entries were the same class
-    registered twice under two names. Retrieving each one pins the identity."""
+    """`names()` alone would still pass if entries were the same class
+    registered twice under different names. Retrieving each one pins the
+    identity."""
     registry = default_registry()
     assert type(registry.get("npr")).__name__ == "NPRDetector"
+    assert type(registry.get("blend_seam")).__name__ == "BlendDetector"
     assert type(registry.get("effnet_b4")).__name__ == "EffNetDetector"
+
+
+def test_default_registry_composes_three_distinct_physics() -> None:
+    """Spec §6: the portfolio's value is uncorrelated evidence, so the
+    default set must not be three views of the same artifact."""
+    from dfd.detectors.registry import default_registry
+
+    registry = default_registry()
+    assert registry.names() == ["blend_seam", "effnet_b4", "npr"]
+    slots = {registry.get(n).slot for n in registry.names()}
+    assert slots == {"A", "C", "E"}
+
+
+def test_blend_seam_abstains_when_its_model_file_is_absent(tmp_path) -> None:
+    from dfd.detectors.registry import default_registry
+    from dfd.types import Observation, Quality
+
+    registry = default_registry(blend_weights=tmp_path / "absent.npz")
+    obs = Observation(
+        t=0.0, payload=__import__("numpy").zeros((224, 224, 3), dtype="uint8"),
+        roi=None,
+        quality=Quality(inter_ocular_px=40.0, blur_var=120.0, yaw_deg=0.0,
+                        pitch_deg=0.0, exposure=0.5, band="high"),
+        source_id="s")
+    result = registry.get("blend_seam").score([obs])
+    assert result.abstained and result.reason == "weights_absent"

@@ -40,7 +40,7 @@ jobs:
         # tests/, which is not part of that baseline and not cleaned up by this task;
         # linting it here would make CI fail on something the test suite says nothing
         # about — the exact "green locally, red in CI" drift this task exists to end.
-        run: ruff check src bench corpora
+        run: ruff check src bench corpora training
       - name: Types
         run: mypy --config-file mypy.ini
       - name: Tests

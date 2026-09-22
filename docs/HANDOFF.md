@@ -159,6 +159,19 @@ on both ends, and `.superpowers/sdd/` deleted per §7 now that its stated precon
    root path, so nothing is wired to that path yet — that is a deliberate choice to preserve, not an
    omission to fix.
 
+**Re-confirmed by the owner 2026-09-22: this product is not ScoreMe's.** That settles the framing
+question §1's correction block raised — and sharpens a different one. The 442 sessions are v-CIP
+captures; the product they would now train a detector for is not the one they were recorded for.
+`assets/manifest.yaml`'s `blend_seam_weights` entry says `license: owned`, and that claim was audited
+and holds **for the third-party question only** — no licensed dataset, weight file or encumbered code
+reaches those coefficients. It does not establish the right to fit and ship a model on the captures
+themselves. That rests on two owner attestations, now recorded verbatim in the manifest's
+`owner_attestation` field: that the corpus is available with rights (2026-09-21), and that the
+product is not ScoreMe's (2026-09-22). Neither has been independently verified and no one with legal
+standing has looked at it. **This is the one open question on the licence-clean path that engineering
+cannot close**, and it is worth closing before a model trained on that corpus is distributed rather
+than after.
+
 **The consequence nobody had written down: 7 positives is not a training set.** The CPU-feasible
 first detector (NPR-style upsampling fingerprints, DCT/SRM residuals, light classifier — §1's
 correction block 3) cannot be *trained* on 5–7 swapped sessions however licence-clean they are. They
@@ -179,9 +192,34 @@ supply the *real* faces, not whether swaps must be made. Treat the 442 as test, 
    benchmark runner still does not call `decide()`, which is exactly why criteria 4 and 11 are open.
 3. **Criterion 2 — an embedder.** `check_identity_disjoint` now *refuses* ids with no embedding
    rather than skipping them; a partial-embedding pipeline must omit unembeddable ids explicitly.
-4. **A swap corpus**, per the paragraph above, before any detector training is attempted.
+   The same gap also sits under `training/fit_blend.py::split_by_subject`: its "subject" is
+   `corpora.sbi`'s `subject_id`, which is set to the capture SESSION id, not a person identity, so
+   that split is session-disjoint rather than identity-disjoint and a person enrolled in more than
+   one session can land on both sides of it. The absent embedder is therefore not only a benchmark
+   gap — it is a correctness gap for the blend-seam fitter too.
+4. **The blend-seam detector now exists and is wired in.** `corpora/sbi.py` (the self-blend corpus
+   builder), `src/dfd/detectors/blend.py` (`seam_features`, `BlendDetector`, slot A) and
+   `training/fit_blend.py` (the fitter) are implemented and tested. `default_registry()` now
+   registers three detectors — `blend_seam`, `npr`, `effnet_b4` — instead of two, and
+   `assets/manifest.yaml` carries `blend_seam_weights` as an owned asset at the fixed path
+   `assets/models/blend_seam.npz`, licensed `owned` (no third-party dataset or model contributed)
+   and `commercial_use: true`, with its provenance — fitted in this repo by `training/fit_blend.py`
+   from the project's own capture corpus — recorded in that entry's `source` field.
+   **The fitter has not been run against the real capture corpus.** No model
+   file exists on this machine, so there is no accuracy number — not measured, not estimated, not
+   implied — and `bench/blend_seam_report.json` does not exist. The only measurement that exists is
+   on synthetic fixtures in the test suite, and it is explicitly not a detector claim: it documents
+   that pure-noise features passed the old `> 0.5` bar on 19 of 40 seeds, which is why that test's
+   bar is now 0.9. Running the fitter for real, against
+   `/home/rohit/Desktop/agents/fraud_gff/deepfake_detection`, is the next step and is a decision the
+   project owner has reserved — it produces the first model file and the first honest accuracy
+   number together.
 
-**Do not read "it runs" as "it detects".** Every real input still abstains, correctly — see §3.
+**Do not read "it runs" as "it detects".** Every real input still abstains, correctly — see §3. This
+now applies to `blend_seam` too: even once a model file exists at `assets/models/blend_seam.npz`,
+`dfd score` will keep returning `insufficient_evidence` on every real input, because
+`Calibrator.to_evidence` still returns `uncalibrated_for_band` for every band — no calibration curve
+has been fitted yet. A third detector in the registry does not mean the pipeline decides anything.
 
 ---
 

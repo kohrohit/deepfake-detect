@@ -118,6 +118,17 @@ class Detector(Protocol):
         ...
 
     @property
+    def slot(self) -> str:
+        """Spec §6 physics slot this detector occupies (e.g. "A", "C", "E").
+
+        Slot-diversity of the default registry is a tested invariant
+        (`tests/test_registry.py`), so it must be readable on every
+        detector, not only the three concrete ones that happen to declare
+        it today. Read-only after registration, like `name`.
+        """
+        ...
+
+    @property
     def version(self) -> str:
         """Detector version for comparison across updates. Read-only."""
         ...
@@ -162,6 +173,13 @@ class SyntheticDetector:
     name: str
     seed: int = 0
     version: str = "synthetic-1"
+    # Not one of the spec's real slot letters ("A"/"C"/"E"): this stand-in
+    # is registered directly in many tests (`reg.register(SyntheticDetector
+    # (...))`) and this class's own docstring claims it "must implement the
+    # Detector protocol to be registered in the harness", so it carries a
+    # `slot` like every other conforming detector rather than leaving that
+    # claim false now that the Protocol declares one.
+    slot: str = "synthetic"
     modalities: frozenset[Modality] = field(
         default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO}))
     min_quality_band: Literal["low", "medium", "high"] = "low"

@@ -13,7 +13,11 @@
 ## Global Constraints
 
 - **Python `>=3.10`.** Dependency ranges are fixed in `pyproject.toml` and must not be widened: `numpy>=1.26.4,<3`, `opencv-python-headless>=4.10.0.84,<6`, `pillow>=11.0,<13`, `pyyaml>=6.0.3,<7`, `scikit-learn>=1.5,<2`, `torch>=2.4.1,<3`. **Adding any new dependency is out of scope for this plan** — three tests in `tests/test_ci_gates.py` enforce pin/range integrity and will fail.
-- **`mypy --strict` must stay clean** across all files, and `ruff` clean. Both are CI gates.
+- **The gates are exactly what `.github/workflows/ci.yml` runs, and nothing else:**
+  - `ruff check src bench corpora` — note the scope: `tests/` is deliberately NOT linted (ci.yml:38-43 says so explicitly, and `ruff check .` reports 45 pre-existing errors in `tests/`). Do not lint or "fix" `tests/`.
+  - `mypy --config-file mypy.ini` — `mypy.ini` sets `files = src/dfd`, so 25 files in the installed package are checked. `corpora/`, `bench/` and `training/` are deliberately outside it and carry pre-existing `--strict` errors. Do not widen `mypy.ini` and do not attempt to fix those.
+  - `pytest -q --cov=src/dfd --cov-fail-under=85`
+  Running `mypy --strict` directly on a `corpora/` file needs `MYPYPATH=src` (the package ships no PEP 561 `py.typed` marker) and then surfaces only opencv-stub artifacts — `cv2.imread` is typed as non-optional although it returns `None`, which is the same stub deficiency already documented in `src/dfd/faces.py`. It is not a gate; do not chase it.
 - **Coverage gate is ≥85%.** Currently 95.12%.
 - **No test may depend on a weight file existing.** `assets/models/face_detection_yunet_2023mar.onnx` is gitignored and absent in CI. Every function that needs face detection takes the detector as an injected callable, defaulting to the real one. Tests inject a stub.
 - **Never train on the evaluation set.** The 5 `swapped AND approved` sessions (`20260826-221956-387743`, `20260827-104716-349039`, `20260829-010524-969870`, `20260831-142514-700890`, `20260831-142708-227903`) and the 2 further `swapped` sessions are **evaluation only** and must never enter a training split. This is enforced in code, not by convention (Task 3).
@@ -39,7 +43,7 @@ Extract face crops from capture sessions so later tasks have real faces to blend
 - Consumes: `corpora.captures.CaptureSession` and `load_capture_sessions` (existing); `dfd.faces.FaceBox`, `detect_faces`, `align`; `dfd.quality.measure_quality`; `dfd.types.Quality`.
 - Produces:
   - `FaceCrop` frozen dataclass with fields `session_id: str`, `frame_index: int`, `image: npt.NDArray[np.uint8]` (HWC uint8, `size`×`size`×3), `box: FaceBox`, `quality: Quality`, `swapped: bool`.
-  - `build_face_pool(sessions: Sequence[CaptureSession], root: str | Path, *, size: int = 224, detect: DetectFn = detect_faces, max_frames_per_session: int = 2) -> tuple[list[FaceCrop], dict[str, int]]` — returns the crops and a reason→count tally of what was skipped.
+  - `build_face_pool(sessions: Sequence[CaptureSession], *, size: int = 224, detect: DetectFn = detect_faces, max_frames_per_session: int = 2) -> tuple[list[FaceCrop], dict[str, int]]` — takes NO root: `CaptureSession.folder` is already a complete path (`corpora/captures.py:72` sets `folder=str(path.parent)`), so joining a root onto it double-prefixes — returns the crops and a reason→count tally of what was skipped.
   - `DetectFn` type alias: `Callable[[npt.NDArray[np.uint8]], list[FaceBox]]`.
   - Skip reason constants `NO_FRAMES = "no_frames"`, `NO_FACE = "no_face"`, `UNREADABLE = "unreadable"`.
 
@@ -293,7 +297,7 @@ For each test, break the implementation, watch it fail for the right reason, res
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/face_pool.py tests/corpora/test_face_pool.py
 git commit -m "feat: aligned face crops with the provenance a split needs"
 ```
@@ -324,7 +328,6 @@ Create `tests/corpora/test_sbi.py`:
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from corpora.sbi import face_mask, jitter, self_blend
 from dfd.faces import FaceBox
@@ -625,7 +628,7 @@ Expected: 9 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/sbi.py tests/corpora/test_sbi.py
 git commit -m "feat: self-blended pseudo-fakes, from one real frame and nothing else"
 ```
@@ -651,20 +654,24 @@ Turn the face pool into benchmark records. This task is where the evaluation set
 
 Create `tests/corpora/test_sbi_corpus.py`:
 
-Create `tests/test_sbi_corpus_helpers.py` first, so the subprocess test below can import the same fixture the in-process tests use:
+Create `tests/corpora/test_sbi_corpus.py`:
 
 ```python
-"""Shared crop fixture. Importable from a subprocess, unlike a local closure."""
+"""The corpus builder's job is split discipline, not image processing."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from corpora.face_pool import FaceCrop
+from corpora.sbi import SBI_GENERATOR, EvaluationOnlySessionError, build_sbi_corpus
 from dfd.faces import FaceBox
-from dfd.types import Quality
+from dfd.types import Modality, Quality
 
 
-def crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCrop:
+def _crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCrop:
     lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
                     [75.0, 125.0], [105.0, 125.0]])
     rng = np.random.default_rng(len(session_id) * 1000 + frame_index)
@@ -677,22 +684,6 @@ def crop(session_id: str, frame_index: int = 0, swapped: bool = False) -> FaceCr
                         pitch_deg=0.0, exposure=0.5, band="high"),
         swapped=swapped,
     )
-```
-
-Then `tests/corpora/test_sbi_corpus.py`:
-
-```python
-"""The corpus builder's job is split discipline, not image processing."""
-from __future__ import annotations
-
-from pathlib import Path
-
-import numpy as np
-import pytest
-
-from corpora.sbi import SBI_GENERATOR, EvaluationOnlySessionError, build_sbi_corpus
-from dfd.types import Modality
-from tests.test_sbi_corpus_helpers import crop as _crop
 
 
 def test_each_crop_yields_one_real_and_one_fake() -> None:
@@ -749,26 +740,41 @@ def test_reproducibility_survives_a_different_hash_seed() -> None:
     str hashing is salted per process, and a corpus seeded from it would be
     irreproducible between runs while every in-process test stayed green.
     """
+    import os
     import subprocess
     import sys
     import textwrap
 
-    script = textwrap.dedent('''
+    repo_root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent("""
         import numpy as np
-        from tests.test_sbi_corpus_helpers import crop
+        from corpora.face_pool import FaceCrop
         from corpora.sbi import build_sbi_corpus
-        s = build_sbi_corpus([crop("s1")], seed=5)
+        from dfd.faces import FaceBox
+        from dfd.types import Quality
+        lms = np.array([[70., 80.], [110., 80.], [90., 100.],
+                        [75., 125.], [105., 125.]])
+        img = np.random.default_rng(11).integers(40, 210, (224, 224, 3),
+                                                 dtype=np.uint8)
+        crop = FaceCrop(session_id="s1", frame_index=0, image=img,
+                        box=FaceBox(x=55, y=55, w=70, h=90, landmarks=lms,
+                                    score=0.99),
+                        quality=Quality(inter_ocular_px=40.0, blur_var=120.0,
+                                        yaw_deg=0.0, pitch_deg=0.0,
+                                        exposure=0.5, band="high"),
+                        swapped=False)
+        s = build_sbi_corpus([crop], seed=5)
         fake = next(x for x in s if x.context.label == 1)
         print(int(fake.observations[0].payload.astype(np.int64).sum()))
-    ''')
+    """)
     outs = set()
     for hashseed in ("0", "1", "12345"):
-        env = {**__import__("os").environ, "PYTHONHASHSEED": hashseed}
+        env = {**os.environ, "PYTHONHASHSEED": hashseed}
         r = subprocess.run([sys.executable, "-c", script], capture_output=True,
-                           text=True, env=env, cwd=str(Path(__file__).parent.parent))
+                           text=True, env=env, cwd=str(repo_root))
         assert r.returncode == 0, r.stderr
         outs.add(r.stdout.strip())
-    assert len(outs) == 1, f"corpus changed with PYTHONHASHSEED: {outs}" 
+    assert len(outs) == 1, f"corpus changed with PYTHONHASHSEED: {outs}"
 
 
 def test_a_different_seed_changes_the_fakes_but_not_the_reals() -> None:
@@ -793,12 +799,8 @@ def test_samples_are_images_carrying_the_crops_quality() -> None:
         assert s.observations[0].quality.band == "high"
 
 
-def test_the_corpus_passes_the_protocol_validator() -> None:
-    """The end-to-end contract: a corpus this builder emits is splittable."""
-    from bench.protocol import logo_splits
-    crops = [_crop(f"s{i}") for i in range(6)]
-    samples = build_sbi_corpus(crops)
-    records = [
+def _records(samples: list) -> list[dict]:
+    return [
         {"sample_id": s.sample_id,
          "subject_id": s.context.subject_id,
          "source_id": s.observations[0].source_id,
@@ -806,8 +808,37 @@ def test_the_corpus_passes_the_protocol_validator() -> None:
          "label": s.context.label}
         for s in samples
     ]
+
+
+def test_a_single_generator_corpus_cannot_be_logo_split() -> None:
+    """Not a defect — the protocol working. LOGO holds each generator out in
+    turn, so with only "sbi" present the one fold it could build has no
+    training fakes, and reporting a number computed from nothing would be
+    worse than refusing. This is why a second licence-clean generator family
+    is a precondition for the benchmark rather than an enhancement to it.
+    """
+    from bench.protocol import UnsplittableCorpusError, logo_splits
+    samples = build_sbi_corpus([_crop(f"s{i}") for i in range(6)])
+    with pytest.raises(UnsplittableCorpusError, match="no train fakes"):
+        logo_splits(_records(samples))
+
+
+def test_the_id_scheme_satisfies_the_protocol_validator() -> None:
+    """The contract the previous test cannot reach: `_validate` runs before any
+    split is attempted and rejects a corpus whose reals carry a generator, whose
+    fakes carry none, or whose source straddles two (subject, generator) pairs.
+    Adding a second generator's rows is what lets a successful split prove the
+    ids this builder emits are well-formed.
+    """
+    from bench.protocol import logo_splits
+    samples = build_sbi_corpus([_crop(f"s{i}") for i in range(6)])
+    records = _records(samples)
+    for i in range(0, 6, 2):
+        records.append({"sample_id": f"s{i}-other", "subject_id": f"s{i}",
+                        "source_id": f"s{i}:other", "generator": "other",
+                        "label": 1})
     splits = logo_splits(records)
-    assert splits, "a single-generator corpus still yields one fold"
+    assert sorted(s.held_out_generator for s in splits) == ["other", "sbi"]
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -820,10 +851,13 @@ Expected: FAIL — `ImportError: cannot import name 'SBI_GENERATOR' from 'corpor
 Append to `corpora/sbi.py` (add `import hashlib`, `from collections.abc import Sequence`, and the `dfd.types` and `face_pool` imports at the top of the file):
 
 ```python
-#: The generator name every self-blended fake carries. LOGO holds generators
-#: out one at a time, so this is the single fold a self-blend-only corpus can
-#: offer — which is exactly the benchmark weakness the research datasets would
-#: have fixed. See docs/HANDOFF.md §4.
+#: The generator name every self-blended fake carries. LOGO holds generators out
+#: one at a time, so a corpus containing only this one cannot be split at all:
+#: the single fold it could build has no training fakes, and
+#: `bench.protocol._require_measurable` raises UnsplittableCorpusError rather
+#: than report a number computed from nothing. A second licence-clean generator
+#: family is a precondition for the LOGO benchmark, not an enhancement to it.
+#: See docs/HANDOFF.md §4.
 SBI_GENERATOR = "sbi"
 
 
@@ -931,7 +965,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add corpora/sbi.py tests/corpora/test_sbi_corpus.py
 git commit -m "feat: SBI corpus with the ids the split protocol requires"
 ```
@@ -1185,7 +1219,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add src/dfd/detectors/blend.py tests/test_blend_features.py
 git commit -m "feat: concentric-annulus seam features, slot A"
 ```
@@ -1487,7 +1521,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench
+python3 -m pytest -q && ruff check . && mypy --strict
 git add src/dfd/detectors/blend.py tests/test_blend_detector.py
 git commit -m "feat: blend-seam detector with an inert model file"
 ```
@@ -1519,9 +1553,24 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from corpora.face_pool import FaceCrop
 from corpora.sbi import build_sbi_corpus
-from tests.test_sbi_corpus_helpers import crop as _crop
+from dfd.faces import FaceBox
+from dfd.types import Quality
 from training.fit_blend import evaluate, fit_blend_model, split_by_subject
+
+
+def _crop(session_id: str) -> FaceCrop:
+    lms = np.array([[70.0, 80.0], [110.0, 80.0], [90.0, 100.0],
+                    [75.0, 125.0], [105.0, 125.0]])
+    rng = np.random.default_rng(len(session_id) * 1000)
+    return FaceCrop(session_id=session_id, frame_index=0,
+                    image=rng.integers(40, 210, (224, 224, 3), dtype=np.uint8),
+                    box=FaceBox(x=55, y=55, w=70, h=90, landmarks=lms, score=0.9),
+                    quality=Quality(inter_ocular_px=40.0, blur_var=120.0,
+                                    yaw_deg=0.0, pitch_deg=0.0, exposure=0.5,
+                                    band="high"),
+                    swapped=False)
 
 
 def _corpus(n: int = 20):
@@ -1748,10 +1797,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("%d sessions, %d genuine and usable for training",
                 len(sessions), len(genuine))
 
-    crops, skipped = build_face_pool(genuine, args.captures)
+    crops, skipped = build_face_pool(genuine)
     if not crops:
-        logger.error("no face crops extracted (skipped: %s); "
-                     "is the YuNet weight file present?", skipped)
+        # Name both causes. The skip tally distinguishes them — NO_FACE means
+        # the detector ran and found nothing (or has no weights), NO_FRAMES
+        # means the folders held no frame_NN.jpg at all — and a message that
+        # guesses one cause sends the reader past the tally that answers it.
+        logger.error("no face crops extracted; skip tally: %s. NO_FACE means "
+                     "the detector returned nothing (check the YuNet weights at "
+                     "assets/models/face_detection_yunet_2023mar.onnx); "
+                     "NO_FRAMES means the session folders held no frames.",
+                     skipped)
         return 1
 
     samples = build_sbi_corpus(crops, seed=args.seed)
@@ -1790,7 +1846,7 @@ Expected: 8 passed
 - [ ] **Step 6: Check the gates and commit**
 
 ```bash
-python3 -m pytest -q && ruff check . && mypy --strict src corpora bench training
+python3 -m pytest -q && ruff check . && mypy --strict && mypy --strict --follow-imports=skip training/fit_blend.py
 git add training tests/test_fit_blend.py
 git commit -m "feat: fit the blend model, with subject-disjoint splitting in the fitter"
 ```
@@ -1920,7 +1976,7 @@ In `docs/HANDOFF.md` §0, replace next-step 4 ("A swap corpus…") with a statem
 ```bash
 python3 -m pytest -q
 ruff check .
-mypy --strict src corpora bench training
+mypy --strict && mypy --strict --follow-imports=skip training/fit_blend.py
 python3 -m pytest --cov=src --cov=corpora --cov=bench --cov-fail-under=85 -q
 git add -A
 git commit -m "feat: register the blend-seam detector and its owned model asset"
@@ -1933,7 +1989,7 @@ git commit -m "feat: register the blend-seam detector and its owned model asset"
 Recorded here so the next reader does not mistake absence for oversight.
 
 1. **It does not fit the model as part of the test suite.** `training/fit_blend.py` runs against the capture corpus on the owner's machine; CI has neither the corpus nor the YuNet weights. The tests fit on synthetic crops instead, which proves the fitter's discipline but says nothing about the detector's accuracy. **The accuracy number only exists once step 6 of Task 6 is run for real.**
-2. **It leaves LOGO with one generator.** A self-blend-only corpus has exactly one generator name, so leave-one-generator-out produces a single fold and cannot measure cross-generator transfer — the headline number spec §8.1 asks for. This is the gap the research datasets or a second clean generator family (classical landmark swap with Poisson blending) would close. It is out of scope here and should be its own plan.
+2. **It leaves LOGO with NO folds at all — not one, as an earlier version of this line claimed.** A self-blend-only corpus has exactly one generator name, and `logo_splits` holds each generator out in turn, so the only fold it can build has no training fakes left in it. `bench/protocol.py`'s `_require_measurable` raises `UnsplittableCorpusError` rather than reporting a number computed from nothing. Verified empirically at 2, 4, 8 and 20 subjects, and the same corpus shape with a second generator yields 2 splits. This is the protocol working correctly: cross-generator transfer is not measurable with one generator. **A second licence-clean generator family — classical landmark swap with Poisson blending is the obvious candidate, OpenCV is Apache-2.0 — is therefore a precondition for the LOGO benchmark, not an enhancement to it.** It is out of scope here and should be its own plan.
 3. **It does not touch calibration.** `Calibrator.to_evidence` still returns `uncalibrated_for_band` for every band, so `dfd score` will keep returning `insufficient_evidence` even once the model file exists. Fitting the calibration curve is the next milestone, and it is where the known `_worst_band` defect recorded in the P0 plan's known-gaps block must be settled first.
 4. **The only accuracy evidence so far is on synthetic fixtures.** Every reference implementation in this plan was executed before the plan was handed over (the rule in `docs/HANDOFF.md` §6), and all assertions hold — including a held-out AUC of 1.000 separating textured fixtures from their self-blends. **That number is not a detector claim.** Synthetic fixtures differ from their blends in ways a real camera never produces. The first honest accuracy figure arrives only from Task 6 step 6 run against the real capture corpus.
 5. **It does not verify the seam-feature design against any baseline.** The annulus geometry and feature set are this project's own and unmeasured. `docs/HANDOFF.md` §6's rule applies: the constants are a hypothesis until something measures them.
