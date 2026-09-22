@@ -108,6 +108,40 @@ def detect_faces(
     return (out, OK) if with_reason else out
 
 
+def clamp_roi(shape: tuple[int, ...],
+              box: FaceBox) -> tuple[int, int, int, int] | None:
+    """Clamp a detection to the frame, or None if it does not intersect it.
+
+    A detector may return a box that hangs off the frame edge, and on a
+    tightly-cropped face dataset it usually does: measured 2026-09-22, YuNet
+    put the box outside the image on 146 of the first 300 FairFace crops.
+    `measure_quality` slices `frame[y:y + h, x:x + w]` with no clamping, so a
+    negative origin slices from the FAR END of the array and yields an empty
+    crop, which makes `cv2.cvtColor` raise.
+
+    This lives here, beside `FaceBox`, because three call sites need the same
+    rule and two of them had each solved it privately: `align` clamps inline,
+    and `dfd.pipeline` had its own `_clamp_roi`. `corpora.face_pool` was the
+    third and had no clamp at all, which is why the pool builder crashed on
+    the second image of any public face dataset. One rule, one place.
+
+    Args:
+        shape: the frame's shape; only the first two entries are read.
+        box: the detection to clamp.
+
+    Returns:
+        An (x, y, w, h) ROI inside the frame, or None when the intersection is
+        smaller than 2x2 px — too small for any quality measurement to mean
+        anything, and the size at which OpenCV starts raising instead.
+    """
+    height, width = shape[:2]
+    x0, y0 = max(0, box.x), max(0, box.y)
+    x1, y1 = min(width, box.x + box.w), min(height, box.y + box.h)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
 def align(frame: npt.NDArray[np.uint8], box: FaceBox, size: int = 224) -> npt.NDArray[np.uint8]:
     """Crop the face box, clamped to frame bounds, resized to (size, size)."""
     h, w = frame.shape[:2]

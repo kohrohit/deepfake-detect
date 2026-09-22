@@ -208,12 +208,95 @@ data that no longer exists.** Closing it honestly means either re-submitting kno
 RD (spends quota, and `cache/quota.json` is the budget) or recording the criterion as unmeetable
 from the cache and saying why. That is a decision for the owner, not a task to pick up.
 
+### The negatives are solved. FairFace, 2026-09-22.
+
+The measurement above said the binding constraint is real faces, not fakes. That constraint is now
+lifted, without an EULA, a PI, or an academic address — the three walls `docs/EULA-ACCESS.md`
+documents.
+
+**FairFace** (`github.com/joojs/fairface`, mirrored ungated as `HuggingFaceM4/FairFace`): 97,698
+real faces, **CC BY 4.0**, already cropped and aligned to **224x224** — which is exactly
+`face_pool.DEFAULT_CROP_SIZE` and exactly the resolution `dfd.detectors.blend`'s seam features
+assume. Downloaded (2.5 GB) to `/home/rohit/Desktop/agents/datasets/fairface`, outside the repo, as
+the capture corpus is. CC BY 4.0 permits **commercial** use with attribution, so unlike FF++ and
+Celeb-DF this does not poison a later commercial turn. Registered as `fairface_corpus` in
+`assets/manifest.yaml`.
+
+`training/export_fairface.py` writes it into the capture layout, so every already-tested stage —
+`load_capture_sessions`, `build_face_pool` (real YuNet landmarks, dedup, ROI clamping),
+`build_sbi_corpus` — is reused rather than duplicated. JPEG bytes are copied **verbatim**: the
+parquet holds the original files, and re-encoding would stack a second generation of JPEG
+quantisation on every real face while its pseudo-fake is blended from decoded pixels — a
+corpus-wide shortcut a seam detector would learn in preference to the seam.
+
+Measured end to end on 2,000 exported faces:
+
+```
+build_face_pool(2000 FairFace sessions) -> 1995 crops, skipped {no_face: 5}   [25 s, CPU]
+                          vs the captures ->   19 crops
+```
+
+20,000 are exported at `/home/rohit/Desktop/agents/datasets/fairface_sessions`. The full 97,698 are
+one command away.
+
+**Two things this surfaced that were latent bugs, not FairFace quirks:**
+
+- **`build_face_pool` had no ROI clamp and crashed on 49% of real face crops.** YuNet returns a box
+  hanging off the frame edge on 146 of the first 300 FairFace images (a tightly-cropped face fills
+  the frame, so the box overshoots). `measure_quality` slices `frame[y:y + h, x:x + w]` unclamped,
+  a negative origin slices from the FAR end of the array, and `cv2.cvtColor` raises on the empty
+  crop. `dfd.pipeline._clamp_roi` and `dfd.faces.align` each already solved this privately;
+  `build_face_pool` was the third site and had nothing. The rule now lives once, as
+  `dfd.faces.clamp_roi`, and pipeline delegates to it. This is §6's "correct about the case it was
+  shown, blind one level down" again. It never fired on the captures because those faces sit well
+  inside the frame — it would have fired the first time anyone pointed this at a public dataset.
+- **No FairFace crop bands `high`.** Bands over the 1,995: `medium` 1135, `reject` 747, `low` 113,
+  `high` 0. The thresholds in `dfd.quality` were tuned against full v-CIP frames where interocular
+  distance is measured across a whole camera image; on a 224x224 pre-aligned crop it is a different
+  quantity. Detector quality floors and per-band calibration both read this, so **the bands must be
+  re-derived for crop-domain inputs before any fitted model is trusted**. Not fixed here: changing
+  a threshold to make a number look better, before the number exists, is how you get a detector
+  that agrees with you.
+
+### The licence questions the manifest said to VERIFY are now verified
+
+Checked at source 2026-09-22, replacing two "VERIFY before any commercial release" placeholders:
+
+| asset | verified licence | commercial |
+|---|---|---|
+| SBI pretrained (`mapooon/SelfBlendedImages`) | "freely available for research purpose. For commercial use: A license agreement is required" — **and** trained on FF-raw/FF-c23, so FF++ derived data regardless | **no**, twice over |
+| DeepfakeBench weights (`SCLBD/DeepfakeBench`) | CC BY-NC-4.0; its own table marks FF++ "Rights Cleared: NO" | **no** |
+| FairFace | CC BY 4.0, attribution required | **yes** |
+
+So the two tracks must never mix, and the manifest's `commercial_use` flag is what keeps them
+apart: **research baselines** (SBI, DeepfakeBench — an immediate cross-dataset comparison under the
+live research-only ruling) and **the shippable path** (self-blends over FairFace, fitted here,
+`license: owned`). A benchmark number from the first can never become a weight file in the second.
+
+**Also worth knowing, not yet taken:** SFHQ (`SelfishGene/SFHQ-dataset`) is ~425,000 synthetic
+faces under **MIT**, with no depicted real person at all — which sidesteps the biometric-consent
+caveat below entirely. Part 3 (118,358 images, pure StyleGAN2 sampling) is the cleanest: parts 1, 2
+and 4 derive from other datasets or from Stable Diffusion, whose own terms would need reading. Not
+downloaded. It is the right control set for asking whether a seam detector fitted on real faces
+also fires on synthetic ones.
+
+**The caveat that licence fields do not answer.** CC BY 4.0 settles copyright and nothing else.
+FairFace is photographs of real people who licensed an *image*, not people who consented to
+biometric processing of their *face*. For a product in the identity-verification space that is a
+data-protection question — GDPR Art. 9 and India's DPDP Act both treat biometric data as sensitive
+— and it sits beside, not inside, the licence. Recorded in the manifest entry; it is the same
+class of open question as the owner attestations, arrived at from a different direction.
+
 **Next, in order:**
 
-1. **Rule on the corpus.** 19 negatives and 26 positives changes what every other step is worth.
-   The EULA route (§0a step 1, still live) now buys evaluation data this project genuinely lacks,
-   and the self-generated-swaps route (§4 option 3) needs a source of real faces that the captures
-   have turned out not to be. This supersedes the old step 2.
+1. **Re-derive the quality bands for crop-domain inputs.** This now blocks everything downstream:
+   no FairFace crop bands `high`, detector floors and per-band calibration both read the band, and
+   a fitted model evaluated through mis-scaled bands tells you nothing. Cheapest real task on this
+   list and the one with the most leverage.
+2. **Rule on what the captures are now FOR.** With FairFace supplying negatives, the 26 positive
+   images in the 7 swapped sessions are this project's only real fraud and should be spent as a
+   held-out evaluation set, never as train. The EULA route (§0a step 1) now buys *evaluation*
+   breadth and the several generators LOGO needs — not training data, which is solved.
 2. **Find an academic signatory** — unchanged from §0a, and more load-bearing than it was.
 3. **Criterion 2 — an embedder.** Unchanged, and now cheap: 58 images is a trivial embedding job,
    and it would settle the near-duplicate question deduplication cannot reach.

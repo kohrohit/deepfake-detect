@@ -89,7 +89,8 @@ def test_the_declared_dependencies_cover_what_is_imported():
     clean runner and nothing at all locally, where the package is present."""
     dev = (ROOT / "requirements-dev.txt").read_text().lower()
     for package in ("pytest", "ruff", "mypy", "numpy", "opencv-python-headless",
-                    "pillow", "torch", "scikit-learn", "pyyaml", "packaging"):
+                    "pillow", "torch", "scikit-learn", "pyyaml", "packaging",
+                    "pyarrow"):
         assert package in dev, f"{package} missing from requirements-dev.txt"
 
 
@@ -102,8 +103,8 @@ def test_the_declared_dependencies_cover_what_is_imported():
 # empty list passes against any file at all, which is the exact vacuous-test
 # failure this plan hit roughly thirty times.
 
-EXPECTED_DEV_PINS = 11
-EXPECTED_FLOOR_PINS = 11
+EXPECTED_DEV_PINS = 12
+EXPECTED_FLOOR_PINS = 12
 EXPECTED_PYPROJECT_DEPS = 6
 
 

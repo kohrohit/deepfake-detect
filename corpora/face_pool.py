@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from dfd.faces import FaceBox, align, detect_faces
+from dfd.faces import FaceBox, align, clamp_roi, detect_faces
 from dfd.quality import measure_quality
 from dfd.types import Quality
 
@@ -40,6 +40,10 @@ UNREADABLE = "unreadable"
 #: magnitude (see `build_face_pool`), and a reader who cannot see it would
 #: read a pool of 58 distinct images as a pool of 1088.
 DUPLICATE = "duplicate"
+#: A detection that does not overlap the frame by at least 2x2 px after
+#: clamping. Mirrors `dfd.pipeline.DEGENERATE_BOX`, deliberately: the same
+#: condition should not have two names across the codebase.
+DEGENERATE_BOX = "degenerate_box"
 
 #: Aligned crop edge length, in pixels. 224 matches `dfd.faces.align`'s default
 #: and the resolution the seam features in `dfd.detectors.blend` assume.
@@ -143,8 +147,12 @@ def build_face_pool(
                 continue
 
             box = max(boxes, key=lambda b: b.score)
-            quality = measure_quality(
-                frame, (box.x, box.y, box.w, box.h), box.landmarks)
+            roi = clamp_roi(frame.shape, box)
+            if roi is None:
+                logger.debug("box misses the frame in %s", frame_path)
+                drop(DEGENERATE_BOX)
+                continue
+            quality = measure_quality(frame, roi, box.landmarks)
             index = int(frame_path.stem.split("_")[-1])
             aligned = align(frame, box, size=size)
             digest = hashlib.sha256(aligned.tobytes()).hexdigest()

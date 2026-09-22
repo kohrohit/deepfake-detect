@@ -10,7 +10,9 @@
 # `files` entry: none of those weight files exist on this machine yet, and
 # guessing a path risks it silently matching the wrong file once one is added
 # (see dfd/asset_scan.py). Fill in `files` for each when its weight file is
-# actually vendored.
+# actually vendored. fairface_corpus has none for a different reason — it is a
+# corpus that lives OUTSIDE the repo, like the capture corpus, and is reached
+# by a path argument rather than vendored at all.
 assets:
   yunet_face_detector:
     source: "https://github.com/opencv/opencv_zoo — face_detection_yunet_2023mar.onnx"
@@ -39,18 +41,58 @@ assets:
     checked_by: "kohrohit@gmail.com"
   sbi_effnetb4_weights:
     source: "https://github.com/mapooon/SelfBlendedImages"
-    license: "research-only — VERIFY before any commercial release (spec §11)"
+    # VERIFIED at source 2026-09-22 (was "VERIFY before any commercial
+    # release"). The repository states verbatim: "Our code and pretrained
+    # model are freely available for research purpose. For commercial use: A
+    # license agreement is required." Commercial use therefore needs a signed
+    # agreement with the author, not merely attribution.
+    # SECOND, INDEPENDENT BAR: the released weights were trained on FF-raw and
+    # FF-c23 — FaceForensics++. A model fitted on that data is "derived data"
+    # under the FF++ terms, so these weights could not ship commercially even
+    # if the author granted a licence. Research benchmark baseline only.
+    license: "research-only — author's own terms; commercial use requires a signed licence agreement"
     commercial_use: false
     evidence_url: "https://github.com/mapooon/SelfBlendedImages"
-    date_checked: "2026-09-20"
+    date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
   ffpp_effnetb4_weights:
     source: "https://github.com/SCLBD/DeepfakeBench"
-    license: "research-only — VERIFY before any commercial release (spec §11)"
+    # VERIFIED at source 2026-09-22 (was "VERIFY before any commercial
+    # release"). DeepfakeBench is released under CC BY-NC-4.0, and that
+    # licence covers the pretrained weights it distributes for each of its 36
+    # detectors. NonCommercial is a licence term, not a preference. Its own
+    # dataset table also marks FaceForensics++ "Rights Cleared: NO".
+    license: "CC BY-NC-4.0 — NonCommercial; weights inherit it"
     commercial_use: false
     evidence_url: "https://github.com/SCLBD/DeepfakeBench"
-    date_checked: "2026-09-20"
+    date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
+  fairface_corpus:
+    source: "https://github.com/joojs/fairface — 97,698 real faces, pre-cropped and aligned to 224x224, with age/gender/race labels. Mirrored as HuggingFaceM4/FairFace (ungated). Sampled from Yahoo's YFCC-100M Flickr set."
+    # The only face supply this project has found that is BOTH commercially
+    # usable and reachable without an EULA, a PI or an academic address — the
+    # three walls docs/EULA-ACCESS.md documents. Self-blending (corpora/sbi.py)
+    # consumes only REAL faces, so this is a direct substitute for the capture
+    # corpus's 19 usable genuine crops (docs/HANDOFF.md §0).
+    license: "CC BY 4.0"
+    # ATTRIBUTION IS A LICENCE CONDITION. training/export_fairface.py writes
+    # the dataset, licence and URL into every exported session's results.json
+    # for that reason. Do not strip it.
+    commercial_use: true
+    # CAVEAT, recorded rather than glossed: CC BY 4.0 settles the COPYRIGHT
+    # question and nothing else. These are photographs of real people who
+    # licensed an image, not people who consented to biometric processing of
+    # their faces. For a product in the identity-verification space that is a
+    # data-protection question (GDPR Art. 9 / India's DPDP Act treat biometric
+    # data as sensitive), and it is NOT answered by this licence field. The
+    # same question the owner attestations below leave open for the capture
+    # corpus is open here too, for different reasons.
+    evidence_url: "https://github.com/joojs/fairface"
+    date_checked: "2026-09-22"
+    checked_by: "kohrohit@gmail.com"
+    # No `files` entry: the corpus lives OUTSIDE the repo, like the capture
+    # corpus, and training/export_fairface.py takes a path to it.
+
   # Unlike the research-only entries above, blend_seam_weights DOES declare
   # `files`: this project produces the file itself at a known, fixed path
   # (training/fit_blend.py writes exactly assets/models/blend_seam.npz), so

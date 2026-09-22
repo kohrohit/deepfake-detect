@@ -25,7 +25,7 @@ from .audit import AuditRecord, build_audit_record
 from .calibration import Calibrator
 from .detectors.base import Registry, abstain
 from .errors import InvalidInput
-from .faces import DEFAULT_MODEL, FaceBox, detect_faces
+from .faces import DEFAULT_MODEL, FaceBox, clamp_roi, detect_faces
 from .fusion import fuse
 from .ingest.image import load_image
 from .ingest.video import DEFAULT_MAX_FRAMES, load_video
@@ -67,19 +67,13 @@ def _detect_with_reason(frame: npt.NDArray[np.uint8],
 
 
 def _clamp_roi(shape: tuple[int, ...], box: FaceBox) -> tuple[int, int, int, int] | None:
-    """Clamp a detection to the frame, or None if it does not intersect it.
+    """Clamp a detection to the frame. See `dfd.faces.clamp_roi`.
 
-    `measure_quality` slices `frame[y:y + h, x:x + w]` with no clamping, so a
-    negative origin would silently slice from the far end of the array and an
-    empty crop makes `cv2.cvtColor` raise. `faces.align` clamps for the same
-    reason; this is that rule applied one stage earlier.
+    Kept as a module-local name because this module's tests and readers refer
+    to it, but the rule itself now lives beside `FaceBox` so that
+    `corpora.face_pool` shares it rather than growing a third copy.
     """
-    height, width = shape[:2]
-    x0, y0 = max(0, box.x), max(0, box.y)
-    x1, y1 = min(width, box.x + box.w), min(height, box.y + box.h)
-    if x1 - x0 < 2 or y1 - y0 < 2:
-        return None
-    return (x0, y0, x1 - x0, y1 - y0)
+    return clamp_roi(shape, box)
 
 
 def _worst_band(observations: Sequence[Observation]) -> str:
