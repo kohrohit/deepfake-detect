@@ -61,9 +61,16 @@ assets:
   blend_seam_weights:
     source: "Fitted in this repo by training/fit_blend.py from self-blended crops of the project's own capture corpus. No external dataset or generator weight file contributes to it."
     license: "owned — no third-party dataset or model contributed to these coefficients"
+    # `owned` covers the third-party question only: no licensed dataset, weight
+    # file or encumbered code reaches these coefficients (audited by provenance
+    # chain 2026-09-21). It does NOT by itself establish the right to fit and
+    # ship a model on the 442-session capture corpus those coefficients are
+    # derived from. That rests on the owner's attestations, recorded below and
+    # in docs/HANDOFF.md §0. Nobody with legal standing has reviewed it.
     commercial_use: true
+    owner_attestation: "2026-09-21: the 442-session capture corpus and the 24 cached Reality Defender results are available with rights. 2026-09-22: this product is not ScoreMe's. Both stated by the project owner; not independently verified, and no legal review has been done on whether captures recorded in a v-CIP context may train a model for an unrelated product."
     evidence_url: "docs/EULA-ACCESS.md"
-    date_checked: "2026-09-21"
+    date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
     files:
       - "assets/models/blend_seam.npz"

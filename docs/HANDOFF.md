@@ -159,6 +159,19 @@ on both ends, and `.superpowers/sdd/` deleted per §7 now that its stated precon
    root path, so nothing is wired to that path yet — that is a deliberate choice to preserve, not an
    omission to fix.
 
+**Re-confirmed by the owner 2026-09-22: this product is not ScoreMe's.** That settles the framing
+question §1's correction block raised — and sharpens a different one. The 442 sessions are v-CIP
+captures; the product they would now train a detector for is not the one they were recorded for.
+`assets/manifest.yaml`'s `blend_seam_weights` entry says `license: owned`, and that claim was audited
+and holds **for the third-party question only** — no licensed dataset, weight file or encumbered code
+reaches those coefficients. It does not establish the right to fit and ship a model on the captures
+themselves. That rests on two owner attestations, now recorded verbatim in the manifest's
+`owner_attestation` field: that the corpus is available with rights (2026-09-21), and that the
+product is not ScoreMe's (2026-09-22). Neither has been independently verified and no one with legal
+standing has looked at it. **This is the one open question on the licence-clean path that engineering
+cannot close**, and it is worth closing before a model trained on that corpus is distributed rather
+than after.
+
 **The consequence nobody had written down: 7 positives is not a training set.** The CPU-feasible
 first detector (NPR-style upsampling fingerprints, DCT/SRM residuals, light classifier — §1's
 correction block 3) cannot be *trained* on 5–7 swapped sessions however licence-clean they are. They
