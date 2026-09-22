@@ -93,6 +93,33 @@ assets:
     # No `files` entry: the corpus lives OUTSIDE the repo, like the capture
     # corpus, and training/export_fairface.py takes a path to it.
 
+  df40_eval_subset:
+    source: "https://huggingface.co/datasets/pujanpaudel/deepfake_face_classification — a repackaging of the DF40 TEST split (SCLBD / CUHK-Shenzhen, NeurIPS 2024). Downloaded 2026-09-22: test.zip and val.zip, 3212 images each, balanced real/fake, 256-1024px RGB."
+    # LICENCE CONFLICT, resolved against the source. The HuggingFace page
+    # declares `apache-2.0`. That cannot be right: the data is derived from
+    # DF40, which its own repository restricts to CC BY-NC-4.0, and a
+    # derivative work cannot grant rights the upstream licence withholds.
+    # Recorded as NonCommercial accordingly. This is exactly the failure this
+    # manifest exists to catch -- a permissive tag on a repackaged dataset is
+    # not evidence of anything.
+    license: "CC BY-NC-4.0 — inherited from DF40 upstream; the HF page's apache-2.0 tag is not authoritative"
+    commercial_use: false
+    # WHAT IT IS AND IS NOT. DF40 covers 40 techniques (10 face-swap, 13
+    # reenactment, 12 entire-face-synthesis, 5 editing), which is why this was
+    # fetched: leave-one-generator-out needs several generators. But THIS
+    # repackaging is a flat fake/ vs real/ split with NO per-technique label —
+    # verified by listing both archives, 2026-09-22. Filenames fall into
+    # families that may track technique, but that is a guess and a guess used
+    # as a label is how this project's recurring defect starts. So it is a
+    # binary sanity benchmark, NOT a LOGO benchmark. The full DF40, which IS
+    # organised per technique, needs its Google form (docs/EULA-ACCESS.md).
+    # Its `real` half is also drawn from upstream forensics corpora, so treat
+    # those frames as encumbered too, not as free real faces.
+    evidence_url: "https://github.com/YZY-stack/DF40"
+    date_checked: "2026-09-22"
+    checked_by: "kohrohit@gmail.com"
+    # No `files`: lives outside the repo at ~/Desktop/agents/datasets/df40_eval.
+
   # Unlike the research-only entries above, blend_seam_weights DOES declare
   # `files`: this project produces the file itself at a known, fixed path
   # (training/fit_blend.py writes exactly assets/models/blend_seam.npz), so

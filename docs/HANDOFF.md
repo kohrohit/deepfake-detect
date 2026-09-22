@@ -291,6 +291,41 @@ one command away.
   new constant at all: it is separating "the image carries too little information to judge" from
   "the image carries a low-frequency signature", which are the same measurement today.
 
+### What else open source could supply, and what it could not (2026-09-22)
+
+Swept for anything reachable without a form, a PI or an academic address. Two things came back, and
+only one of them is worth much.
+
+**Taken — `df40_eval_subset`.** A repackaging of the DF40 test split on HuggingFace
+(`pujanpaudel/deepfake_face_classification`), ungated: 3,212 test and 3,212 val images, balanced
+real/fake, 256-1024px. DF40 itself spans 40 techniques — 10 face-swap, 13 reenactment, 12
+entire-face-synthesis, 5 editing — which is why it was fetched, because leave-one-generator-out
+needs several generators to hold out. **It does not deliver that.** Verified by listing both
+archives: the repackaging is a flat `fake/` vs `real/` split with **no per-technique label**.
+Filenames fall into families that may track technique, but using a guessed grouping as a generator
+axis is precisely how this project's recurring defect (§6) starts, so it is not used as one.
+
+What it is: an ungated multi-technique **binary sanity benchmark**, far better than anything the
+project had. What it is not: a LOGO benchmark. Its `real` half is also drawn from upstream
+forensics corpora, so those frames are encumbered too — they are not free real faces.
+
+Its HuggingFace page declares `apache-2.0`. That is not authoritative: DF40 restricts itself to
+CC BY-NC-4.0, and a derivative cannot grant rights the upstream withholds. Registered as
+NonCommercial. **A permissive tag on a repackaged dataset is not evidence of anything** — this is
+the second time today a headline licence claim failed on contact with its source.
+
+**Not taken, and why:**
+
+- **OpenFake** (`ComplexDataLab/OpenFake`, CC BY-NC-4.0, ungated) — **3.4 TB**, and it is
+  text-to-image political imagery, not face swaps. Wrong content at an impossible size.
+- **SFHQ** (MIT, ~425k synthetic faces) — the licence is ideal and the GitHub repo is MIT, but the
+  images themselves are distributed through Kaggle, which needs an account. The HuggingFace mirror
+  `bitmind/SyntheticFacesHQ` declares **no licence at all**, so it cannot be treated as MIT on the
+  strength of sharing a name. Needs a Kaggle login — see the owner-action list.
+- **DeepfakeBench / SBI pretrained weights** — both obtainable, both NonCommercial (verified above).
+  Worth having as research-track baselines, but each needs its author's framework wired in to run,
+  which is a task, not a download.
+
 ### The licence questions the manifest said to VERIFY are now verified
 
 Checked at source 2026-09-22, replacing two "VERIFY before any commercial release" placeholders:
