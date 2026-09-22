@@ -204,3 +204,57 @@ def test_an_empty_upload_is_refused_before_it_reaches_the_queue(
     with pytest.raises(InvalidInput, match="empty"):
         w.submit_bytes(b"", filename="upload.jpg", source="api")
     assert w.store.recent() == []
+
+
+def _age(path: Path, days: float) -> None:
+    import os, time
+    t = time.time() - days * 86400
+    os.utime(path, (t, t))
+
+
+def test_pruning_removes_files_older_than_the_retention_window(
+        tmp_path: Path) -> None:
+    """An always-on service that never deletes anything fills the disk."""
+    w = _worker(tmp_path)
+    old = w.submit_bytes(b"old", filename="old.jpg", source="api")
+    new = w.submit_bytes(b"new", filename="new.jpg", source="api")
+    # Decided, not pending: a queued file is protected whatever its age,
+    # which has its own test below.
+    w.process_one(); w.process_one()
+    _age(Path(w.store.get(old).path), days=40)
+    assert w.prune_workdir(retain_days=30) == 1
+    assert not Path(w.store.get(old).path).exists()
+    assert Path(w.store.get(new).path).exists()
+
+
+def test_pruning_never_removes_the_record_of_the_decision(
+        tmp_path: Path) -> None:
+    """The file is evidence; the audit record IS the decision. Keep it."""
+    w = _worker(tmp_path, decide=lambda p: _Record("REAL"))
+    sid = w.submit_bytes(b"old", filename="old.jpg", source="api")
+    w.process_one()
+    _age(Path(w.store.get(sid).path), days=40)
+    w.prune_workdir(retain_days=30)
+    row = w.store.get(sid)
+    assert row.verdict == "REAL"
+    assert row.record_json is not None
+
+
+def test_a_retention_of_zero_days_disables_pruning(tmp_path: Path) -> None:
+    """Zero means 'keep everything', not 'delete everything'."""
+    w = _worker(tmp_path)
+    sid = w.submit_bytes(b"old", filename="old.jpg", source="api")
+    _age(Path(w.store.get(sid).path), days=400)
+    assert w.prune_workdir(retain_days=0) == 0
+    assert Path(w.store.get(sid).path).exists()
+
+
+def test_a_queued_submission_is_never_pruned_out_from_under_the_worker(
+        tmp_path: Path) -> None:
+    """Deleting a file that is still waiting to be scored turns a pending
+    decision into a fabricated failure."""
+    w = _worker(tmp_path)
+    sid = w.submit_bytes(b"old", filename="old.jpg", source="api")
+    _age(Path(w.store.get(sid).path), days=400)
+    assert w.prune_workdir(retain_days=1) == 0
+    assert w.process_one() is True

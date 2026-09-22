@@ -54,6 +54,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="worker threads (default: %(default)s)")
     p.add_argument("--poll-interval", type=float, default=1.0,
                    help="seconds between inbox scans (default: %(default)s)")
+    p.add_argument("--retain-days", type=int, default=30,
+                   help="delete scored files older than this many days; 0 "
+                        "keeps everything. Audit records are never deleted "
+                        "(default: %(default)s)")
     p.add_argument("--max-frames", type=int, default=32,
                    help="frames sampled per video (default: %(default)s)")
     p.add_argument("--fake-threshold", type=float,
@@ -82,6 +86,7 @@ def config_from_args(args: argparse.Namespace) -> ServiceConfig:
         poll_interval=args.poll_interval,
         worker_threads=max(1, args.workers),
         max_frames=args.max_frames,
+        retain_days=args.retain_days,
     )
 
 

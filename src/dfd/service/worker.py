@@ -10,6 +10,7 @@ import hashlib
 import logging
 import shutil
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 #: arriving — enqueuing those produces a failed row per download, which buries
 #: the failures that mean something.
 IGNORED_SUFFIXES = (".part", ".crdownload", ".tmp", ".partial", ".download")
+
+#: How often `run_until_stopped` prunes, in seconds. Retention is measured
+#: in days, so checking more than hourly is pure filesystem traffic.
+PRUNE_INTERVAL_S = 3600.0
 
 #: A file must be the same size on two consecutive scans before it is taken.
 #: A file copied into the inbox is visible long before it is complete, and a
@@ -64,7 +69,8 @@ class Worker:
     """Moves files from an inbox (or an upload) into the queue, and drains it."""
 
     def __init__(self, *, store: Store, decide: DecideFn, inbox: str | Path,
-                 workdir: str | Path, poll_interval: float = 1.0) -> None:
+                 workdir: str | Path, poll_interval: float = 1.0,
+                 retain_days: int = 30) -> None:
         """
         Args:
             store: where submissions and results live.
@@ -75,12 +81,18 @@ class Worker:
             workdir: where taken files are kept. Files are MOVED here, which
                 is what makes a second scan a no-op.
             poll_interval: seconds between scans in `run_until_stopped`.
+            retain_days: delete taken files older than this many days. 0
+                keeps everything — an always-on service that never deletes
+                anything eventually fills the disk, and a service that
+                deletes on a default nobody chose loses evidence.
         """
         self.store = store
         self.decide = decide
         self.inbox = Path(inbox)
         self.workdir = Path(workdir)
         self.poll_interval = float(poll_interval)
+        self.retain_days = int(retain_days)
+        self._last_prune = 0.0
         self.inbox.mkdir(parents=True, exist_ok=True)
         self.workdir.mkdir(parents=True, exist_ok=True)
         # name -> (size, consecutive scans at that size). Held in memory
@@ -191,9 +203,47 @@ class Worker:
                 # accepting files, and silently scoring none of them.
                 logger.exception("worker loop error")
                 worked = False
+            if time.time() - self._last_prune > PRUNE_INTERVAL_S:
+                self._last_prune = time.time()
+                try:
+                    self.prune_workdir(self.retain_days)
+                except OSError:
+                    logger.exception("pruning failed")
             if not worked:
                 stop.wait(self.poll_interval)
         logger.info("worker stopped")
+
+    def prune_workdir(self, retain_days: int | None = None) -> int:
+        """Delete taken files older than the retention window.
+
+        The audit RECORD is never touched: the file is the input, the record
+        is the decision, and only one of those is the thing this service
+        exists to keep. A submission still queued or running is skipped
+        whatever its age — see `Store.unfinished_paths`.
+
+        Returns:
+            How many files were deleted.
+        """
+        days = self.retain_days if retain_days is None else int(retain_days)
+        if days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        keep = self.store.unfinished_paths()
+        removed = 0
+        for path in self.workdir.rglob("*"):
+            if not path.is_file() or str(path) in keep:
+                continue
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink()
+            except OSError:
+                logger.warning("could not prune %s", path)
+                continue
+            removed += 1
+        if removed:
+            logger.info("pruned %d file(s) older than %d days", removed, days)
+        return removed
 
     def _reserve(self, filename: str) -> Path:
         """A collision-free path under workdir, keeping the original name."""

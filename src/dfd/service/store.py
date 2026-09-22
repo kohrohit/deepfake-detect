@@ -238,6 +238,19 @@ class Store:
             rows = conn.execute(sql, (*params, int(limit))).fetchall()
         return [_to_submission(r) for r in rows]
 
+    def unfinished_paths(self) -> set[str]:
+        """Files belonging to submissions that have not been decided yet.
+
+        Retention must never delete one of these: the file is the input to a
+        decision that has not happened, and removing it turns a pending
+        submission into a fabricated failure.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT path FROM submissions WHERE status IN (?, ?)",
+                (QUEUED, RUNNING)).fetchall()
+        return {r["path"] for r in rows}
+
     def stats(self) -> dict[str, dict[str, int]]:
         """Counts by status and by verdict, for the dashboard and /health."""
         with self._connect() as conn:

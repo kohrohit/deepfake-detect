@@ -32,6 +32,11 @@ dependencies = [
 
 [project.scripts]
 dfd = "dfd.cli:main"
+# The service is a module entry point too (`python3 -m dfd.service`), which
+# is what ops/dfd.service uses: a console script resolves through the
+# installed console-scripts directory, and a systemd unit that depends on
+# that directory being on PATH breaks the day the venv moves.
+dfd-service = "dfd.service.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -52,6 +52,12 @@ DASHBOARD_HTML = """<!doctype html>
   th { color: var(--muted); font-weight: 500; font-size: 12px;
        text-transform: uppercase; letter-spacing: 0.05em; }
   td.file { white-space: normal; word-break: break-all; }
+  /* The evidence notes are the most important prose on the page and the
+     longest cells in it. Left to the nowrap rule above they push the card
+     into a horizontal scroller and the sentence that matters is the half
+     that is off-screen. */
+  td.note { white-space: normal; min-width: 22em; }
+  #evidence table { table-layout: auto; }
   tr.click { cursor: pointer; }
   tr.click:hover td { background: var(--bg); }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px;
@@ -135,7 +141,8 @@ async function loadEvidence() {
     if (typeof d.auc === "number") worst = Math.min(worst, d.auc);
     const auc = (typeof d.auc === "number") ? d.auc.toFixed(3) : "not measured";
     return `<tr><td><code>${n}</code></td><td>${auc}</td>`
-      + `<td>${d.corpus || "—"}</td><td class="muted">${d.note || ""}</td></tr>`;
+      + `<td>${d.corpus || "—"}</td>`
+      + `<td class="muted note">${d.note || ""}</td></tr>`;
   }).join("");
   if (worst < 0.55) el.classList.add("bad");
   out.innerHTML =

@@ -53,6 +53,8 @@ class ServiceConfig:
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     poll_interval: float = 1.0
     worker_threads: int = 1
+    #: Days to keep taken files. The audit records are kept regardless.
+    retain_days: int = 30
     max_frames: int = 32
     #: Minimum measured AUC before a detector may contribute evidence. The
     #: card cannot lower it (see `dfd.service.evidence.gated_detectors`).
@@ -206,7 +208,8 @@ def build_service(config: ServiceConfig) -> Service:
                       max_frames=config.max_frames)
     worker = Worker(store=store, decide=scorer, inbox=config.inbox,
                     workdir=config.workdir,
-                    poll_interval=config.poll_interval)
+                    poll_interval=config.poll_interval,
+                    retain_days=config.retain_days)
     httpd = make_server(config.host, config.port, store=store, worker=worker,
                         evidence_path=config.evidence_path,
                         max_upload_bytes=config.max_upload_bytes)

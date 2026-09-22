@@ -102,6 +102,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, f"no submission {sid!r}")
                 return
             payload = row.summary()
+            # Whether the INPUT is still on disk. Retention deletes scored
+            # files after a window while keeping every record, so a reader
+            # looking at an old decision must be able to tell "the file is
+            # gone" from "the path is wrong".
+            payload["file_retained"] = Path(row.path).is_file()
             # The full record is attached HERE and never in the listing: it
             # is the thing a reader actually needs when looking at one
             # decision, and the thing that makes a listing unusable.

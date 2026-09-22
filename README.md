@@ -90,7 +90,7 @@ still the wrong side of chance.
 
 ## Gates
 
-`ruff`, `mypy --strict`, 748 tests, 85% coverage floor, an asset-registration
+`ruff`, `mypy --strict`, 752 tests, 85% coverage floor, an asset-registration
 gate, and dependency pins tested at both ends of every declared range. CI
 runs the whole set twice — once against the newest pinned versions, once
 against the oldest the package claims to support.

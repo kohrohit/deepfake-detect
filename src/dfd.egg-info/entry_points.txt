@@ -1,2 +1,3 @@
 [console_scripts]
 dfd = dfd.cli:main
+dfd-service = dfd.service.__main__:main

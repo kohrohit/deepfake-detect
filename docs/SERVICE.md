@@ -166,6 +166,13 @@ measured cross-corpus AUC, not this file.
   else; the worker loop survives filesystem and database errors too.
 - **Restart.** `Restart=always` with a 5s delay. A detection service that has
   stopped looks exactly like one that is up and scoring nothing.
+- **Retention.** Scored files are deleted after `--retain-days` (30 by
+  default; `0` keeps everything), hourly, from the worker loop. **Audit
+  records are never deleted** — the file is the input, the record is the
+  decision. A submission still queued or running is never pruned whatever its
+  age. `GET /api/submissions/{id}` reports `file_retained`, so an old
+  decision shows "the file is gone" rather than a path that silently does not
+  resolve.
 
 ## Security
 
