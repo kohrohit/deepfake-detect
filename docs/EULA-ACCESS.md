@@ -142,18 +142,30 @@ any candidate:
 
 | # | Action | Who can do it | Cost | What it unblocks |
 |---|---|---|---|---|
-| 1 | Fix Kaggle auth | owner, alone | 2 min | any Kaggle-hosted corpus |
+| 1 | ~~Fix Kaggle auth~~ **blocked upstream, and not needed** | nobody, yet | — | nothing on the critical path |
 | 2 | Submit the DF40 request form | owner, alone | 10 min | per-technique labels — criteria 3, 8, and a swap-only subset |
 | 3 | Find an FF++ academic signatory | needs a person | weeks | the benchmark, and Celeb-DF with it |
 | 4 | Build our own eval corpus | owner + consenting people | days | **everything, including training** |
 | 5 | Free disk | owner, alone | minutes | precondition for 2 and 4 |
 
-### 1. Kaggle auth is broken on this machine
+### 1. Kaggle auth cannot currently be fixed, and it is not the owner's fault
 
-`~/.kaggle/` holds a 38-byte `access_token` and no `kaggle.json`, and `import kaggle` fails with
-`OSError: Could not find kaggle.json`. The SFHQ download worked around it. Fix it properly:
-kaggle.com → Settings → API → **Create New Token**, save the downloaded `kaggle.json` to
-`~/.kaggle/kaggle.json`, then `chmod 600 ~/.kaggle/kaggle.json`.
+**Corrected 2026-09-24.** An earlier version of this section told the owner to download a
+`kaggle.json`. That instruction was wrong: Kaggle now issues an **access token** (`KGAT_...`, which
+is what `~/.kaggle/access_token` holds) and no longer offers the legacy file on this account.
+
+The token is correct and unusable. Verified at source the same day:
+
+- `kaggle` 1.6.17 (installed) and **1.7.4.5 (the latest on PyPI)** both authenticate only from
+  `kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`. Neither reads `access_token`.
+- The Kaggle API's GitHub **main** branch does support it — `_authenticate_with_access_token`,
+  reading `~/.kaggle/access_token` or `$KAGGLE_API_TOKEN` — but it is unreleased, and installing
+  from git fails because its own dependency `kagglesdk>=0.1.37` is not on PyPI.
+
+So there is no installable client that can use the credential Kaggle issues. **Nothing on the
+critical path depends on this**: SFHQ is already downloaded, and the corpus being built now comes
+from FairFace, which is already on disk. If a Kaggle-hosted dataset is ever needed, download it
+through the browser, or re-check whether `kagglesdk` has since been published.
 
 ### 2. DF40's own form — the cheapest ask, and the one to send first
 
