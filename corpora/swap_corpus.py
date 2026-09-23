@@ -83,9 +83,10 @@ def _stratum(meta: dict[str, Any]) -> str | None:
     return f"{race}|{gender}" if race and gender else None
 
 
-def _load_faces(root: Path, *, limit: int | None, detect: DetectFn,
-                skipped: dict[str, int]) -> Iterator[_Face]:
+def _load_faces(root: Path, *, limit: int | None, offset: int,
+                detect: DetectFn, skipped: dict[str, int]) -> Iterator[_Face]:
     sessions = sorted(d for d in root.iterdir() if d.is_dir())
+    sessions = sessions[offset:]
     if limit is not None:
         sessions = sessions[:limit]
     for folder in sessions:
@@ -146,6 +147,7 @@ def build_swap_corpus(
     root: str | Path,
     *,
     limit: int | None = None,
+    offset: int = 0,
     seed: int = 0,
     detect: DetectFn = detect_faces,
     techniques: Sequence[str] = TECHNIQUES,
@@ -157,6 +159,26 @@ def build_swap_corpus(
             writes it): one folder per photograph, holding `frame_00.jpg` and
             a `results.json` carrying demographics.
         limit: cap on photographs read, before pairing.
+        offset: photographs to SKIP first, in sorted order.
+
+            **This is not a convenience parameter, and leaving it at 0 has
+            already produced a wrong result once.** `training/fit_blend.py`
+            fitted `blend_seam` v0.2.0-fairface10k on the first 10,000
+            sessions of this same directory, selected by
+            `sorted(root.glob("*/results.json"))`. A corpus built with
+            `limit=3000` and no offset therefore draws every real record, and
+            every photograph its fakes are composited from, out of that
+            detector's own training set. Measured 2026-09-24, that reported a
+            worst-generator AUC of 0.923 which is memorisation, not
+            detection.
+
+            **So: any corpus used to evaluate a FairFace-fitted detector must
+            start at or beyond that detector's training window.** For
+            `blend_seam` v0.2.0-fairface10k that is `offset >= 10000`. There
+            is no way for this function to check it — the training window is
+            a property of the weights, not of the corpus — so it is the
+            caller's job and it is stated here because the caller will
+            otherwise forget.
         seed: pairing and jitter seed. The same seed yields the same corpus.
         detect: face detector, injected so tests need no weight file.
         techniques: which generators to emit. Defaults to all four; a caller
@@ -177,7 +199,8 @@ def build_swap_corpus(
         raise FileNotFoundError(f"no FairFace session directory at {root}")
 
     skipped: dict[str, int] = {}
-    faces = list(_load_faces(root, limit=limit, detect=detect, skipped=skipped))
+    faces = list(_load_faces(root, limit=limit, offset=offset, detect=detect,
+                             skipped=skipped))
     records: list[dict[str, Any]] = []
 
     for source, target in _couples(faces, seed=seed):

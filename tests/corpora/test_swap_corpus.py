@@ -156,3 +156,21 @@ def test_a_face_that_will_not_detect_is_counted(tmp_path):
                                          detect=lambda f: [])
     assert records == []
     assert skipped["no_face"] == 8
+
+
+def test_offset_skips_the_first_photographs(tmp_path):
+    """`blend_seam` was fitted on the first 10,000 FairFace sessions, so a
+    corpus built without an offset evaluates it on its own training data —
+    which is how a worst-generator AUC of 0.923 was reported once before
+    anyone checked."""
+    root = _sessions(tmp_path, 16)
+
+    early, _ = build_swap_corpus(root, limit=8, detect=_detect)
+    late, _ = build_swap_corpus(root, limit=8, offset=8, detect=_detect)
+
+    def people(records):
+        return {p for r in records for p in r["subject_id"].split("+")}
+
+    assert people(early) and people(late)
+    assert not (people(early) & people(late)), "offset did not move the window"
+    assert people(late) <= {f"ff-{i:04d}" for i in range(8, 16)}
