@@ -52,14 +52,24 @@ def _box() -> FaceBox:
     return FaceBox(x=20, y=25, w=50, h=60, landmarks=lms, score=0.99)
 
 
-def _corpus(root: Path, n: int = 40) -> Path:
+def _corpus(root: Path, n: int = 40, per_source: int = 4) -> Path:
+    """A corpus with SOURCE structure, four frames to a source.
+
+    The names carry a frame index (`f000_2.png`) because `corpora.df40`
+    groups frames of one filename family into one source (2026-09-23), and
+    `split_by_source` assigns a whole source to one side. Flat names
+    (`f000.png`) all land in that loader's `unnumbered` bucket, which leaves
+    exactly two sources — one per label — and a split that is single-label
+    on both sides, so nothing is fittable and every curve is skipped.
+    """
     for sub, low in (("fake", 150), ("real", 0)):
         d = root / sub
         d.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(1 if sub == "fake" else 2)
         for i in range(n):
             img = rng.integers(low, low + 100, (300, 260, 3), dtype=np.uint8)
-            cv2.imwrite(str(d / f"{sub[0]}{i:03d}.png"), img)
+            cv2.imwrite(str(d / f"{sub[0]}{i // per_source:03d}_{i % per_source}.png"),
+                        img)
     return root
 
 

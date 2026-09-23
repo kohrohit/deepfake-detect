@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,8 @@ from .face_pool import DEGENERATE_BOX, DUPLICATE, NO_FACE, UNREADABLE, DetectFn
 
 __all__ = [
     "ALIGN", "DEGENERATE_BOX", "DF40_GENERATOR", "DUPLICATE", "FACE_DETECTOR",
-    "NO_FACE", "UNKNOWN_COMPRESSION", "UNREADABLE", "load_df40_records",
+    "NO_FACE", "UNGROUPED", "UNKNOWN_COMPRESSION", "UNREADABLE",
+    "load_df40_records", "source_group",
 ]
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,55 @@ LABEL_DIRS: dict[str, int] = {"fake": 1, "real": 0}
 DEFAULT_CROP_SIZE = 224
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+#: The source token given to a filename that carries no frame index. Every
+#: such file in one label directory shares it, so they resample as ONE
+#: observation. That understates the evidence deliberately — see
+#: `source_group`.
+UNGROUPED = "unnumbered"
+
+#: A trailing frame index: `_100`, `-12`, ` (3)`, `(3)`. The separator (or the
+#: parentheses) is required. Without one, `00042.png` would be read as frame
+#: 42 of an empty-named video, which is how a filename guess starts inventing
+#: structure that is not there.
+_FRAME_INDEX = re.compile(r"(?:[ _-]\(?\d+\)?|\(\d+\))$")
+
+
+def source_group(label_dir: str, filename: str) -> str:
+    """The source id shared by every frame of one filename family.
+
+    This is the ONE use this module makes of filename structure, and it is
+    not the use the module docstring refuses. A guessed *generator* label
+    fabricates a LOGO axis and makes a benchmark look like it generalises.
+    A guessed *source group* only decides what `bench.runner` resamples over,
+    and the guess here is built to fail in the safe direction: names it
+    cannot parse merge into one group rather than splitting into many, so
+    the error it can make is to claim LESS independence than the data has,
+    never more.
+
+    Measured on the ungated DF40 test split, 2026-09-23: 1,601 fakes fall
+    into 45 families, the largest holding 999 of them (62%), for a Kish
+    effective sample size of **2.4**. Resampling those rows as if they were
+    independent — which this loader did until now — reports a confidence
+    interval roughly 26x narrower than the data supports.
+
+    Args:
+        label_dir: `"fake"` or `"real"`. Part of the id, so a family name
+            appearing under both never merges across the label boundary: a
+            source that straddles generators is refused by `bench.protocol`,
+            correctly.
+        filename: the image's file name, extension included.
+
+    Returns:
+        `"{label_dir}/{family}"`, or `"{label_dir}/unnumbered"` when the name
+        carries no frame index to strip.
+    """
+    stem = Path(filename).stem
+    trimmed = _FRAME_INDEX.sub("", stem)
+    if trimmed == stem or not trimmed:
+        return f"{label_dir}/{UNGROUPED}"
+    return f"{label_dir}/{trimmed}"
 
 
 def _images(directory: Path) -> list[Path]:
@@ -158,13 +209,18 @@ def load_df40_records(
             # stem id collides on 20 such pairs, and `bench.runner`
             # refuses the whole run over it — correctly.
             sample_id = f"{name}/{path.name}"
+            # Frames of one filename family are ONE source and ONE subject.
+            # Both were `sample_id` until 2026-09-23, which told the
+            # bootstrap that 999 frames of a single video were 999
+            # independent observations — see `source_group` for the measured
+            # cost. subject_id tracks source_id because `bench.protocol`
+            # refuses a source that straddles subjects, and because frames
+            # of one video are in fact one person.
+            group = source_group(name, path.name)
             records.append({
                 "sample_id": sample_id,
-                # Each image is its own source video and its own subject.
-                # The first is true (these are stills); the second is an
-                # assumption this data cannot confirm — module docstring.
-                "source_id": sample_id,
-                "subject_id": sample_id,
+                "source_id": group,
+                "subject_id": group,
                 "generator": DF40_GENERATOR if label == 1 else None,
                 "label": label,
                 "compression": UNKNOWN_COMPRESSION,

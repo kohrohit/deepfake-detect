@@ -355,6 +355,24 @@ more fake than its fakes: mean score 0.148 on reals against 0.027 on fakes. Noth
 salvageable by flipping the sign — a sign chosen because it helps on the test set is the test set
 fitting the model.
 
+**Corrected 2026-09-23: the interval around that 0.289 is 0.230–0.670, and it contains 0.500.**
+The table above reported `95% CI 0.271–0.308`, computed by resampling ROWS because
+`corpora/df40.py` declared every image its own source video. It is not: 999 of the test split's
+1,601 fakes are one filename family, and the honest interval — resampled over families — is **12×
+wider** and straddles chance. `bench/df40_report.md` has been regenerated and now carries it. The
+point estimate is unchanged and the *direction* of every claim below still holds (the mean scores,
+0.148 on reals against 0.027 on fakes, are not intervals and did not move); what does not survive
+is the **precision**. "Inverted" is what the point estimate says. "Inverted rather than merely
+weak" is what this corpus, at n_effective ≈ 2.4 on the fake side, cannot establish. See "Matching
+the shortcut away does not work" below for how that number was arrived at.
+
+**And the resolution slice below inherits the same defect.** The 512px bucket's 2,320 records hold
+1,000 fakes — *all one filename family, one source*. Its AUC 0.232 is therefore one video scored
+against 1,329 real frames from 27 sources, not an independent replication of the inversion. The
+conclusion it was used to support (that resolution does not explain the inversion) is separately
+confirmed by the matched-slice measurement below, which is why it stands; the slice itself should
+not be quoted as evidence on its own.
+
 **The obvious explanation is wrong, which matters.** DF40's labels are not balanced across
 resolution (fakes run 559 at 256px / 1,000 at 512px / 42 at 1,024px; reals 277 / 1,329 / 0), so
 resolution is the first thing to suspect. It does not explain it. Sliced by source resolution:
@@ -442,6 +460,105 @@ Three consequences, all of which bind:
 
 The weights from this experiment are fitted on CC BY-NC data and stay in the session scratchpad.
 Nothing was written to `assets/models/`.
+
+### Matching the shortcut away does not work, and the corpus is worth 2.4 fakes. 2026-09-23.
+
+The section above found that Lab colour means alone separate DF40's halves at AUC 0.843 and called
+it source identification. The obvious next move — and the one the next person would spend a day
+on — is to **match** the two halves: hold the confound constant and re-measure. That was done. It
+does not work, and finding out why turned up something worse than the colour shortcut.
+
+**First, what the halves are actually made of.** Native image size and container format, read from
+the files rather than assumed, over both splits this repackaging ships:
+
+| split | real | fake |
+|---|---|---|
+| **val** | 512×512 PNG 1354, 256×256 PNG 197, 256×256 JPEG 55 | 256×256 PNG 1322, 1024×1024 JPEG 133, 256×256 JPEG 138 |
+| **test** | 512×512 PNG 1329, 256×256 PNG 221, 256×256 JPEG 56 | **512×512 PNG 1000**, 256×256 PNG 515, 256×256 JPEG 44, 1024×1024 JPEG 42 |
+
+**val has no 512×512 fake at all. test has a thousand of them.** So the cheapest rule in val — "512
+pixels wide means real", right 1354 times out of 1354 — is wrong a thousand times in test. Measured
+as a detector with no access to pixels whatsoever:
+
+| | val | test |
+|---|---|---|
+| AUC(image width) | 0.155 → **0.845 inverted** | 0.423 → 0.577 inverted |
+| AUC(is JPEG) | 0.568 | 0.509 |
+
+A single integer read from the file header scores 0.845 on val. That number is not a detector; it is
+the label leaking through the repackaging. And it **reverses between the two splits**, so the
+"fit on val, report on test" protocol used above is not a held-out protocol on this corpus: the two
+splits are not exchangeable.
+
+**Then the matching, which fails in the interesting direction.** Fit on a slice of val, report on
+the same-resolution, same-format slice of test:
+
+| slice | fit (f/r) | report (f/r) | all d=30 | seam only d=15 | colour only d=15 |
+|---|---|---|---|---|---|
+| unmatched (reproduces the ablation above) | 1593/1606 | 1601/1606 | 0.800 | 0.751 | 0.843 |
+| **matched 256px PNG** | 1322/197 | 515/221 | **0.904** | 0.787 | 0.844 |
+| matched 256px JPEG | 138/55 | 44/56 | 0.653 | 0.575 | 0.642 |
+
+Holding resolution and format constant does not remove the separation — it **raises** it, 0.800 →
+0.904. Colour-only is unmoved at 0.844. So resolution was never the shortcut; it was one more
+correlate of a difference that runs all the way through the two halves.
+
+**Three controls, and the last one is the finding.**
+
+| control | result | reads as |
+|---|---|---|
+| A. fit val 256px PNG → report test **512px** PNG | 0.678 | the boundary transfers across a resolution shift only weakly |
+| B. within test 512px PNG, random half → half | **0.984** (colour only 0.979) | the matched slice is almost perfectly separable |
+| C. val reals vs test reals, 512px PNG | 0.567 | the two splits' REAL halves are the same source — the features are not merely reading "which split" |
+
+Control B looks like the matched slice being the cleanest evidence in the corpus. It is the
+opposite. Grouping that slice's filenames into families gives **27 real groups of ~50 frames each,
+and exactly ONE fake group of 999 frames.** A group-disjoint split of it is impossible — every fake
+is the same family — so 0.984 is a model recognising one video, split across a random line drawn
+through its own frames.
+
+**The number that should govern every interval on this corpus.** Filename families, both splits:
+
+| split | half | n | families | largest | effective n (Kish) |
+|---|---|---|---|---|---|
+| val | fake | 1593 | 140 | 271 (17%) | 25.7 |
+| val | real | 1606 | 83 | 82 (5%) | 35.9 |
+| **test** | **fake** | **1601** | **45** | **999 (62%)** | **2.4** |
+| test | real | 1606 | 80 | 82 (5%) | 35.2 |
+
+The test split's 1,601 fakes carry the evidential weight of about **2.4 independent observations**.
+`corpora/df40.py` set `source_id = sample_id` — each image its own source video — and said in its
+own docstring that where that is wrong "the bootstrap interval is narrower than the truth." This is
+how wrong: roughly `sqrt(1601/2.4)` ≈ **26× too narrow** on the fake side. Every CI in
+`bench/df40_report.md` before this date — including `0.289, 95% CI 0.271–0.308` — was computed that
+way.
+
+**Fixed, not just recorded.** `corpora.df40.source_group` now groups frames of one filename family
+into one source, and `subject_id` tracks it (`bench.protocol` refuses a source that straddles
+subjects). The grouping is a filename guess, which this loader refuses to make for *generator*
+labels — and the distinction is the whole point: a guessed generator label fabricates a LOGO axis
+and makes a benchmark look like it generalises, while a guessed source group only decides what gets
+resampled, and this one is built to fail safe. A name it cannot parse (`00042.png`, no separator
+before the digits) goes into one shared `unnumbered` bucket rather than becoming its own source, so
+the error it can make is to claim **less** independence than the data has, never more. Six mutations
+of it were run and each failed for the right reason — including the two that a first draft of these
+tests could not catch, where collapsing every name into one bucket satisfied "frames of one family
+share a source" by making *everything* share a source.
+
+Consequences beyond the report:
+
+1. **Guard 2 (`check_video_level`) now genuinely fails on this corpus**, where before it was
+   satisfied by a 1:1 mapping that existed only because the grouping was fake. The DF40 run was
+   already guard-waived for two other reasons; this is the third, and the waiver block says so.
+2. **`training/fit_calibration.py`'s test corpus had to gain source structure.** Its fixture wrote
+   flat names (`f000.png`), all of which now land in one `unnumbered` bucket per label — two sources
+   total, so `split_by_source` put one whole label on each side and every curve was skipped as
+   unfittable. The fixture now writes four frames per source. A test fixture that only passes
+   because the loader treats every file as independent is a fixture measuring the bug.
+3. **There is no matched slice of this repackaging on which an in-corpus number means anything.**
+   Match the resolution and the separation goes up; match the source and there is one fake group.
+   This corpus can **refute** a detector — a detector that fails here has failed — and it cannot
+   support one. That is the entire ruling, and it does not change with more analysis.
 
 ### The one public detector on this machine is at chance. Measured 2026-09-23.
 
@@ -1134,6 +1251,12 @@ binding:
    was never a candidate for. This needs the per-technique labels the ungated repackaging does not
    carry — the full DF40 (its own Google form, `docs/EULA-ACCESS.md`) or FF++. **This is the first
    thing a EULA actually buys**, and it changes what every later number means.
+
+   **Sharpened 2026-09-23.** It is not only the per-technique labels. This repackaging cannot
+   support *any* in-corpus number: matching native resolution and container format raises the
+   separation (0.800 → 0.904) rather than removing it, and 62% of its fakes are one filename
+   family, an effective sample size of 2.4. Use this corpus to REFUTE a detector, never to select
+   or tune one. See "Matching the shortcut away does not work" in §0.
 
 0b. **Supervised training on licence-clean fakes.** ~~Stand up a second slot.~~ **Reordered
    2026-09-23.** Refitting the SAME features on DF40's own fakes reaches 0.800 where self-blending

@@ -61,8 +61,19 @@ of the data, not of the run:
   per-technique label, so leave-one-generator-out is refused rather than
   faked from filename families.
 
+- **Video-level sampling (guard 2).** `corpora.df40` groups frames of one
+  filename family into one source (2026-09-23). That is the honest
+  grouping, and it is exactly what guard 2 forbids: the guard wants one
+  sample per source, and this corpus has up to 999. The interval below is
+  computed over sources rather than rows because of it.
+
 Read the in-dataset table below as a cross-corpus sanity check — the corpus
 is unseen, which the capture corpus was not — and never as a LOGO result.
+
+**The interval is what changed most.** The fake half of the test split is
+1,601 images in 45 filename families, the largest holding 999 of them — a
+Kish effective sample size of 2.4. Resampling rows, as every earlier run of
+this report did, reported a precision the data does not have.
 """
 
 

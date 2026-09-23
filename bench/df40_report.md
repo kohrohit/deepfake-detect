@@ -3,7 +3,7 @@
 ## Reproducibility record
 
 - seed: `0`
-- dataset hash: `44c5f339dabb1e4eddada249ab121d2ba0f3c13ce73a6e8f9272ad2980029aa0`
+- dataset hash: `ffd39424542b9ebd02cc85080e8534d84f2dee9f3b3d0c9c1cc37651fca77257`
 - guards enforced: `False`
 - model versions: `blend_seam=0.2.0-fairface10k, effnet_b4=0.1.0, npr=0.1.0`
 
@@ -21,8 +21,19 @@ of the data, not of the run:
   per-technique label, so leave-one-generator-out is refused rather than
   faked from filename families.
 
+- **Video-level sampling (guard 2).** `corpora.df40` groups frames of one
+  filename family into one source (2026-09-23). That is the honest
+  grouping, and it is exactly what guard 2 forbids: the guard wants one
+  sample per source, and this corpus has up to 999. The interval below is
+  computed over sources rather than rows because of it.
+
 Read the in-dataset table below as a cross-corpus sanity check — the corpus
 is unseen, which the capture corpus was not — and never as a LOGO result.
+
+**The interval is what changed most.** The fake half of the test split is
+1,601 images in 45 filename families, the largest holding 999 of them — a
+Kish effective sample size of 2.4. Resampling rows, as every earlier run of
+this report did, reported a precision the data does not have.
 
 ## Leave-one-generator-out (spec §8.1)
 
@@ -34,6 +45,6 @@ These are computed over the whole corpus, with every generator seen. Spec §8.1:
 
 | detector | AUC | 95% CI | TPR@FPR=1% | TPR@FPR=0.1% | adversarial TPR@FPR=1% | ECE | abstained | p95 ms | n |
 |---|---|---|---|---|---|---|---|---|---|
-| blend_seam | 0.289 | 0.271–0.308 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 9.1 | 3207 |
+| blend_seam | 0.289 | 0.230–0.670 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 7.5 | 3207 |
 | effnet_b4 | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |
 | npr | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |

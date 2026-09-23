@@ -113,6 +113,15 @@ assets:
     # as a label is how this project's recurring defect starts. So it is a
     # binary sanity benchmark, NOT a LOGO benchmark. The full DF40, which IS
     # organised per technique, needs its Google form (docs/EULA-ACCESS.md).
+    # FILENAME FAMILIES ARE USED FOR ONE THING, added 2026-09-23. The
+    # paragraph above refuses them as a GENERATOR label and that still
+    # stands. `corpora.df40.source_group` does use them as a SOURCE group,
+    # which is the opposite kind of guess: a wrong generator label invents a
+    # LOGO axis and flatters the benchmark, while a wrong source group only
+    # changes what the bootstrap resamples over, and that one is built to
+    # over-merge. It had to be done: 999 of the test split's 1,601 fakes are
+    # one family, an effective sample size of 2.4, and resampling those rows
+    # as independent reported intervals ~26x too narrow.
     # Its `real` half is also drawn from upstream forensics corpora, so treat
     # those frames as encumbered too, not as free real faces.
     evidence_url: "https://github.com/YZY-stack/DF40"

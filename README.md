@@ -11,7 +11,7 @@ train on:
 
 | detector | physics | weights | measured AUC | decides? |
 |---|---|---|---|---|
-| `blend_seam` | blending boundary (slot A) | fitted here, from FairFace self-blends | **0.289** — inverted | no |
+| `blend_seam` | blending boundary (slot A) | fitted here, from FairFace self-blends | **0.289**, 95% CI 0.230–0.670 — point estimate inverted, interval contains chance | no |
 | `dima806_vit` | learned appearance | on disk, Apache-2.0 | **0.521** — chance | not wired |
 | `npr` | upsampling fingerprint (slot C) | absent | — | no |
 | `effnet_b4` | learned appearance (slot E) | absent (obtainable weights are NonCommercial) | — | no |
@@ -92,7 +92,11 @@ real faces:** refitting on the evaluation corpus's own reals moves the AUC
 from 0.289 to 0.344, still the wrong side of chance. **Tuning on DF40:** its
 real and fake halves are separable at AUC 0.843 by Lab colour means alone, so
 anything trained there finds that shortcut first and loses it the moment real
-and fake share a camera and a codec.
+and fake share a camera and a codec. Matching resolution and format does not
+remove that shortcut — it raises it (0.800 → 0.904), because the halves differ
+all the way down. And the corpus is thinner than its row count: 999 of its
+1,601 fakes are one filename family, an effective sample size of 2.4, which is
+why the interval above is as wide as it is.
 
 ## Gates
 

@@ -6,7 +6,8 @@ results over HTTP.
 
 **Read this first.** The service runs. It does not work, and it says so on
 every page it serves. No detector on this deployment has been measured above
-chance on a corpus it did not train on — `blend_seam` scores **0.289 AUC** on
+chance on a corpus it did not train on — `blend_seam` scores **0.289 AUC** (95% CI
+0.230–0.670, which contains chance) on
 DF40 (inverted), and the Apache-2.0 ViT on disk scores **0.521** (chance).
 The evidence gate below is what turns that fact into behaviour rather than a
 footnote: every verdict is `insufficient_evidence`, and will stay that way
