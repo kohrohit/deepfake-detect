@@ -622,6 +622,72 @@ Consequences beyond the report:
    This corpus can **refute** a detector — a detector that fails here has failed — and it cannot
    support one. That is the entire ruling, and it does not change with more analysis.
 
+### SFHQ landed, and it buys a lead rather than a detector. Measured 2026-09-23.
+
+The Kaggle login arrived, part 3 downloaded (22.75 GB, 118,358 images), and `corpora/sfhq.py`
+reads it. What follows was measured on a 6,000-image random sample against 6,000 FairFace sessions —
+**5,577 SFHQ crops and 5,986 FairFace crops**, both through the identical YuNet-then-align path.
+
+**Fitted on the pair, it looks excellent. It is not.**
+
+| features | d | in-family AUC | DF40 transfer AUC | 95% CI (125 source groups) |
+|---|---|---|---|---|
+| all | 30 | 0.969 | **0.461** | 0.186–0.557 |
+| seam only | 15 | 0.961 | 0.467 | 0.116–0.589 |
+| colour only | 15 | 0.866 | 0.466 | 0.441–0.516 |
+
+**0.969 in-family, chance on an unseen corpus.** Native image width alone — 1024 for SFHQ, 224 for
+FairFace, no pixel examined — separates the two halves at **AUC 1.000**. This is the DF40 lesson
+arriving on schedule: pair two corpora from different sources and the cheapest thing in the data is
+which corpus a crop came from.
+
+**The control that changes the picture.** `dfd.detectors.blend._crop_to_roi`'s own docstring already
+measured the 12 residual/Laplacian features as strongly scale-sensitive (ROI 112 → mean 15.6
+training-set standard deviations). SFHQ crops descend from 1024px sources; FairFace crops from
+native 224px ones. So every SFHQ source was resized to 224×224 **before** detection — matching
+FairFace's frame size — and the identical path re-run:
+
+| | in-family AUC | DF40 transfer AUC | 95% CI (grouped) |
+|---|---|---|---|
+| SFHQ as shipped | 0.969 | 0.461 | 0.186–0.557 |
+| **SFHQ resampling-matched** | 0.955 | **0.629** | 0.338–0.734 |
+| — seam only | 0.936 | **0.644** | 0.313–0.762 |
+| — colour only | 0.901 | 0.550 | 0.474–0.578 |
+
+**In-family performance went DOWN and transfer went UP.** That is the signature of removing a
+shortcut rather than adding signal, and it is the first time in this project that any fitted model
+has produced an above-chance point estimate on a corpus it has never seen. For comparison, the
+shipped `blend_seam` scores 0.289 on the same records.
+
+**And it is still not a result, because the interval says so.** 0.644 carries a grouped 95% CI of
+**0.313–0.762**, which contains 0.500. DF40's fake half is 45 filename families with an effective
+sample size of 2.4 (see the section above); it cannot resolve a difference this size. Reporting
+"first cross-corpus signal, AUC 0.644" would have been the easiest sentence of the day to write and
+it would have been the row bootstrap talking. The morning's fix is what stopped it.
+
+**What is established, and what is not:**
+
+- **Established:** SFHQ used naively — at its native resolution against native-resolution
+  FairFace — produces a model that transfers at chance. The in-family 0.969 is a resolution
+  artefact. Anyone reaching for this pair should match the source scale first. This one DF40 *can*
+  settle, because refuting is what a shortcut-ridden corpus is good for.
+- **Not established:** that the resampling-matched model detects anything. The point estimate says
+  0.644; the interval spans chance; the corpus cannot adjudicate.
+- **Unchanged:** SFHQ is entire-face synthesis, and DF40's fakes are mostly swaps and reenactment.
+  A model trained on one technique family scoring 0.63 on another is a *generalisation* claim, which
+  is the hardest kind and the one that most needs an interval it does not have.
+
+**What this changes about the next step.** The recommendation list said "licence-clean fakes to
+train on" was the first thing to buy. It has been bought, it works better than anything before it,
+and the binding constraint has moved: **there is now no corpus on this machine that can measure
+whether it works.** That is the EULA item (§5, step 0a), and it has gone from "changes what every
+later number means" to the only thing standing between a lead and a detector.
+
+The 22.75 GB archive holds `images/`, `landmarks/`, `pretrained_features/` and `segmentations/`;
+only the first is used. A 6,000-image sample sits at `~/Desktop/agents/datasets/sfhq_part3/probe`,
+and the weights from these experiments stayed in the session scratchpad — nothing was written to
+`assets/models/`.
+
 ### The one public detector on this machine is at chance. Measured 2026-09-23.
 
 `assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
@@ -1320,8 +1386,15 @@ binding:
    family, an effective sample size of 2.4. Use this corpus to REFUTE a detector, never to select
    or tune one. See "Matching the shortcut away does not work" in §0.
 
-0b. **Supervised training on licence-clean fakes.** ~~Stand up a second slot.~~ **Reordered
-   2026-09-23.** Refitting the SAME features on DF40's own fakes reaches 0.800 where self-blending
+0b. ~~**Supervised training on licence-clean fakes.**~~ **BOUGHT AND RUN, 2026-09-23** — SFHQ part
+   3 is downloaded, `corpora/sfhq.py` reads it, and the pair is measured (see "SFHQ landed" in §0).
+   Result: it transfers at chance used naively, and at a point estimate of 0.644 once the source
+   scale is matched — with a grouped interval of 0.313–0.762 that contains chance. **The binding
+   constraint has moved to evaluation:** there is no corpus on this machine that can tell whether
+   that lead is real, which promotes 0a from "changes what every later number means" to the only
+   thing between a lead and a detector. The original note follows.
+
+   **Reordered 2026-09-23.** Refitting the SAME features on DF40's own fakes reaches 0.800 where self-blending
    reached 0.289, so the physics was never the binding constraint — the supervision was. Fake data
    to train on is the first thing to buy, ahead of new physics. SFHQ (~425k synthetic faces, MIT
    upstream) needs one Kaggle account; everything else found is NonCommercial.
