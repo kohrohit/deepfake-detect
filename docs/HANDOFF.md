@@ -170,11 +170,13 @@ inside the archive at download time and register what it actually says.
 roomy. The archive can go where every other corpus does, outside the repo
 (`~/Desktop/agents/datasets/`), and never inside it.
 
-Once `~/.kaggle/kaggle.json` exists (Kaggle → Settings → API → Create New Token), the CLI is already
-installed:
+Once the API token exists (Kaggle → Settings → API → Create New Token), the CLI is already
+installed. **The token goes in `~/.config/kaggle/`, not `~/.kaggle/`** — the installed CLI names
+that path in its own error, and the `~/.kaggle/` this file first gave is the older convention:
 
 ```bash
-chmod 600 ~/.kaggle/kaggle.json
+mkdir -p ~/.config/kaggle && mv ~/Downloads/kaggle.json ~/.config/kaggle/
+chmod 600 ~/.config/kaggle/kaggle.json
 kaggle datasets files selfishgene/synthetic-faces-high-quality-sfhq-part-3   # look before pulling 22.8 GB
 kaggle datasets download -d selfishgene/synthetic-faces-high-quality-sfhq-part-3 \
     -p ~/Desktop/agents/datasets/sfhq_part3
