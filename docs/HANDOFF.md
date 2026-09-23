@@ -744,6 +744,55 @@ detector (synthesis, not seam) that would silently change what `blend_seam_weigh
 `assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
 provenance line naming both corpora. Until then the fit stays in the session scratchpad.
 
+### The first leave-one-generator-out result this project has ever had. 2026-09-24.
+
+Spec §8.1 calls LOGO the only number that predicts field performance. It has never run here,
+because `logo_splits` correctly refuses a corpus whose only generator is the one being held out and
+every corpus this project had carried exactly one. `corpora/swaps.py` makes four (see the commit);
+`corpora/swap_corpus.py` builds 8,864 records from 1,483 FairFace couples, and LOGO folds.
+
+`blend_seam` v0.2.0-fairface10k, evaluated on each held-out technique in turn:
+
+| held out | AUC | 95% CI (grouped) | resolved? |
+|---|---|---|---|
+| `swap_lowres_paste` | **0.928** | 0.908–0.949 | yes, above |
+| `swap_poisson` | 0.640 | 0.601–0.682 | yes, above |
+| `swap_warp_hull` | 0.633 | 0.591–0.668 | yes, above |
+| `swap_mouth_patch` | **0.527** | 0.493–0.573 | **NO — spans chance** |
+
+**The headline is the worst fold, 0.527, and it is not distinguishable from chance.** Reported as
+the worst rather than the mean for the same reason guard 3 reports the worst compression cell: an
+average hides the technique an attacker will actually use. So the honest LOGO verdict is that slot A
+does not generalise to an unseen technique FAMILY, and the gate's 0.75 floor is not met by a wide
+margin.
+
+**It confirms, by measurement, what §0 has asserted since 2026-09-22.** Slot A finds composite
+boundaries. `mouth_patch` is a reenactment — a small boundary in a different place — and slot A is
+blind to it (0.527). `lowres_paste` is a heavily resampled face with a boundary AND a resolution
+step, and slot A finds it easily (0.928). The two full-face swaps sit between. That ordering is
+exactly what the physics predicts, and until today it was a hypothesis nobody had tested.
+
+**THE CONTAMINATION CHECK, AND WHY IT IS REPORTED EVEN THOUGH IT CAME BACK CLEAN.** The first run
+of this used FairFace sessions 0–2,999, and `blend_seam` was fitted on sessions 0–9,999. Every real
+record, and every photograph its fakes were composited from, was inside the detector's own training
+set. Rebuilt at `offset=10000` on sessions it has never seen, the numbers move by at most 0.023
+(0.923 → 0.928, 0.663 → 0.640, 0.645 → 0.633, 0.537 → 0.527) and no conclusion changes. So the
+contamination did not matter — which is a fact about these features (generic seam statistics do not
+memorise individual faces), not a reason the check was unnecessary. `build_swap_corpus` now takes
+an `offset` and its docstring carries the rule.
+
+**WHAT THIS IS NOT.** These are classical compositing swaps, not generator output, and the real half
+is FairFace — the same dataset slot A was fitted on, different sessions. So what is measured is
+generalisation across TECHNIQUE, which is what LOGO is for, and NOT generalisation across corpus.
+A detector that scores well here has not been shown to beat FSGAN. `corpora/swaps.py` states this
+at the top and it must travel with every number taken from this corpus.
+
+**The guards both fired, and were waived so the run could finish.** Identity: 383 of 124,750
+compared subject pairs cross at 0.307%, above the 0.21% unrelated-face rate, max 0.677 — so a few
+FairFace couples are genuinely the same person or near-twins. Parity: the per-stratum FPR ratio
+exceeds the 2x ceiling. Both are now measured numbers on a corpus that can carry them, which is
+what criteria 2 and 11 were built for and what no corpus here could previously supply.
+
 ### DF40's declared subjects are not distinct people. Measured 2026-09-23, by the new guard.
 
 Criterion 2 was closed this day (`dfd/embed.py`, SFace, Apache-2.0) and pointed at the first real
