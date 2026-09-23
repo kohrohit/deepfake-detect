@@ -688,6 +688,62 @@ only the first is used. A 6,000-image sample sits at `~/Desktop/agents/datasets/
 and the weights from these experiments stayed in the session scratchpad — nothing was written to
 `assets/models/`.
 
+### The full fit: 204,716 samples, and 500 would have done. Measured 2026-09-23.
+
+The section above measured a 6,000-image SFHQ sample. This is the whole thing — **118,358 SFHQ
+fakes** (every image in part 3; face found in every one, no duplicate crops) against **86,358
+FairFace reals** (the full `train` split exported, 248 with no detected face, 138 duplicate crops),
+with DF40's 3,209 records re-extracted through the identical chain so the transfer test is
+like-for-like. Every source normalised to 224px before detection — the control the section above
+showed was the difference between transferring at chance and transferring at all.
+
+| features | d | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|---|
+| all | 30 | 0.961 | 0.615 | 0.370–0.701 |
+| **seam only** | 15 | 0.942 | **0.634** | 0.371–0.724 |
+| colour only | 15 | 0.900 | 0.582 | 0.493–0.613 |
+
+**Twenty times the training data moved the transfer number by −0.01.** The 6,000-image sample gave
+0.644; the full 118,358 gives 0.634. Both intervals contain 0.500 and each other.
+
+**So the learning curve was run, because two points are not a curve.** Seam-only features, DF40
+transfer, training set grown 237-fold:
+
+| SFHQ fakes | FairFace reals | in-family | DF40 transfer | 95% CI (grouped) |
+|---|---|---|---|---|
+| 500 | 500 | 0.930 | 0.629 | 0.321–0.734 |
+| 2,000 | 2,000 | 0.931 | **0.652** | 0.331–0.762 |
+| 8,000 | 8,000 | 0.942 | 0.636 | 0.343–0.736 |
+| 30,000 | 30,000 | 0.942 | 0.631 | 0.357–0.724 |
+| 118,358 | 86,358 | 0.942 | 0.633 | 0.369–0.723 |
+
+**It is flat.** Five hundred examples a side reach 0.629; two hundred thousand reach 0.633. The
+best point estimate on the curve belongs to the 2,000-sample fit. In-family saturates by 8,000 and
+does not move again.
+
+**What that settles, and what it costs the plan.** Recommendation 0b — "licence-clean fakes to
+train on is the first thing to buy" — was right that the supervision was missing and wrong about
+the quantity: **500 would have done.** A 30-dimension logistic regression has no capacity to use
+more, so the 22.75 GB bought a supply that is now demonstrably not the bottleneck. Two things are:
+
+1. **Capacity and physics.** The feature vector is 15 residual/Laplacian numbers over four annuli.
+   It saturates immediately. Slot C (NPR's upsampling fingerprint) is declared, weightless, and
+   reads a different physical property — and SFHQ, being generator output, is exactly the data an
+   upsampling-fingerprint detector wants. That is now the cheapest untried lever, and it needs no
+   new data at all.
+2. **An evaluation corpus that can resolve a difference.** Every interval in both tables is ~0.35
+   wide and contains chance, because DF40's fake half has an effective sample size of 2.4. Nothing
+   above can be distinguished from nothing. This is the same wall §5 step 0a describes, reached
+   from a third direction.
+
+**Weights were not shipped, and that is a decision worth stating.** These coefficients are
+licence-clean (CC0 images, CC BY reals) and their point estimate — 0.634 — is better than the
+0.289 the registered `blend_seam` weights score on the same corpus. Shipping them anyway was
+rejected on two grounds: the interval does not establish they beat chance, and they are a different
+detector (synthesis, not seam) that would silently change what `blend_seam_weights` means in
+`assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
+provenance line naming both corpora. Until then the fit stays in the session scratchpad.
+
 ### The one public detector on this machine is at chance. Measured 2026-09-23.
 
 `assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
@@ -1403,7 +1459,14 @@ binding:
    most of it is a corpus shortcut rather than forensics. Whatever is trained must be measured
    ACROSS corpora, which is what the evidence gate already enforces.
 
-0c. **Then a second slot, with different physics.** Slot C (NPR, the upsampling fingerprint) is
+0c. **PROMOTED 2026-09-23 — a second slot, with different physics, is now the cheapest untried
+   lever.** The full fit (§0, "204,716 samples, and 500 would have done") shows the 30-dimension
+   seam vector saturating at 500 examples a side: more licence-clean fakes buy nothing for it. Slot
+   C reads a DIFFERENT physical property (upsampling fingerprint), it is declared and weightless,
+   and SFHQ — generator output, 118,358 images already on disk — is precisely the data it wants.
+   It needs no EULA, no download and no decision. The original note follows.
+
+   **Then a second slot, with different physics.** Slot C (NPR, the upsampling fingerprint) is
    declared and has no weights. Until a second slot exists, a good slot-A number still leaves most
    of DF40 undetected — and the fusion layer has nothing to fuse.
 
