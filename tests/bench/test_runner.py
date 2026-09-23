@@ -404,8 +404,17 @@ def test_identity_criterion_is_measured_when_embeddings_are_supplied():
     assert rec.identity_report.n_train > 0 and rec.identity_report.n_test > 0
 
 
-def test_identity_leakage_across_a_fold_raises_while_guards_are_enforced():
-    """The declared split is clean; the FACES are not. That is the whole point."""
+def test_identity_leakage_raises_while_guards_are_enforced():
+    """The declared split is clean; the FACES are not. That is the whole point.
+
+    The message asserted is the CORPUS-level one. Two samples carrying
+    different `subject_id` that embed to the same person is a broken subject
+    partition first and a broken fold second — the corpus check sees it
+    without needing a split, runs first, and is strictly the more sensitive
+    of the two. A fixture where the fold check fires and the corpus check
+    does not cannot be built: any pair the fold check catches is a pair of
+    subjects the corpus check already compared.
+    """
     records = _records()
     cfg = RunConfig(seed=7)
     from bench.runner import _logo_splits_or_none
@@ -416,7 +425,7 @@ def test_identity_leakage_across_a_fold_raises_while_guards_are_enforced():
     test_id = split.test_ids()[0]
     emb = _embeddings(records, leak=(train_id, test_id))
 
-    with pytest.raises(GuardViolation, match="identity leakage"):
+    with pytest.raises(GuardViolation, match="not distinct people"):
         run_benchmark(records, _registry(),
                       RunConfig(seed=7, identity_embeddings=emb))
 
@@ -435,7 +444,12 @@ def test_identity_leakage_is_recorded_rather_than_raised_when_guards_are_waived(
                         RunConfig(seed=7, enforce_guards=False,
                                   identity_embeddings=emb))
     assert rec.identity_status == "violation"
-    assert rec.identity_report is None
+    # And the MEASUREMENT survives the waiver. "violation" with no numbers
+    # tells a reader something failed and not how badly, which is the one
+    # thing they need to decide whether to care.
+    assert rec.identity_report is not None
+    assert rec.identity_report.violations >= 1
+    assert rec.identity_report.max_similarity > 0.0
 
 
 def test_identity_headline_is_the_worst_fold_not_the_average():
@@ -648,3 +662,81 @@ def test_adversarial_tpr_is_measured_for_a_detector_that_exposes_a_target():
     assert clean_tpr is not None
     assert tpr < clean_tpr, (
         f"attack at eps=0.1 gave {tpr}, no better than the clean {clean_tpr}")
+
+
+def test_identity_is_measured_on_a_corpus_that_cannot_be_split():
+    """Every corpus this project holds carries ONE generator, so `logo_splits`
+    refuses them all. A fold-only criterion 2 would be wired and structurally
+    unable to fire; the corpus-level check is what makes it real.
+    """
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(records)))
+
+    assert rec.logo_results == {}, "fixture must be unsplittable"
+    assert rec.identity_status == "ok_corpus_only"
+    assert rec.identity_report is not None
+    assert rec.identity_report.n_train == rec.identity_report.n_test
+    assert rec.identity_report.n_train > 1, "must have compared real pairs"
+    assert rec.identity_report.violations == 0
+
+
+def test_the_corpus_check_catches_two_subject_ids_that_are_one_person():
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+    emb = _embeddings(records, leak=("s0", "s3"))
+
+    with pytest.raises(GuardViolation, match="not distinct people"):
+        run_benchmark(records, _registry(),
+                      RunConfig(seed=7, identity_embeddings=emb))
+
+
+def test_the_corpus_check_samples_a_large_corpus_and_says_how_many(monkeypatch):
+    """The comparison is quadratic in subjects: 86,000 of them is 3.7 billion
+    pairs. Sampling is required, and the count compared must be visible."""
+    records = _records(40)
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(records),
+                                  identity_max_subjects=6))
+
+    assert rec.identity_report is not None
+    assert rec.identity_report.n_train == 6
+
+
+def test_the_headline_includes_the_corpus_check_not_only_the_folds():
+    """A broken subject partition that happens to sit on ONE side of every
+    fold leaks nothing across those folds and still means every split built
+    on those ids is unsound. A headline taken from the folds alone reports
+    0.0000 for it."""
+    records = _records()
+    cfg = RunConfig(seed=7)
+    from bench.runner import _logo_splits_or_none
+
+    a, b = _logo_splits_or_none(records, cfg)
+    train_a, train_b = ({r["sample_id"] for r in a.train},
+                        {r["sample_id"] for r in b.train})
+    # Two samples on the TRAIN side of both folds, so no fold sees a crossing.
+    pair = sorted(train_a & train_b)[:2]
+    assert len(pair) == 2, "fixture must offer two same-side samples"
+    subjects = {r["sample_id"]: r["subject_id"] for r in records}
+    assert subjects[pair[0]] != subjects[pair[1]], "must be different subjects"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(
+                            records, leak=(pair[0], pair[1])),
+                            identity_max_false_match_rate=1.0))
+
+    assert all(f.violations == 0 for f in rec.identity_by_fold.values()), \
+        "no fold should see this crossing, or the test proves nothing"
+    assert rec.identity_report is not None
+    assert rec.identity_report.violations == 1

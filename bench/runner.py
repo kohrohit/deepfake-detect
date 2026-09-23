@@ -25,6 +25,7 @@ from .guards import (
     check_compression_coverage,
     check_demographic_parity,
     check_identity_disjoint,
+    check_subject_partition,
     check_threshold_provenance,
     check_uniform_preprocessing,
     check_video_level,
@@ -64,6 +65,10 @@ class RunConfig:
     #: cross at ~0.21% with this embedder, so a large split with 0.0 here
     #: fails for arithmetic rather than leakage.
     identity_max_false_match_rate: float = 0.0
+    #: Cap on subjects compared by the corpus-level check. The comparison is
+    #: quadratic in subjects, so a large corpus is sampled and the report
+    #: says how many were compared.
+    identity_max_subjects: int = 500
     #: Acceptance criterion 8. Off by default: the attack is a gradient loop
     #: per positive sample and costs far more than scoring does. Turning it
     #: on for a detector that exposes no differentiable target records why
@@ -142,10 +147,12 @@ class RunRecord:
     #: only one number sees the fold most likely to be leaking rather than an
     #: average that hides it.
     identity_by_fold: dict[str, IdentityReport] = field(default_factory=dict)
-    #: Why `identity_report` is None, when it is. "not_measured" (no
-    #: embeddings supplied), "no_splits" (the corpus cannot be split, so
-    #: there are no train/test sides to compare), or "ok". An unmeasured
-    #: criterion and a clean one must never read alike.
+    #: How criterion 2 was measured. "not_measured" (no embeddings
+    #: supplied), "ok_corpus_only" (the declared subjects were checked
+    #: against pixels, but the corpus carries one generator so there are no
+    #: LOGO folds to certify), "ok" (both), or "violation" (measured and
+    #: failed, with guards waived). An unmeasured criterion and a clean one
+    #: must never read alike.
     identity_status: str = "not_measured"
     #: detector -> per-stratum error parity at `RunConfig.parity_at_fpr`.
     #: Acceptance criterion 11.
@@ -300,12 +307,19 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
     # than a blank.
     try:
         identity_report, identity_by_fold, identity_status = _identity_reports(
-            splits, config)
+            records, splits, config)
     except GuardViolation:
         if config.enforce_guards:
             raise
+        # Recompute tolerating everything, purely to RECOVER THE NUMBERS. A
+        # waived guard that leaves behind only the word "violation" tells a
+        # reader that something failed and not how badly, which is the one
+        # thing they need in order to decide whether to care.
         logger.warning("identity guard failed with guards waived; recording it")
-        identity_report, identity_by_fold, identity_status = None, {}, "violation"
+        identity_report, identity_by_fold, _ = _identity_reports(
+            records, splits,
+            dataclasses.replace(config, identity_max_false_match_rate=1.0))
+        identity_status = "violation"
     try:
         parity_by_detector, parity_status, parity_excluded = _parity_reports(
             records, scores_by_detector, labels, config)
@@ -313,7 +327,10 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
         if config.enforce_guards:
             raise
         logger.warning("parity guard failed with guards waived; recording it")
-        parity_by_detector, parity_status, parity_excluded = {}, "violation", {}
+        parity_by_detector, _, parity_excluded = _parity_reports(
+            records, scores_by_detector, labels,
+            dataclasses.replace(config, parity_max_fpr_ratio=float("inf")))
+        parity_status = "violation"
 
     return RunRecord(seed=config.seed, dataset_hash=dataset_hash(records),
                      guards_enforced=config.enforce_guards,
@@ -441,7 +458,7 @@ def _logo_splits_or_none(records, config):
         return None
 
 
-def _identity_reports(splits, config):
+def _identity_reports(records, splits, config):
     """Acceptance criterion 2, measured per fold — or a stated reason.
 
     The folds are already identity-disjoint BY DECLARATION: `logo_splits`
@@ -457,8 +474,21 @@ def _identity_reports(splits, config):
     """
     if config.identity_embeddings is None:
         return None, {}, "not_measured"
+
+    # The corpus-level check first, because it needs no split and every
+    # corpus this project holds carries ONE generator — so `logo_splits`
+    # refuses them all and a fold-only implementation of this criterion can
+    # never fire. See `check_subject_partition`.
+    corpus = check_subject_partition(
+        {r["sample_id"]: r["subject_id"] for r in records},
+        config.identity_embeddings,
+        threshold=config.identity_threshold,
+        max_false_match_rate=config.identity_max_false_match_rate,
+        max_subjects=config.identity_max_subjects,
+        seed=config.seed,
+    )
     if not splits:
-        return None, {}, "no_splits"
+        return corpus, {}, "ok_corpus_only"
 
     by_fold: dict[str, IdentityReport] = {}
     for split in splits:
@@ -469,7 +499,7 @@ def _identity_reports(splits, config):
             threshold=config.identity_threshold,
             max_false_match_rate=config.identity_max_false_match_rate,
         )
-    worst = max(by_fold.values(),
+    worst = max([corpus, *by_fold.values()],
                 key=lambda r: (r.violation_rate, r.max_similarity))
     return worst, by_fold, "ok"
 

@@ -744,6 +744,29 @@ detector (synthesis, not seam) that would silently change what `blend_seam_weigh
 `assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
 provenance line naming both corpora. Until then the fit stays in the session scratchpad.
 
+### DF40's declared subjects are not distinct people. Measured 2026-09-23, by the new guard.
+
+Criterion 2 was closed this day (`dfd/embed.py`, SFace, Apache-2.0) and pointed at the first real
+corpus available. It failed immediately:
+
+    3,207 records, 125 declared subjects, 3,207 embedded (nothing skipped)
+    419 of 7,750 subject pairs at cosine >= 0.363  =  5.41%
+    maximum similarity 0.9908
+
+Unrelated faces cross that threshold at **0.21%** with this embedder (measured the same day over
+124,251 FairFace pairs). DF40-repackaged crosses at **5.41%, twenty-six times the null**, and its
+worst pair is 0.9908 — the same photograph of the same person under two different "subjects".
+
+`corpora/df40.py` sets `subject_id` to a filename family, which was the honest choice available and
+is not an identity. **So any split of this corpus partitioned on subject_id leaks identity**, and
+that is a THIRD independent reason it cannot measure a detector, alongside the imaging-chain
+shortcut (colour alone separates the halves at 0.843) and the permutation null (every reported
+number is inside it). Three different defects, each sufficient on its own.
+
+Worth stating plainly: this is the criterion working. It was built to catch exactly this, it was
+pointed at real data for the first time, and it caught it on that first run — which is also why a
+guard that is merely *wired* is worth nothing until something has actually run through it.
+
 ### The self-blend pair transfers at chance — and the permutation null retracts the result above. 2026-09-23, later.
 
 **Read this before the section below it.** The experiment that section called "the one untested
@@ -1384,19 +1407,40 @@ produce any other verdict. `input_sha256` matches `sha256sum /tmp/dfd-demo.png` 
 
 ## 3. What is NOT true — read this before claiming anything
 
-Four acceptance criteria are **unmet**, now disclosed in the plan's Known-gaps block:
+**Updated 2026-09-23.** Three of the four below are now closed; the block is kept with each
+item struck in place rather than deleted, because what was wrong and how it was closed is the
+useful part. Criterion 4 remains open and cannot be closed by code.
 
-- **Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
-  `None`. This is the largest gap; do not close P0 without it.
+~~Four acceptance criteria are **unmet**~~, now disclosed in the plan's Known-gaps block:
+
+- ~~**Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
+  `None`. This is the largest gap; do not close P0 without it.~~ **CLOSED 2026-09-23.**
+  `dfd/embed.py` wraps OpenCV SFace (Apache-2.0 — not ArcFace, whose weights are research-only and
+  would make every split certified with them research-only too). The threshold is measured on this
+  project's own faces rather than taken from a paper, and the guard gained a tolerated crossing
+  RATE because unrelated faces cross at 0.21% and a max-pair rule refuses every large split. The
+  check runs at corpus level as well as per fold — every corpus here has one generator, so a
+  fold-only implementation would have been structurally unable to fire. Pointed at DF40 it failed
+  on the first run: see "DF40's declared subjects are not distinct people" in §0.
 - **Criterion 4 (head-to-head vs RD).** The loaders exist and **nothing consumes them**. No adapter
   joins them to `run_benchmark`; no RD table is rendered. **And one cannot usefully be written** —
   measured 2026-09-22 (§0): 14 of the 24 cached results' source images no longer exist on this
   machine and 8 more are demo assets, leaving n=2 real capture frames. This criterion is blocked on
   vanished data, not on the adapter.
-- **Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
-  weights, so there is nothing to attack yet.
-- **Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
-  never reaches `RunRecord`.
+- ~~**Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
+  weights, so there is nothing to attack yet.~~ **CLOSED 2026-09-23.** It has a caller, and
+  `RunRecord.adversarial_status` says why a number is absent when it is: `not_requested`,
+  `no_target` (every detector here is handcrafted features into a linear model, with no
+  differentiable path from pixels), `weights_absent`, or `not_measurable`. A detector opts in with
+  `adversarial_target()`. A `None` adversarial TPR is no longer readable as "the attack succeeded".
+- ~~**Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
+  never reaches `RunRecord`.~~ **CLOSED 2026-09-23.** Invoked per detector, read at the same 1%
+  operating point the rest of the benchmark reports at, with the threshold taken from the GENUINE
+  distribution rather than the mixture. Strata below 150 genuine samples are EXCLUDED and counted:
+  by the rule of three, zero false positives in 6 samples bounds the true FPR at 50%, so comparing
+  such a stratum fires the guard on arithmetic rather than on bias. DF40 carries no strata at all
+  and reports `no_strata`; FairFace sessions carry age, gender and race, so the corpus that can
+  exercise this exists.
 
 Five more limitations, each recorded with its severity:
 

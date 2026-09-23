@@ -6,9 +6,19 @@ results over HTTP.
 
 **Read this first.** The service runs. It does not work, and it says so on
 every page it serves. No detector on this deployment has been measured above
-chance on a corpus it did not train on — `blend_seam` scores **0.289 AUC** (95% CI
-0.230–0.670, which contains chance) on
-DF40 (inverted), and the Apache-2.0 ViT on disk scores **0.521** (chance).
+chance on a corpus it did not train on.
+
+**Sharpened 2026-09-23, and it is worse than "unmeasured".** `blend_seam`
+scores 0.289 on DF40 and the Apache-2.0 ViT scores 0.521, but neither number
+is evidence of anything: a model fitted on SHUFFLED labels scores 0.229–0.780
+on that corpus, so every result ever reported against it is inside the
+no-signal null. The corpus has since failed two further checks — its real and
+fake halves separate on colour alone at 0.843, and 5.41% of its declared
+subject pairs are the same person (26x the unrelated-face rate). It can
+neither support nor refute a detector. There is currently **no corpus on this
+machine that can measure one**, which makes an evaluation corpus the entire
+critical path (`docs/EULA-ACCESS.md` §4a).
+
 The evidence gate below is what turns that fact into behaviour rather than a
 footnote: every verdict is `insufficient_evidence`, and will stay that way
 until something is measured above the floor.
@@ -20,8 +30,18 @@ until something is measured above the floor.
 ```bash
 cd /path/to/deepfake
 python3 -m pip install -e .        # once
+./ops/fetch-assets.sh              # model weights — gitignored, so a fresh
+                                   # checkout has none and everything abstains
 ./ops/install.sh                   # systemd user unit, starts immediately
 ```
+
+`ops/fetch-assets.sh` downloads the YuNet face detector and the SFace identity
+embedder from OpenCV Zoo and verifies both against pinned sha256 values. Run
+`./ops/fetch-assets.sh --check` any time to confirm what is on disk is what was
+registered; it exits non-zero on a missing or drifted file. Pinning is not
+housekeeping — the asset gate checks that a PATH is registered, which is a claim
+about a logical id and not about bytes, so a file swapped at the same path passes
+it unchanged.
 
 `ops/install.sh` writes `~/.config/systemd/user/dfd.service`, enables it, and
 starts it. No root. To keep it running after logout and across reboots:
@@ -188,6 +208,42 @@ Uploads are refused from the `Content-Length` header, before the body is
 read, at `Limits.max_file_bytes` (256 MB). Decode limits (pixels, frames,
 duration) are enforced from the file header before allocation — see
 `dfd/limits.py`.
+
+## What the HTTP surface refuses, and why
+
+Loopback-only and unauthenticated, so the limits below are about keeping one
+caller from taking the service down rather than about untrusted traffic. All
+four were added 2026-09-23 after reviewing the service as something that runs
+unattended rather than as something that passes its tests.
+
+| refusal | status | why |
+|---|---|---|
+| `?limit=abc` | 400 | it used to raise inside the handler, so the caller got a closed connection rather than an error |
+| `?limit=-1` or `0` | 400 | SQLite reads `LIMIT -1` as NO limit, so a bounded endpoint returned the entire table |
+| `Transfer-Encoding: chunked` | 411 | this handler reads exactly `Content-Length` bytes; a chunked body arrived as length 0 and was stored as an empty submission, then failed at decode — recording a refusal about the FILE when the fault was in the request |
+| body shorter than `Content-Length` | 400 | the prefix would be stored as a truncated file |
+| 33rd concurrent request | 503 | `ThreadingHTTPServer` spawns one thread per connection with no ceiling; the failure mode was the process rather than one refused request |
+
+A connection that stalls is closed after 30s. Without that, a caller sending
+`Content-Length: 268435456` and then nothing held a worker thread until the
+process died.
+
+## Runbook
+
+| symptom | check | likely cause |
+|---|---|---|
+| every verdict `insufficient_evidence` | `GET /api/evidence` | expected — no detector is above the gate's floor. This is not a fault |
+| every detector `weights_absent` | `./ops/fetch-assets.sh --check` | weight files missing or drifted |
+| `faces=weights_absent` | same | the YuNet `.onnx` is absent; nothing can be cropped |
+| queue depth climbing | `journalctl --user -u dfd -f` | a worker is stuck or the inbox is receiving faster than one CPU can score |
+| 503s from the API | `GET /health` | concurrency ceiling reached; the service is up and shedding load |
+| submissions stuck `running` after a restart | none needed | they are requeued at startup and the file is still in the workdir |
+| database growing | `du -sh ~/.local/share/dfd` | audit records are never deleted, by design. Scored FILES are pruned after `--retain-days` |
+
+**Back up `~/.local/share/dfd/dfd.sqlite3`.** It holds every audit record, and
+those are the decisions; the files beside it are only the inputs and are pruned
+on a schedule. `sqlite3 dfd.sqlite3 ".backup /path/to/backup.sqlite3"` is safe
+against a running service (the database is in WAL mode).
 
 ## Dependencies
 

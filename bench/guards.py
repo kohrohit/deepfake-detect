@@ -144,6 +144,114 @@ def check_identity_disjoint(
                           tolerated_rate=max_false_match_rate)
 
 
+def check_subject_partition(
+    subject_by_id: dict[str, str],
+    embeddings: dict[str, np.ndarray],
+    threshold: float = 0.6,
+    max_false_match_rate: float = 0.0,
+    max_subjects: int = 500,
+    seed: int = 0,
+) -> IdentityReport:
+    """Guard 1, at the corpus level: are the declared SUBJECTS distinct people?
+
+    **Why this exists beside `check_identity_disjoint`.** That function
+    certifies one train/test split, which presupposes a split to certify.
+    Every corpus this project holds has exactly one generator, so
+    `logo_splits` refuses them all and the per-fold check never runs — a
+    criterion that is wired and structurally unable to fire. This one needs
+    no split. It asks the question the split discipline actually rests on:
+    two records carrying DIFFERENT `subject_id` are assumed to be different
+    people, and if that assumption is false then every split partitioned on
+    subject_id leaks, however carefully it was built.
+
+    That assumption is known to be shaky here and not merely in principle.
+    `corpora/sbi.py` and `training/fit_blend.py` both record that
+    `subject_id` is a capture SESSION id: one person enrolling twice gets two
+    ids. `corpora/df40.py` sets it to a filename family. Neither is an
+    identity.
+
+    One representative embedding per subject is compared, not every record:
+    the question is whether two SUBJECTS are one person, and comparing every
+    record pair multiplies the work by frames-per-subject without changing
+    what is being asked.
+
+    Args:
+        subject_by_id: sample_id -> subject_id, over the whole corpus.
+        embeddings: sample_id -> embedding. A subject whose representative
+            has no embedding is dropped from the comparison and counted in
+            the report's `n_train` shortfall rather than assumed distinct.
+        threshold: cosine at or above which two subjects are one person.
+        max_false_match_rate: fraction of subject pairs allowed to cross.
+            Unrelated faces cross at a measurable rate (see `dfd.embed`), so
+            at scale this must be non-zero to mean anything.
+        max_subjects: cap on subjects compared. The comparison is quadratic —
+            86,000 subjects is 3.7 billion pairs — so a large corpus is
+            SAMPLED, and the report says how many were compared.
+        seed: sampling seed.
+
+    Returns:
+        An `IdentityReport` whose `n_train` and `n_test` are both the number
+        of subjects compared. They are equal because the comparison is a
+        corpus against itself rather than one side against another.
+
+    Raises:
+        GuardViolation: if the crossing rate exceeds `max_false_match_rate`.
+        ValueError: if `max_subjects` is below 2 — one subject has no pair to
+            compare and would certify every corpus clean.
+    """
+    if max_subjects < 2:
+        raise ValueError(
+            f"max_subjects must be at least 2, got {max_subjects}: a single "
+            "subject has no pair to compare and would certify any corpus")
+    if not 0.0 <= max_false_match_rate <= 1.0:
+        raise ValueError(
+            f"max_false_match_rate must be in [0, 1], got {max_false_match_rate}")
+
+    representative: dict[str, str] = {}
+    for sample_id, subject in sorted(subject_by_id.items()):
+        if subject not in representative and sample_id in embeddings:
+            representative[subject] = sample_id
+
+    subjects = sorted(representative)
+    if len(subjects) > max_subjects:
+        rng = np.random.default_rng(seed)
+        picked = rng.choice(len(subjects), size=max_subjects, replace=False)
+        subjects = [subjects[i] for i in sorted(picked)]
+
+    vectors = np.array([embeddings[representative[s]] for s in subjects]) \
+        if subjects else np.zeros((0, 1))
+    n = len(subjects)
+    if n < 2:
+        return IdentityReport(n_train=n, n_test=n, max_similarity=0.0,
+                              violations=0, threshold=threshold,
+                              violation_rate=0.0,
+                              tolerated_rate=max_false_match_rate)
+
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    # A zero-norm vector has no direction; leaving it to divide by zero would
+    # fill its row with nan and make `>=` silently False everywhere.
+    norms[norms == 0.0] = 1.0
+    sims = (vectors / norms) @ (vectors / norms).T
+    iu = np.triu_indices(n, k=1)
+    pair_sims = sims[iu]
+    violations = int((pair_sims >= threshold).sum())
+    n_pairs = len(pair_sims)
+    rate = violations / n_pairs if n_pairs else 0.0
+    max_sim = float(pair_sims.max()) if n_pairs else 0.0
+
+    if rate > max_false_match_rate:
+        raise GuardViolation(
+            f"declared subjects are not distinct people: {violations} of "
+            f"{n_pairs} subject pairs ({rate:.4%}) at cosine >= {threshold} "
+            f"(max {max_sim:.4f}), above the tolerated "
+            f"{max_false_match_rate:.4%}. Every split partitioned on "
+            "subject_id leaks by this much.")
+    return IdentityReport(n_train=n, n_test=n, max_similarity=max_sim,
+                          violations=violations, threshold=threshold,
+                          violation_rate=rate,
+                          tolerated_rate=max_false_match_rate)
+
+
 def check_video_level(
     sample_ids: list[str],
     groups: list[str],

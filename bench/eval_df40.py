@@ -30,11 +30,13 @@ import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from corpora.df40 import load_df40_records
 from corpora.face_pool import DetectFn
+from corpora.identity import embeddings_for_records
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
 
@@ -42,6 +44,13 @@ from .report import render_markdown
 from .runner import RunConfig, run_benchmark
 
 logger = logging.getLogger(__name__)
+
+#: Crossing rate attributed to the embedder rather than to leakage. Measured
+#: 2026-09-23 over 124,251 unrelated FairFace pairs: 0.21% cross SFace's
+#: threshold of 0.363. Set as the DEFAULT for this corpus only — it is a
+#: property of the embedder and the faces, and another corpus must measure
+#: its own rather than inherit this one.
+DEFAULT_IDENTITY_FMR = 0.0021
 
 #: The heading the waiver block renders under. Named so a test can assert the
 #: block is present without pinning its prose.
@@ -126,6 +135,14 @@ def main(argv: Sequence[str] | None = None, *,
                         default=Path("bench/df40_report.json"))
     parser.add_argument("--blend-weights", type=Path, default=None,
                         help="override the blend_seam weights path")
+    parser.add_argument("--identity", action="store_true",
+                        help="embed every crop and certify the LOGO folds "
+                             "identity-disjoint (acceptance criterion 2). "
+                             "Needs the SFace weights — ops/fetch-assets.sh")
+    parser.add_argument("--identity-max-false-match-rate", type=float,
+                        default=DEFAULT_IDENTITY_FMR,
+                        help="crossing rate attributable to the embedder "
+                             "rather than to leakage; see dfd.embed")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO)
@@ -149,9 +166,37 @@ def main(argv: Sequence[str] | None = None, *,
         registry = (default_registry(blend_weights=args.blend_weights)
                     if args.blend_weights is not None else default_registry())
 
+    embeddings: dict[str, Any] | None = None
+    identity_skipped: dict[str, int] = {}
+    if args.identity:
+        embeddings, identity_skipped = embeddings_for_records(
+            records, detect=detect)
+        if not embeddings:
+            # Refuse rather than run: `--identity` is a request for a
+            # certificate, and producing a report that silently says
+            # "not_measured" is how a caller comes to believe it has one.
+            logger.error("--identity was requested and nothing could be "
+                         "embedded (%s). Run ops/fetch-assets.sh.",
+                         identity_skipped or "no reason recorded")
+            return 1
+        # A crop that would not re-detect has no embedding, and
+        # check_identity_disjoint refuses to certify a split containing an
+        # id it cannot compare. Drop those records from the run rather than
+        # from the certificate: a smaller corpus honestly certified beats a
+        # whole one certified over the part that happened to embed.
+        before = len(records)
+        records = [r for r in records if r["sample_id"] in embeddings]
+        if len(records) < before:
+            logger.warning("identity: dropped %d of %d records with no "
+                           "embedding (%s)", before - len(records), before,
+                           identity_skipped)
+
     record = run_benchmark(
         records, registry,
-        RunConfig(seed=args.seed, enforce_guards=False))
+        RunConfig(seed=args.seed, enforce_guards=False,
+                  identity_embeddings=embeddings,
+                  identity_max_false_match_rate=(
+                      args.identity_max_false_match_rate)))
 
     md = render_markdown(record)
     md = md.replace("## Leave-one-generator-out",
@@ -168,6 +213,8 @@ def main(argv: Sequence[str] | None = None, *,
         "skipped": skipped,
         "seed": args.seed,
         "limit": args.limit,
+        "identity_requested": bool(args.identity),
+        "identity_skipped": identity_skipped,
     }
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(payload, indent=2, allow_nan=False))

@@ -6,6 +6,14 @@
 - dataset hash: `ffd39424542b9ebd02cc85080e8534d84f2dee9f3b3d0c9c1cc37651fca77257`
 - guards enforced: `False`
 - model versions: `blend_seam=0.2.0-fairface10k, effnet_b4=0.1.0, npr=0.1.0`
+- identity disjointness (criterion 2): `violation`
+  - **FAILED, and the run continued because guards are waived.** The numbers below are the measurement, not a pass.
+  - worst check: max cosine `0.9908` at threshold `0.363`, 419 crossings (`5.4065%` of compared pairs), tolerated `100.0000%`, over 125 vs 125 ids
+- adversarial robustness (criterion 8): `not_requested`
+  - blend_seam: not attacked — `not_requested`
+  - effnet_b4: not attacked — `not_requested`
+  - npr: not attacked — `not_requested`
+- demographic parity (criterion 11): `no_strata`
 
 ## Guards waived for this corpus
 
@@ -59,6 +67,6 @@ These are computed over the whole corpus, with every generator seen. Spec §8.1:
 
 | detector | AUC | 95% CI | TPR@FPR=1% | TPR@FPR=0.1% | adversarial TPR@FPR=1% | ECE | abstained | p95 ms | n |
 |---|---|---|---|---|---|---|---|---|---|
-| blend_seam | 0.289 | 0.230–0.670 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 7.8 | 3207 |
+| blend_seam | 0.289 | 0.230–0.670 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 8.4 | 3207 |
 | effnet_b4 | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |
 | npr | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |

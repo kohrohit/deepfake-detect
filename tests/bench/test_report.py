@@ -173,3 +173,26 @@ def test_report_omits_the_robustness_table_when_nothing_was_measured():
     md = render_markdown(_record())
     assert "Robustness" not in md
     assert "screenshot_recapture" not in md
+
+
+def test_identity_line_does_not_fabricate_a_pair_count():
+    """`n_train * n_test` is the denominator for a train/test check and not
+    for the corpus-level subject check, which compares n*(n-1)/2 subject
+    pairs. The same report type carries both, so the renderer must print the
+    RATE the guard computed rather than multiply the two sides itself."""
+    from bench.guards import IdentityReport
+    from bench.report import render_markdown
+    from bench.runner import RunRecord
+
+    rec = RunRecord(
+        seed=0, dataset_hash="h", guards_enforced=False, model_versions={},
+        identity_report=IdentityReport(
+            n_train=125, n_test=125, max_similarity=0.99, violations=419,
+            threshold=0.363, violation_rate=419 / 7750, tolerated_rate=1.0),
+        identity_status="violation")
+
+    md = render_markdown(rec)
+
+    assert "419 crossings" in md
+    assert "5.4065%" in md
+    assert "15625" not in md, "printed a pair count nobody computed"

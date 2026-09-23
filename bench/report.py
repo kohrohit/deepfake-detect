@@ -24,12 +24,22 @@ def render_markdown(record: RunRecord) -> str:
     versions = ", ".join(f"{k}={v}" for k, v in sorted(record.model_versions.items()))
     lines.append(f"- model versions: `{versions}`")
     lines.append(f"- identity disjointness (criterion 2): `{record.identity_status}`")
+    if record.identity_status == "violation":
+        lines.append("  - **FAILED, and the run continued because guards are "
+                     "waived.** The numbers below are the measurement, not a "
+                     "pass.")
     if record.identity_report is not None:
         r = record.identity_report
+        # The rate, never a recomputed denominator. `n_train * n_test` is the
+        # pair count for a train/test check and NOT for the corpus-level
+        # subject check, which compares n*(n-1)/2 pairs of subjects — the
+        # same report type carries both, and multiplying the two sides
+        # printed 15,625 for a comparison that made 7,750.
         lines.append(
-            f"  - worst fold: max cosine `{r.max_similarity:.4f}` at threshold "
-            f"`{r.threshold}`, {r.violations} of {r.n_train * r.n_test} pairs "
-            f"(`{r.violation_rate:.4%}`), tolerated `{r.tolerated_rate:.4%}`")
+            f"  - worst check: max cosine `{r.max_similarity:.4f}` at threshold "
+            f"`{r.threshold}`, {r.violations} crossings "
+            f"(`{r.violation_rate:.4%}` of compared pairs), tolerated "
+            f"`{r.tolerated_rate:.4%}`, over {r.n_train} vs {r.n_test} ids")
         for gen, fold in sorted(record.identity_by_fold.items()):
             lines.append(
                 f"  - held out {gen}: max cosine `{fold.max_similarity:.4f}`, "
