@@ -744,7 +744,91 @@ detector (synthesis, not seam) that would silently change what `blend_seam_weigh
 `assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
 provenance line naming both corpora. Until then the fit stays in the session scratchpad.
 
+### The self-blend pair transfers at chance — and the permutation null retracts the result above. 2026-09-23, later.
+
+**Read this before the section below it.** The experiment that section called "the one untested
+cell" has now been run, and running it produced a control that invalidates the section's own
+headline. Both halves are recorded here, in the order they happened.
+
+**The experiment.** Slot C, fitted on the FairFace SELF-BLEND pair: 86,358 FairFace photographs and
+a self-blend of each (`corpora/sbi.py`'s own `self_blend`, its own seeding, remapped box), so real
+and fake share a camera, a codec and a subject and the label cannot be read off the imaging chain.
+Same chain as every other fit here — source resized to 224 before detection, aligned at 224 — so
+the DF40 feature cache is the one the earlier runs reported against. Split by PAIR: a crop and its
+own blend never straddle.
+
+| features | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|
+| slot C (NPR, 27) | 0.612 | 0.524 | 0.505–0.560 |
+| slot A (seam, 30) | 0.877 | 0.459 | 0.337–0.814 |
+| — seam terms only | 0.875 | 0.456 | 0.332–0.814 |
+| — colour terms only | 0.517 | 0.402 | 0.371–0.447 |
+| slot A + slot C (57) | 0.884 | 0.470 | 0.350–0.819 |
+
+Read naively that is the result this project had been waiting for: **the inversion is gone.** Slot
+C's interval excludes chance on the CORRECT side for the first time, and it replicates on the
+independent DF40 val split (0.533, CI 0.517–0.553, 223 groups). The colour shortcut is gone too —
+colour terms scored 0.843 on the SFHQ pair and 0.402 here, because on a same-photograph pair no
+colour term can carry the label. The diagnosis in the section below was right about the cause.
+
+**And it is worth nothing, because of the control.** Shuffle the training labels, refit, report on
+DF40. A model fitted on shuffled labels has learnt nothing by construction. Twelve shuffles per
+pair:
+
+| pair | reported | permutation null (12 shuffles) | two-sided p |
+|---|---|---|---|
+| slot C / SFHQ pair | 0.315 | 0.268–0.764 | 0.33 |
+| slot A / SFHQ pair | 0.618 | 0.449–0.619 | 0.08 |
+| slot C / SBI pair | 0.526 | 0.229–0.780 | 1.00 |
+| slot A / SBI pair | 0.457 | 0.316–0.673 | 0.75 |
+
+**Every number this project has ever reported on DF40 is inside the null a model that learnt
+nothing produces on it.** That includes the 0.316 in the section below, whose grouped interval
+0.184–0.372 excluded chance and which was committed as this project's first resolved cross-corpus
+result. **It is retracted.** A shuffled fit reaches 0.268 on the same corpus; p = 0.33. Slot C is
+not refuted on DF40 — nothing is measurable on DF40.
+
+**Why, and it is a property of the corpus rather than of any fit.** DF40's fake and real halves
+arrive down different imaging chains, and 62% of its fakes are one filename family (effective
+sample size 2.4 — see "Matching the shortcut away does not work"). So almost ANY direction in
+feature space separates the two halves somewhat, in one direction or the other, and a random
+direction lands far from 0.5 about as often as a trained one. The grouped bootstrap does not see
+this: it resamples the EVALUATION corpus and is silent about the variance contributed by the FIT.
+With one family holding 999 of 1,601 fakes, that resampling is dominated by a couple of effective
+units and reports a narrow interval around whatever the drawn direction happened to give.
+
+**This is the row-vs-group error one level up.** Resampling rows instead of sources fabricated
+precision about the corpus; reporting a bootstrap interval with no permutation null fabricates
+precision about the fit. The same fix applies: `bench/metrics.py` now carries `permutation_null`
+and `permutation_p`, with the measured table above in the docstring and nine mutation-tested
+guards. **A cross-corpus AUC that does not escape its permutation null is not evidence, whatever
+its confidence interval says. Report both or report neither.**
+
+**What is still true after the retraction.** The self-blend pair is the right training pair on the
+argument, not on the evidence: it removes the imaging-chain shortcut that demonstrably inverted the
+SFHQ-pair fits, and it drops colour-only transfer from 0.843 to 0.402. Slot A detects its own blends
+at 0.877 in-family, slot C at 0.612 — the seam features see a seam, the upsampling features mostly
+do not, which is what the physics predicts. The learning curve saturates immediately (500 pairs
+0.513, 60,450 pairs 0.524): more FairFace buys nothing, exactly as slot A saturated at 500.
+
+**What this costs the plan.** Step 0a was "the first thing a EULA actually buys". It is now the only
+thing: DF40's ungated repackaging cannot refute a detector either, which was the one use the
+sharpened 0a still allowed it. **Every measurement route on this machine is closed until an
+evaluation corpus arrives whose two halves share an imaging chain and whose sources are not one
+family.** The detector keeps abstaining, which remains the correct output.
+
+Reproduced by `sbi_extract.py`, `sbi_fit.py`, `sbi_controls.py` and `perm_null.py` in the session
+scratchpad; the feature caches are 36M and were not committed.
+
 ### Slot C is built, fitted, and refuted. The training PAIR is the defect. 2026-09-23.
+
+**RETRACTED IN PART the same day — read the section above first.** The "refuted" in this heading
+rested on a grouped bootstrap interval that excluded chance. A permutation null run hours later
+reaches 0.268 on this corpus with the training labels SHUFFLED, so 0.316 is inside the null and
+the refutation does not hold: slot C is unmeasured on DF40, not refuted by it. The diagnosis below
+— that the training pair, not the physics, is what the SFHQ-pair fits were learning — survives and
+was independently confirmed (colour-only transfer falls from 0.843 to 0.402 on a same-photograph
+pair). The rest of this section stands as the record of how the retracted number was produced.
 
 `npr` had a feature function and no model since the project started, so it abstained with
 `weights_absent` on every input ever scored. It now has `NPRStatsNet` — 27 statistics of the
@@ -1505,8 +1589,16 @@ binding:
    **Sharpened 2026-09-23.** It is not only the per-technique labels. This repackaging cannot
    support *any* in-corpus number: matching native resolution and container format raises the
    separation (0.800 → 0.904) rather than removing it, and 62% of its fakes are one filename
-   family, an effective sample size of 2.4. Use this corpus to REFUTE a detector, never to select
-   or tune one. See "Matching the shortcut away does not work" in §0.
+   family, an effective sample size of 2.4. ~~Use this corpus to REFUTE a detector, never to select
+   or tune one.~~ See "Matching the shortcut away does not work" in §0.
+
+   **Sharpened again 2026-09-23, after the permutation control.** Not even to refute one. A model
+   fitted on SHUFFLED labels scores 0.268–0.764 on this corpus, so any single number it produces —
+   including an inverted one with a bootstrap interval excluding chance — is inside the no-signal
+   null. **This promotes 0a from the first thing a EULA buys to the ONLY thing: there is now no
+   measurement route on this machine at all.** What is needed of the replacement corpus is now
+   specific — its real and fake halves must share an imaging chain, and its sources must not be one
+   filename family. See "The self-blend pair transfers at chance" in §0.
 
 0b. ~~**Supervised training on licence-clean fakes.**~~ **BOUGHT AND RUN, 2026-09-23** — SFHQ part
    3 is downloaded, `corpora/sfhq.py` reads it, and the pair is measured (see "SFHQ landed" in §0).
@@ -1530,10 +1622,14 @@ binding:
    fitted. On the licence-clean pair it scores **0.316 on DF40, CI 0.184–0.372 — inverted, and
    resolved**, the first cross-corpus interval this project has produced that excludes chance. The
    control says the features are fine (fitted on DF40 val they reach 0.830, beating slot A's 0.800):
-   what is wrong is the training PAIR. See "Slot C is built, fitted, and refuted" in §0. **The next
+   what is wrong is the training PAIR. See "Slot C is built, fitted, and refuted" in §0. ~~**The next
    experiment is the one untested cell — slot C on FairFace self-blends**, the only pair whose real
    and fake halves share a camera and a codec. It needs no new data: `corpora/sbi.py` already builds
-   it. The original note follows.
+   it.~~ **RUN 2026-09-23, and it closed the measurement route instead.** The self-blend pair does
+   remove the shortcut (colour-only transfer 0.843 -> 0.402), but a permutation control shows every
+   DF40 number this project has reported — the 0.316 above included — is inside the null a model
+   fitted on SHUFFLED labels produces. DF40 cannot refute a detector either. See "The self-blend
+   pair transfers at chance" in §0. The original note follows.
 
    **A second slot, with different physics.** The full fit (§0, "204,716 samples, and 500 would have done") shows the 30-dimension
    seam vector saturating at 500 examples a side: more licence-clean fakes buy nothing for it. Slot

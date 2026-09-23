@@ -283,3 +283,107 @@ def bootstrap_ci_by_group(
         float(np.quantile(stats, alpha / 2)),
         float(np.quantile(stats, 1 - alpha / 2)),
     )
+
+
+def permutation_null(
+    refit_and_score: Callable[[np.ndarray], float],
+    labels: np.ndarray,
+    n: int = 12,
+    seed: int = 0,
+) -> np.ndarray:
+    """Transfer statistics from models refitted on SHUFFLED training labels.
+
+    `bootstrap_ci_by_group` resamples the EVALUATION corpus and says nothing
+    about the variance contributed by the fit. On a cross-corpus transfer the
+    fit is where most of the variance lives, and ignoring it is how this
+    project twice believed a number too early.
+
+    Measured 2026-09-23 over the ungated DF40 eval subset, 12 shuffles each:
+
+        pair                 reported   permutation null   two-sided p
+        slot C / SFHQ pair      0.315      0.268-0.764        0.33
+        slot A / SFHQ pair      0.618      0.449-0.619        0.08
+        slot C / SBI pair       0.526      0.229-0.780        1.00
+        slot A / SBI pair       0.457      0.316-0.673        0.75
+
+    Every number this project has reported on that corpus is inside the null
+    a model that learnt NOTHING produces on it — including the 0.315 whose
+    grouped bootstrap interval (0.184-0.372) excluded chance and was reported
+    as the project's first resolved result. It was not resolved. The reason is
+    a property of the evaluation corpus, not of the fits: DF40's fake and real
+    halves arrive down different imaging chains and 62% of its fakes are one
+    filename family, so almost ANY direction in feature space separates them
+    somewhat, in either direction, and a random direction lands far from 0.5
+    as often as a trained one.
+
+    So: a cross-corpus AUC that does not escape this null is not evidence,
+    whatever its confidence interval says. Report both or report neither.
+
+    Args:
+        refit_and_score: takes a label vector, refits the model on it, and
+            returns the transfer statistic (e.g. AUC on the unseen corpus).
+            Refitting is the point — permuting the SCORES of an already
+            fitted model tests a different and much weaker hypothesis.
+        labels: the true training labels. Only their multiset is used; each
+            draw is a permutation of them, so class balance is preserved.
+        n: number of shuffles. Twelve is the floor at which a two-sided p can
+            reach 0.08; it cannot reach 0.05, so treat `n=12` as a screen and
+            raise it before resting a claim on the p-value alone.
+        seed: base seed. Draw i uses `default_rng(seed + i)`.
+
+    Returns:
+        The `n` statistics, in draw order. Non-finite values are kept, not
+        dropped: a fit that fails to produce a number is information about
+        the fitter, and silently dropping it would narrow the null.
+
+    Raises:
+        ValueError: if `n < 1`, or `labels` carries fewer than two classes —
+            shuffling a one-class vector yields the same vector, so the
+            "null" would be `n` copies of the observed statistic and would
+            appear to make every result significant.
+    """
+    y = np.asarray(labels)
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    if len(np.unique(y)) < 2:
+        raise ValueError(
+            "permutation_null needs both labels; a one-class vector permutes "
+            f"to itself, got classes {np.unique(y).tolist()}")
+
+    stats = np.array([float(refit_and_score(np.random.default_rng(seed + i).permutation(y)))
+                      for i in range(n)], dtype=float)
+    logger.info("permutation null over %d shuffles: %.3f-%.3f",
+                n, float(np.nanmin(stats)), float(np.nanmax(stats)))
+    return stats
+
+
+def permutation_p(observed: float, null: np.ndarray, centre: float = 0.5) -> float:
+    """Two-sided permutation p: how often nothing beats something.
+
+    The fraction of null draws at least as far from `centre` as `observed`,
+    with the observed value itself added to both numerator and denominator —
+    the standard +1 correction, which keeps the p-value from ever being 0 and
+    therefore from claiming more certainty than `len(null)` draws can carry.
+
+    Args:
+        observed: the reported statistic.
+        null: statistics from `permutation_null`.
+        centre: the no-signal value. 0.5 for AUC; distance from it is what
+            "at least as extreme" means, so an INVERTED result is as extreme
+            as the equally-distant correct-side one. That is deliberate: a
+            detector reliably wrong is a detector with signal.
+
+    Returns:
+        p in (0, 1]. Non-finite null draws count as NOT more extreme, which
+        is the conservative direction for the person reading the p-value only
+        if the fits that failed were failing at random — check the null for
+        nans rather than trusting this to hide them.
+
+    Raises:
+        ValueError: if `null` is empty.
+    """
+    d = np.asarray(null, dtype=float)
+    if d.size == 0:
+        raise ValueError("null must hold at least one draw")
+    extreme = int(np.sum(np.abs(d - centre) >= abs(observed - centre)))
+    return (extreme + 1) / (d.size + 1)

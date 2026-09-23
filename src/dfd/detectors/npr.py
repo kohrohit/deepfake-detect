@@ -129,6 +129,15 @@ class NPRStatsNet(nn.Module):
     #: is tied to it, so changing it invalidates every saved model.
     N_FEATURES = 27
 
+    #: Declared for the type checker only. `register_buffer` assigns through
+    #: `nn.Module.__setattr__`, so a reader of these attributes gets
+    #: `Tensor | Module` from `nn.Module.__getattr__` and `forward`'s
+    #: arithmetic on them does not type-check. These annotations bind no
+    #: value -- the buffers are still created in `__init__`, and still move
+    #: with `.to()` and appear in `state_dict()` as buffers must.
+    feature_mean: torch.Tensor
+    feature_scale: torch.Tensor
+
     def __init__(self) -> None:
         super().__init__()
         self.register_buffer("feature_mean", torch.zeros(self.N_FEATURES))
