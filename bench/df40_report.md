@@ -35,6 +35,20 @@ is unseen, which the capture corpus was not — and never as a LOGO result.
 Kish effective sample size of 2.4. Resampling rows, as every earlier run of
 this report did, reported a precision the data does not have.
 
+- **No signal is measurable here at all (2026-09-23).** Fit a model on
+  SHUFFLED training labels — one that has learnt nothing by construction —
+  and report it against this corpus: across four training pairs those models
+  score 0.229–0.780. Every AUC this project has reported on this corpus sits
+  inside that null, including an inverted 0.316 whose grouped interval
+  excluded chance and which is now retracted (p=0.33). The cause is the
+  corpus: its halves arrive down different imaging chains and 62% of its
+  fakes are one family, so almost any direction in feature space separates
+  them somewhat, in one direction or the other. The interval below resamples
+  the EVALUATION corpus and is silent about the variance contributed by the
+  FIT. **So read the table below as neither support NOR refutation.** Pair
+  any number taken from it with `bench.metrics.permutation_null`, or do not
+  report it.
+
 ## Leave-one-generator-out (spec §8.1)
 
 **Not computed for this corpus.** Without a held-out-generator number there is nothing here that predicts field performance; the table below measures memorisation only.
@@ -45,6 +59,6 @@ These are computed over the whole corpus, with every generator seen. Spec §8.1:
 
 | detector | AUC | 95% CI | TPR@FPR=1% | TPR@FPR=0.1% | adversarial TPR@FPR=1% | ECE | abstained | p95 ms | n |
 |---|---|---|---|---|---|---|---|---|---|
-| blend_seam | 0.289 | 0.230–0.670 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 7.5 | 3207 |
+| blend_seam | 0.289 | 0.230–0.670 | 0.000 | 0.000 | n/a | 0.485 | 15.4% | 7.8 | 3207 |
 | effnet_b4 | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |
 | npr | n/a | n/a–n/a | n/a | n/a | n/a | n/a | 100.0% | 0.0 | 3207 |

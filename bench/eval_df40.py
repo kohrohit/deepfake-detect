@@ -74,6 +74,20 @@ is unseen, which the capture corpus was not — and never as a LOGO result.
 1,601 images in 45 filename families, the largest holding 999 of them — a
 Kish effective sample size of 2.4. Resampling rows, as every earlier run of
 this report did, reported a precision the data does not have.
+
+- **No signal is measurable here at all (2026-09-23).** Fit a model on
+  SHUFFLED training labels — one that has learnt nothing by construction —
+  and report it against this corpus: across four training pairs those models
+  score 0.229–0.780. Every AUC this project has reported on this corpus sits
+  inside that null, including an inverted 0.316 whose grouped interval
+  excluded chance and which is now retracted (p=0.33). The cause is the
+  corpus: its halves arrive down different imaging chains and 62% of its
+  fakes are one family, so almost any direction in feature space separates
+  them somewhat, in one direction or the other. The interval below resamples
+  the EVALUATION corpus and is silent about the variance contributed by the
+  FIT. **So read the table below as neither support NOR refutation.** Pair
+  any number taken from it with `bench.metrics.permutation_null`, or do not
+  report it.
 """
 
 
