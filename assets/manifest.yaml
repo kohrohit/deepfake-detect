@@ -129,6 +129,41 @@ assets:
     checked_by: "kohrohit@gmail.com"
     # No `files`: lives outside the repo at ~/Desktop/agents/datasets/df40_eval.
 
+  sfhq_part3:
+    source: "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3 — Synthetic Faces High Quality, part 3. ~118k 1024x1024 synthetic faces, documented as pure StyleGAN2 sampling. Upstream project: https://github.com/SelfishGene/SFHQ-dataset. Downloaded 2026-09-23 to ~/Desktop/agents/datasets/sfhq_part3, outside the repo."
+    # LICENCE DISCREPANCY, recorded rather than resolved by preference.
+    # Kaggle's dataset metadata declares "CC0: Public Domain" for parts 1-4
+    # (read from the API, 2026-09-23; the separate SFHQ-T2I dataset declares
+    # MIT). docs/HANDOFF.md had recorded SFHQ as MIT, read off the GitHub
+    # repository. Both are permissive and either clears commercial_use, so
+    # nothing downstream is blocked — but df40_eval_subset is already one
+    # entry where a platform's licence tag was simply wrong, and the rule
+    # from it is that a tag is not evidence. READ THE ARCHIVE'S OWN LICENSE
+    # FILE at ingest and replace this block with what it says.
+    license: "CC0 per Kaggle metadata / MIT per the upstream GitHub repo — UNRESOLVED, see note; both permit commercial use"
+    commercial_use: true
+    # WHY THIS ONE IS DIFFERENT. Every other fake supply this project has
+    # found is NonCommercial (df40_eval_subset, the SBI and DeepfakeBench
+    # weights). This is the first that a shipping detector may be fitted on
+    # — and, because no depicted person exists, the biometric-consent
+    # question left open under fairface_corpus does not arise here at all.
+    # Its generator label is also documented rather than guessed, so unlike
+    # df40_eval_subset it can carry an honest leave-one-generator-out axis
+    # once a second generator sits beside it.
+    #
+    # WHAT IT IS NOT. Entire-face synthesis, not face swapping. A
+    # synthesised face has no composite boundary, so slot A
+    # (dfd.detectors.blend) has nothing to find here by construction: these
+    # are the positives for a SYNTHESIS detector and say nothing about
+    # swaps. And fitting them against FairFace reals pairs two corpora from
+    # different sources, which is exactly the configuration measured to
+    # separate at AUC 0.843 on colour alone (docs/HANDOFF.md §0). Measure
+    # that shortcut before trusting any number from the pair.
+    evidence_url: "https://github.com/SelfishGene/SFHQ-dataset"
+    date_checked: "2026-09-23"
+    checked_by: "kohrohit@gmail.com"
+    # No `files`: lives outside the repo, like fairface_corpus.
+
   # Unlike the research-only entries above, blend_seam_weights DOES declare
   # `files`: this project produces the file itself at a known, fixed path
   # (training/fit_blend.py writes exactly assets/models/blend_seam.npz), so
