@@ -120,6 +120,79 @@ Leave the affiliation, PI and signature fields to the signatory. Do not fill the
 
 ---
 
+## 4a. The owner action list, ranked. Added 2026-09-23, after the permutation null.
+
+**Why this section exists.** Until 2026-09-23 the EULA route was upside: DF40's ungated
+repackaging could still *refute* a detector, so the benchmark could wait. The permutation control
+(`docs/HANDOFF.md` §0, "The self-blend pair transfers at chance") closed that: every number this
+project has produced on that corpus is inside the null a model fitted on shuffled labels produces.
+**There is now no measurement route on this machine at all**, so one of the items below is the
+critical path for the whole project, and nothing in the code can substitute for it.
+
+What is needed of a replacement corpus is specific, and worth checking before spending effort on
+any candidate:
+
+1. **Its real and fake halves must share an imaging chain.** DF40-repackaged fails this — its
+   halves come from different upstream corpora, which is why colour means alone separate them at
+   AUC 0.843.
+2. **Its sources must not be one family.** DF40-repackaged fails this too: 999 of 1,601 fakes are
+   one filename family, a Kish effective n of 2.4.
+3. **Per-technique labels**, without which leave-one-generator-out cannot run and a swap-only
+   subset cannot be cut.
+
+| # | Action | Who can do it | Cost | What it unblocks |
+|---|---|---|---|---|
+| 1 | Fix Kaggle auth | owner, alone | 2 min | any Kaggle-hosted corpus |
+| 2 | Submit the DF40 request form | owner, alone | 10 min | per-technique labels — criteria 3, 8, and a swap-only subset |
+| 3 | Find an FF++ academic signatory | needs a person | weeks | the benchmark, and Celeb-DF with it |
+| 4 | Build our own eval corpus | owner + consenting people | days | **everything, including training** |
+| 5 | Free disk | owner, alone | minutes | precondition for 2 and 4 |
+
+### 1. Kaggle auth is broken on this machine
+
+`~/.kaggle/` holds a 38-byte `access_token` and no `kaggle.json`, and `import kaggle` fails with
+`OSError: Could not find kaggle.json`. The SFHQ download worked around it. Fix it properly:
+kaggle.com → Settings → API → **Create New Token**, save the downloaded `kaggle.json` to
+`~/.kaggle/kaggle.json`, then `chmod 600 ~/.kaggle/kaggle.json`.
+
+### 2. DF40's own form — the cheapest ask, and the one to send first
+
+Verified at source 2026-09-23, from the authors' README:
+
+- **Request form:** <https://docs.google.com/forms/d/1ESAWoWusOEGEEVnXCH_emv-wJqCYMhCbD6-85RMIoDk/edit>
+  (linked from <https://github.com/YZY-stack/DF40> as "Download DF40")
+- **Licence: CC BY-NC 4.0.** So this is an EVALUATION benchmark and never training data for
+  anything that ships — the same rule §1 states for FF++ and Celeb-DF, and it applies to any
+  weights fitted on it.
+- **Read before assuming it is independent of item 3.** DF40's own table lists FF++ and Celeb-DF as
+  the source data for 30+ of its 40 techniques. Expect the form to ask you to confirm access to
+  those, in which case this item collapses into item 3 rather than bypassing it. Send it anyway —
+  the answer costs one form and settles the question.
+
+Paste §4's purpose text; it is truthful under CC BY-NC 4.0 as written.
+
+### 3. FF++ / Celeb-DF — unchanged, still the long pole
+
+§3's outreach note is drafted and has not been sent. Two things to settle first, both in §2:
+whether clause 6 reaches a colleague's for-profit employer, and therefore that nothing submitted
+can bind ScoreMe without ScoreMe knowing.
+
+### 4. The corpus that needs nobody's permission
+
+Record genuine capture sessions with consenting people, and generate swaps over those faces with a
+swapper whose licence permits it. This is the only route that unblocks **training** as well as
+evaluation — §0 has said since 2026-09-21 that 7 positives cannot train anything — and the shipping
+detector requires it on every route, because §1 rules out ever training on the research datasets.
+It is slower than a form and it is the only item here that cannot fail for reasons outside this
+project.
+
+### 5. Disk
+
+`/` is at 87% — 59 GB free, with 23 GB of it already SFHQ. DFDC is ruled out on this alone
+(~470 GB), and item 4 will want room for recordings.
+
+---
+
 ## 5. What to do in parallel
 
 The outreach has weeks of lead time and may fail. It blocks nothing that matters most: the swap

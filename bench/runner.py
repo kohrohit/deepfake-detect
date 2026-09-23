@@ -18,8 +18,12 @@ from dfd.quality import measure_quality
 from dfd.types import Observation
 
 from .guards import (
+    GuardViolation,
     IdentityReport,
+    ParityReport,
     check_compression_coverage,
+    check_demographic_parity,
+    check_identity_disjoint,
     check_threshold_provenance,
     check_uniform_preprocessing,
     check_video_level,
@@ -41,6 +45,47 @@ class RunConfig:
     #: Spec §8.3 / acceptance criterion 9. Off by default because the sweep
     #: re-scores every record once per perturbation variant and is not free.
     robustness: bool = False
+
+    #: sample_id -> identity embedding, for acceptance criterion 2. Supplied
+    #: by the caller rather than computed here: embedding means running a
+    #: face detector and a recogniser over every record, which is the
+    #: corpus loader's job (it already holds the pixels and the detector) and
+    #: not the orchestrator's. `dfd.embed.Embedder.embed` produces these.
+    #: None means the criterion was NOT measured, which `RunRecord`
+    #: distinguishes from "measured and clean" — the distinction the whole
+    #: guard exists for.
+    identity_embeddings: dict[str, np.ndarray] | None = None
+    #: Cosine at or above which two crops are the same person. The default
+    #: is `dfd.embed.DEFAULT_THRESHOLD`, measured on this project's faces.
+    identity_threshold: float = 0.363
+    #: Fraction of train x test pairs allowed to cross before it is called
+    #: leakage. See `bench.guards.check_identity_disjoint`: unrelated faces
+    #: cross at ~0.21% with this embedder, so a large split with 0.0 here
+    #: fails for arithmetic rather than leakage.
+    identity_max_false_match_rate: float = 0.0
+    #: Acceptance criterion 11. Strata come from the records' `stratum`
+    #: field; a corpus without one is not measured for parity, and says so.
+    parity_max_fpr_ratio: float = 2.0
+    #: The FPR at which per-stratum rates are compared. An aggregate FPR of
+    #: 1% is the operating point the rest of this benchmark reports at, so
+    #: parity is read at the same point rather than at a different one.
+    parity_at_fpr: float = 0.01
+    #: Genuine samples a stratum needs before its FPR is compared at all.
+    #:
+    #: By the rule of three, observing ZERO false positives in n genuine
+    #: samples puts the 95% upper bound on that stratum's true FPR at about
+    #: 3/n. At n=6 that bound is 50%, so a stratum can read 0.00 while its
+    #: true rate is anything at all — and `check_demographic_parity`
+    #: correctly calls a zero-FPR stratum an infinite ratio and raises. The
+    #: guard is right; comparing it at n=6 is not. 150 puts the bound at 2%,
+    #: the first point at which "this stratum's FPR is near the 1% operating
+    #: point" is a claim the data can carry.
+    #:
+    #: Strata below this are EXCLUDED and counted in
+    #: `RunRecord.parity_excluded_strata`, never silently merged: merging
+    #: them into a neighbouring stratum is how a disparity gets averaged
+    #: away.
+    parity_min_genuine_per_stratum: int = 150
 
 
 @dataclass(frozen=True)
@@ -84,6 +129,30 @@ class RunRecord:
     #: fold with 2 drops from one with 20 — both would print the same
     #: n_samples and AUC. Empty when logo_results is empty.
     logo_dropped: dict[str, int] = field(default_factory=dict)
+    #: held-out generator -> the identity check for that fold. `identity_report`
+    #: above is the WORST of these by crossing rate, so a reader who looks at
+    #: only one number sees the fold most likely to be leaking rather than an
+    #: average that hides it.
+    identity_by_fold: dict[str, IdentityReport] = field(default_factory=dict)
+    #: Why `identity_report` is None, when it is. "not_measured" (no
+    #: embeddings supplied), "no_splits" (the corpus cannot be split, so
+    #: there are no train/test sides to compare), or "ok". An unmeasured
+    #: criterion and a clean one must never read alike.
+    identity_status: str = "not_measured"
+    #: detector -> per-stratum error parity at `RunConfig.parity_at_fpr`.
+    #: Acceptance criterion 11.
+    parity_by_detector: dict[str, ParityReport] = field(default_factory=dict)
+    #: Why `parity_by_detector` is empty, when it is: "no_strata" (the corpus
+    #: carries no `stratum` field), "too_few_per_stratum" (fewer than two
+    #: strata carry enough genuine samples to compare — see
+    #: `RunConfig.parity_min_genuine_per_stratum`), "not_measurable" (no
+    #: detector produced two labels' worth of finite scores), or "ok".
+    parity_status: str = "no_strata"
+    #: stratum -> genuine sample count, for each stratum excluded as too
+    #: small to compare. Present even on an "ok" run: a parity result over
+    #: three of eight strata is a different claim from one over all eight,
+    #: and the excluded list is the only thing that says which it is.
+    parity_excluded_strata: dict[str, int] = field(default_factory=dict)
 
 
 def dataset_hash(records: list[dict]) -> str:
@@ -200,14 +269,41 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
             name, s, labels, groups, latencies, abstentions, config,
             tpr_by_perturbation=tpr_by_perturbation)
 
+    splits = _logo_splits_or_none(records, config)
     logo_results, logo_dropped = _logo_results(
-        records, registry, scores_by_detector, labels, groups, config)
+        records, registry, scores_by_detector, labels, groups, config, splits)
+
+    # Criteria 2 and 11. Both raise through their guards when they fail and
+    # guards are enforced; with guards waived the failure is still measured
+    # and recorded, because a waived guard must leave evidence behind rather
+    # than a blank.
+    try:
+        identity_report, identity_by_fold, identity_status = _identity_reports(
+            splits, config)
+    except GuardViolation:
+        if config.enforce_guards:
+            raise
+        logger.warning("identity guard failed with guards waived; recording it")
+        identity_report, identity_by_fold, identity_status = None, {}, "violation"
+    try:
+        parity_by_detector, parity_status, parity_excluded = _parity_reports(
+            records, scores_by_detector, labels, config)
+    except GuardViolation:
+        if config.enforce_guards:
+            raise
+        logger.warning("parity guard failed with guards waived; recording it")
+        parity_by_detector, parity_status, parity_excluded = {}, "violation", {}
 
     return RunRecord(seed=config.seed, dataset_hash=dataset_hash(records),
                      guards_enforced=config.enforce_guards,
-                     model_versions=versions, identity_report=None,
+                     model_versions=versions, identity_report=identity_report,
                      detector_results=results, logo_results=logo_results,
-                     logo_dropped=logo_dropped)
+                     logo_dropped=logo_dropped,
+                     identity_by_fold=identity_by_fold,
+                     identity_status=identity_status,
+                     parity_by_detector=parity_by_detector,
+                     parity_status=parity_status,
+                     parity_excluded_strata=parity_excluded)
 
 
 def _detector_result(name, s, labels, groups, latencies, abstentions,
@@ -249,9 +345,108 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
     )
 
 
+def _logo_splits_or_none(records, config):
+    """The LOGO folds, or None when this corpus cannot be split.
+
+    Split out of `_logo_results` because acceptance criteria 1 and 2 both
+    need the SAME folds: the identity guard certifies the very partition the
+    metrics are computed over, and computing them from two separate calls
+    would let a seed or a validation change make the certificate describe a
+    different split from the one reported.
+
+    A malformed corpus (bad label, straddling source, unattributed fake)
+    raises plain ValueError from `_validate` and is deliberately NOT caught:
+    it must propagate, not degrade.
+    """
+    try:
+        return logo_splits(records, seed=config.seed)
+    except UnsplittableCorpusError as exc:
+        # A corpus with one generator, one subject, or no measurable fold.
+        # Recorded rather than raised: the in-dataset numbers are still valid.
+        logger.warning("LOGO unavailable for this corpus: %s", exc)
+        return None
+
+
+def _identity_reports(splits, config):
+    """Acceptance criterion 2, measured per fold — or a stated reason.
+
+    The folds are already identity-disjoint BY DECLARATION: `logo_splits`
+    partitions on `subject_id`. This checks the declaration against pixels,
+    which is the whole point — a corpus where one person enrolled twice
+    carries two subject ids, and every split built on those ids looks clean
+    while leaking a face. `corpora.sbi` and `training.fit_blend` both record
+    that exact gap.
+
+    Returns (worst_report, by_fold, status). The worst fold by crossing rate
+    is surfaced as the headline so a reader taking one number takes the
+    pessimistic one.
+    """
+    if config.identity_embeddings is None:
+        return None, {}, "not_measured"
+    if not splits:
+        return None, {}, "no_splits"
+
+    by_fold: dict[str, IdentityReport] = {}
+    for split in splits:
+        by_fold[split.held_out_generator] = check_identity_disjoint(
+            [r["sample_id"] for r in split.train],
+            list(split.test_ids()),
+            config.identity_embeddings,
+            threshold=config.identity_threshold,
+            max_false_match_rate=config.identity_max_false_match_rate,
+        )
+    worst = max(by_fold.values(),
+                key=lambda r: (r.violation_rate, r.max_similarity))
+    return worst, by_fold, "ok"
+
+
+def _parity_reports(records, scores_by_detector, labels, config):
+    """Acceptance criterion 11, per detector — or a stated reason.
+
+    Read at `RunConfig.parity_at_fpr`, the same operating point the rest of
+    the benchmark reports at: parity measured at a different threshold from
+    the one a deployment would use is a number about neither.
+
+    The threshold is taken from the GENUINE scores' quantile rather than
+    swept, because that is what fixing an FPR means; with too few finite
+    genuine scores to place a quantile the detector is skipped rather than
+    compared at an invented threshold.
+    """
+    raw = [r.get("stratum") for r in records]
+    if any(s is None for s in raw):
+        return {}, "no_strata", {}
+    strata = np.asarray([str(s) for s in raw])
+
+    # Eligibility is decided on the CORPUS, once, not per detector: a
+    # stratum that is too small to compare is too small whichever detector
+    # scored it, and deciding per detector would let abstentions quietly
+    # change which strata a run compares.
+    genuine_counts = {s: int(((strata == s) & (labels == 0)).sum())
+                      for s in sorted(set(strata.tolist()))}
+    eligible = {s for s, n in genuine_counts.items()
+                if n >= config.parity_min_genuine_per_stratum}
+    excluded = {s: n for s, n in genuine_counts.items() if s not in eligible}
+    if len(eligible) < 2:
+        return {}, "too_few_per_stratum", excluded
+
+    in_scope = np.isin(strata, list(eligible))
+    out: dict[str, ParityReport] = {}
+    for name, scores in scores_by_detector.items():
+        finite = np.isfinite(scores) & in_scope
+        genuine = finite & (labels == 0)
+        if genuine.sum() < 2 or len(np.unique(labels[finite])) < 2:
+            continue
+        # The score above which `parity_at_fpr` of genuine samples fall.
+        threshold = float(np.quantile(scores[genuine], 1.0 - config.parity_at_fpr))
+        out[name] = check_demographic_parity(
+            scores[finite], labels[finite], strata[finite],
+            threshold=threshold, max_fpr_ratio=config.parity_max_fpr_ratio)
+    return out, ("ok" if out else "not_measurable"), excluded
+
+
 def _logo_results(records, registry, scores_by_detector, labels, groups,
-                  config) -> tuple[dict[str, dict[str, DetectorResult]],
-                                    dict[str, int]]:
+                  config, splits) -> tuple[dict[str, dict[str, DetectorResult]],
+                                           dict[str, int]]:
     """Per-held-out-generator metrics — spec 8.1, the number that predicts field
     performance.
 
@@ -285,15 +480,7 @@ def _logo_results(records, registry, scores_by_detector, labels, groups,
             "duplicate sample_id(s) would silently mis-slice LOGO folds: "
             f"{dupes}")
 
-    try:
-        splits = logo_splits(records, seed=config.seed)
-    except UnsplittableCorpusError as exc:
-        # A corpus with one generator, one subject, or no measurable fold.
-        # Recorded rather than raised: the in-dataset numbers are still valid.
-        # A malformed corpus (bad label, straddling source, unattributed
-        # fake, ...) raises plain ValueError from `_validate` and is
-        # deliberately NOT caught here — it must propagate, not degrade.
-        logger.warning("LOGO unavailable for this corpus: %s", exc)
+    if splits is None:
         return {}, {}
 
     position = {r["sample_id"]: i for i, r in enumerate(records)}

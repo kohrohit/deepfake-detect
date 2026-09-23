@@ -156,3 +156,77 @@ def test_demographic_parity_subfloor_ratio_computed_correctly():
     # Ratio should be approximately 8.0, not a floored value like 0.8
     assert rep.max_fpr_ratio == pytest.approx(8.0, rel=0.1)
     assert rep.fpr_by_stratum["B"] > rep.fpr_by_stratum["A"]
+
+
+def _orthogonal_embeddings(n: int, prefix: str) -> dict:
+    """n mutually orthogonal unit vectors — cosine 0.0 between any two."""
+    return {f"{prefix}{i}": np.eye(n * 2)[i] for i in range(n)}
+
+
+def test_identity_guard_tolerates_a_rate_it_was_told_to_tolerate():
+    """Measured: 0.21% of UNRELATED face pairs cross 0.363 (dfd.embed).
+
+    A guard that raises on any crossing therefore refuses honest splits once
+    the pair count is large, which is why the rate exists.
+    """
+    from bench.guards import check_identity_disjoint
+
+    emb = _orthogonal_embeddings(20, "x")
+    train = [f"x{i}" for i in range(10)]
+    test = [f"x{i}" for i in range(10, 20)]
+    # One leaking pair out of 100: rate 1%.
+    emb["x0"] = emb["x10"]
+
+    with pytest.raises(GuardViolation, match="identity leakage"):
+        check_identity_disjoint(train, test, emb, threshold=0.6)
+
+    report = check_identity_disjoint(train, test, emb, threshold=0.6,
+                                     max_false_match_rate=0.01)
+    assert report.violations == 1
+    assert report.violation_rate == pytest.approx(0.01)
+    assert report.tolerated_rate == pytest.approx(0.01)
+
+
+def test_identity_guard_still_raises_above_the_tolerated_rate():
+    from bench.guards import check_identity_disjoint
+
+    emb = _orthogonal_embeddings(20, "x")
+    train = [f"x{i}" for i in range(10)]
+    test = [f"x{i}" for i in range(10, 20)]
+    emb["x0"] = emb["x10"]
+    emb["x1"] = emb["x11"]  # two leaking pairs: rate 2%
+
+    with pytest.raises(GuardViolation, match="2 of 100"):
+        check_identity_disjoint(train, test, emb, threshold=0.6,
+                                max_false_match_rate=0.01)
+
+
+def test_identity_guard_reports_the_rate_on_a_clean_split():
+    from bench.guards import check_identity_disjoint
+
+    emb = _orthogonal_embeddings(20, "x")
+    report = check_identity_disjoint([f"x{i}" for i in range(10)],
+                                     [f"x{i}" for i in range(10, 20)], emb)
+    assert report.violations == 0
+    assert report.violation_rate == 0.0
+    assert report.n_train == 10 and report.n_test == 10
+
+
+def test_identity_guard_refuses_a_rate_outside_zero_to_one():
+    """Outside [0, 1] the guard is always-fail or always-pass, and looks fine."""
+    from bench.guards import check_identity_disjoint
+
+    emb = _orthogonal_embeddings(4, "x")
+    for bad in (-0.01, 1.5):
+        with pytest.raises(ValueError, match=r"max_false_match_rate must be in \[0, 1\]"):
+            check_identity_disjoint(["x0"], ["x1"], emb, max_false_match_rate=bad)
+
+
+def test_identity_guard_rate_is_zero_when_no_pairs_were_compared():
+    """An empty side means nothing was checked; the rate must not read 'clean'
+    as a division by zero."""
+    from bench.guards import check_identity_disjoint
+
+    report = check_identity_disjoint([], [], {})
+    assert report.violation_rate == 0.0
+    assert report.n_train == 0 and report.n_test == 0

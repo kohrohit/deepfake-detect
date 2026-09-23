@@ -23,6 +23,21 @@ assets:
     checked_by: "kohrohit@gmail.com"
     files:
       - "assets/models/face_detection_yunet_2023mar.onnx"
+  sface_face_recogniser:
+    source: "https://github.com/opencv/opencv_zoo — face_recognition_sface_2021dec.onnx"
+    # Apache-2.0, verified at source 2026-09-23: opencv_zoo's LICENSE is
+    # Apache-2.0 and models/face_recognition_sface/LICENSE carries the same.
+    # This matters more than for a detector weight: the embedder decides
+    # whether a benchmark split is identity-disjoint (criterion 2), so a
+    # research-only embedder would make every certified split research-only
+    # with it.
+    license: "Apache-2.0"
+    commercial_use: true
+    evidence_url: "https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/LICENSE"
+    date_checked: "2026-09-23"
+    checked_by: "kohrohit@gmail.com"
+    files:
+      - "assets/models/face_recognition_sface_2021dec.onnx"
   dima806_vit_weights:
     source: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
     license: "Apache-2.0"

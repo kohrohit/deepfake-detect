@@ -33,6 +33,15 @@ class IdentityReport:
     max_similarity: float
     violations: int
     threshold: float
+    #: `violations / (n_train * n_test)`, or 0.0 when no pairs were compared.
+    #: Reported beside the count because the count alone is unreadable without
+    #: the denominator: 25 crossing pairs is leakage in a 10x10 split and is
+    #: BELOW the unrelated-face rate in a 1,000x300 one. Defaulted so that
+    #: existing constructions (and their tests) keep working unchanged.
+    violation_rate: float = 0.0
+    #: The rate this run was willing to tolerate. See
+    #: `check_identity_disjoint`'s `max_false_match_rate`.
+    tolerated_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,7 @@ def check_identity_disjoint(
     test_ids: list[str],
     embeddings: dict[str, np.ndarray],
     threshold: float = 0.6,
+    max_false_match_rate: float = 0.0,
 ) -> IdentityReport:
     """Guard 1 — identity leakage.
 
@@ -67,13 +77,47 @@ def check_identity_disjoint(
     Returns a measured report; spec acceptance criterion 2 requires the number,
     not an assertion that it was checked.
 
+    **Why `max_false_match_rate` exists, measured 2026-09-23.** This guard was
+    written to raise if ANY pair crosses the threshold, which is right for a
+    handful of subjects and wrong at scale. Measured with `dfd.embed`'s SFace
+    embedder over 124,251 pairs of DIFFERENT FairFace people: similarity
+    reaches 0.657 at the maximum, and 0.21% of unrelated pairs cross 0.363.
+    A 1,000 x 300 split therefore produces hundreds of crossings with no
+    leakage whatever, and a guard that refuses every honest split is a guard
+    somebody switches off. Tolerating a rate — never a count — is what keeps
+    this readable as the corpus grows: leakage raises the rate, and pair count
+    does not.
+
+    The default stays 0.0, so existing callers keep the strict behaviour and
+    nothing is silently loosened. A caller working at scale must pass the rate
+    it is willing to attribute to the embedder's own false-match rate, and
+    should take that number from a measurement on ITS corpus, not from this
+    docstring.
+
+    Args:
+        train_ids: ids on the training side.
+        test_ids: ids on the test side.
+        embeddings: id -> embedding vector. Every id in both lists must appear.
+        threshold: cosine similarity at or above which a pair is a crossing.
+        max_false_match_rate: the fraction of train x test pairs allowed to
+            cross before this is called leakage. 0.0 means any crossing is.
+
     Raises:
-        GuardViolation: If any train/test pair has cosine similarity >= threshold,
+        GuardViolation: if the crossing RATE exceeds `max_false_match_rate`,
             or if any train or test id has no embedding. A missing embedding
             means the comparison for that id was never made; treating it as
             "no similarity found" would certify disjointness that was never
             checked, which is worse than refusing to answer.
+        ValueError: if `max_false_match_rate` is outside [0, 1]. A negative
+            rate would make every split fail and a rate above 1 would make
+            every split pass, and both look like a working guard from the
+            outside.
     """
+    if not 0.0 <= max_false_match_rate <= 1.0:
+        raise ValueError(
+            "max_false_match_rate must be in [0, 1], got "
+            f"{max_false_match_rate}: outside it this guard silently becomes "
+            "either always-fail or always-pass")
     missing = sorted({i for i in (*train_ids, *test_ids) if i not in embeddings})
     if missing:
         raise GuardViolation(
@@ -87,13 +131,17 @@ def check_identity_disjoint(
             max_sim = max(max_sim, sim)
             if sim >= threshold:
                 violations += 1
-    if violations:
+    n_pairs = len(train_ids) * len(test_ids)
+    rate = violations / n_pairs if n_pairs else 0.0
+    if rate > max_false_match_rate:
         raise GuardViolation(
-            f"identity leakage: {violations} train/test pairs at cosine >= {threshold} "
-            f"(max {max_sim:.4f})")
+            f"identity leakage: {violations} of {n_pairs} train/test pairs "
+            f"({rate:.4%}) at cosine >= {threshold} (max {max_sim:.4f}), above "
+            f"the tolerated {max_false_match_rate:.4%}")
     return IdentityReport(n_train=len(train_ids), n_test=len(test_ids),
-                          max_similarity=max_sim, violations=0,
-                          threshold=threshold)
+                          max_similarity=max_sim, violations=violations,
+                          threshold=threshold, violation_rate=rate,
+                          tolerated_rate=max_false_match_rate)
 
 
 def check_video_level(

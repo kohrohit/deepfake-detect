@@ -23,10 +23,35 @@ def render_markdown(record: RunRecord) -> str:
     lines.append(f"- guards enforced: `{record.guards_enforced}`")
     versions = ", ".join(f"{k}={v}" for k, v in sorted(record.model_versions.items()))
     lines.append(f"- model versions: `{versions}`")
+    lines.append(f"- identity disjointness (criterion 2): `{record.identity_status}`")
     if record.identity_report is not None:
         r = record.identity_report
-        lines.append(f"- identity disjointness: max cosine `{r.max_similarity:.4f}` "
-                     f"at threshold `{r.threshold}`, {r.violations} violations")
+        lines.append(
+            f"  - worst fold: max cosine `{r.max_similarity:.4f}` at threshold "
+            f"`{r.threshold}`, {r.violations} of {r.n_train * r.n_test} pairs "
+            f"(`{r.violation_rate:.4%}`), tolerated `{r.tolerated_rate:.4%}`")
+        for gen, fold in sorted(record.identity_by_fold.items()):
+            lines.append(
+                f"  - held out {gen}: max cosine `{fold.max_similarity:.4f}`, "
+                f"{fold.violations} crossings (`{fold.violation_rate:.4%}`)")
+    elif record.identity_status == "not_measured":
+        # An unmeasured criterion must never read like a passed one. Before
+        # 2026-09-23 this line was absent entirely and `identity_report` was
+        # hardcoded None, so a clean run and an unchecked one rendered alike.
+        lines.append(
+            "  - **No embeddings were supplied, so nothing was checked.** The "
+            "splits are identity-disjoint by DECLARATION (`subject_id`) only; "
+            "one person enrolled under two subject ids would sit on both "
+            "sides and nothing here would see it.")
+    lines.append(f"- demographic parity (criterion 11): `{record.parity_status}`")
+    for name, pr in sorted(record.parity_by_detector.items()):
+        rates = ", ".join(f"{k} {v:.4f}" for k, v in sorted(pr.fpr_by_stratum.items()))
+        lines.append(f"  - {name}: FPR ratio `{pr.max_fpr_ratio:.2f}x` "
+                     f"(ceiling `{pr.ceiling:.2f}x`) — {rates}")
+    if record.parity_excluded_strata:
+        excluded = ", ".join(f"{k} (n={v})"
+                             for k, v in sorted(record.parity_excluded_strata.items()))
+        lines.append(f"  - excluded as too small to compare: {excluded}")
     lines.append("")
 
     lines.append("## Leave-one-generator-out (spec §8.1)\n")
