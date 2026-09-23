@@ -744,6 +744,72 @@ detector (synthesis, not seam) that would silently change what `blend_seam_weigh
 `assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
 provenance line naming both corpora. Until then the fit stays in the session scratchpad.
 
+### Slot C is built, fitted, and refuted. The training PAIR is the defect. 2026-09-23.
+
+`npr` had a feature function and no model since the project started, so it abstained with
+`weights_absent` on every input ever scored. It now has `NPRStatsNet` — 27 statistics of the
+upsampling residual across the three informative stride-2 phases, then `Linear(27, 2)` — and
+`training/fit_npr.py` fits it. Fitted on the same licence-clean pair as slot A (118,358 SFHQ fakes,
+86,358 FairFace reals, every source normalised to 224 before detection):
+
+| | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|
+| slot A (seam, 30 feats) | 0.942 | 0.634 | 0.371–0.724 |
+| **slot C (NPR, 27 feats)** | 0.931 | **0.316** | **0.184–0.372** |
+| slot A + slot C (57 feats) | **0.996** | 0.283 | 0.139–0.346 |
+
+**Slot C is inverted, and this time the interval says so.** 0.184–0.372 excludes 0.500 — unlike
+every other cross-corpus number this project has produced, this one is *resolved*. The model ranks
+DF40's real frames as more fake than its fakes. The union of both slots is worse still (0.283) while
+scoring **0.996** in-family: a near-perfect corpus-pair classifier that is actively wrong on the
+field. That is what shortcut amplification looks like, and it is the clearest example this repo has.
+
+**The control that says it is not the physics.** The same question that was asked of slot A — are
+the features blind, or was the supervision wrong? — with the same method. Fit the same 27 features
+on DF40's **val** split and report on its **test** split:
+
+| slot C fitted on | reported on | AUC | 95% CI (grouped) |
+|---|---|---|---|
+| FairFace vs SFHQ | DF40 test | 0.316 | 0.184–0.372 |
+| **DF40 val** | **DF40 test** | **0.830** | **0.784–0.920** |
+
+**The NPR features carry more signal than the seam features do** — 0.830 against slot A's 0.800 on
+the identical split, with an interval that excludes chance. They are not blind. What is wrong is
+what they were shown.
+
+**The diagnosis, now established across two slots and four fits.** FairFace is sharp Flickr JPEG;
+SFHQ is smooth generator output. Any model fitted on that pair learns **"smooth means fake"**. On
+DF40 the smooth images are the *real* ones — 512px compressed video frames downscaled to 224 — so
+the rule arrives inverted. Slot A learnt it and landed at 0.634 because its colour terms partly
+offset it; slot C, which reads residual energy almost exclusively, learnt it undiluted and inverted
+outright.
+
+**So the thing to buy was never "fakes".** Recommendation 0b said licence-clean fakes were the first
+purchase. They were bought (22.75 GB), they are demonstrably not the bottleneck for slot A
+(saturates at 500), and for slot C they are actively harmful. What both slots need is a training
+pair **whose real and fake halves share a camera and a codec** — because that is the only pair in
+which the label cannot be read off the imaging chain.
+
+Three candidate pairs, and what is known about each:
+
+| pair | shares imaging chain? | slot A | slot C |
+|---|---|---|---|
+| FairFace real vs SFHQ fake | no | 0.634 (CI spans chance) | **0.316 (inverted, resolved)** |
+| DF40 val (real and fake together) | partly — but its own halves are separable at 0.843 on colour | 0.800 in-corpus | 0.830 in-corpus |
+| FairFace real vs FairFace **self-blend** | **yes — same photograph on both sides** | 0.289 | **never tested** |
+
+**The untested cell is the next experiment**, and it is free: `corpora/sbi.py` already builds
+self-blends, and SBI's blending warps and resizes the donor region, so it does leave a resampling
+signature for slot C to read. Slot A failed on that pair for a reason specific to slot A — a
+self-blend has a composite boundary and three quarters of DF40 does not. Slot C's physics has no
+such mismatch with synthesis.
+
+**Nothing was written to `assets/models/`.** `assets/models/npr.pt` stays absent and slot C keeps
+abstaining, which is the correct output for a detector measured at 0.316. A fitted head whose
+interval excludes chance *on the wrong side* is not a detector with a sign error to flip: choosing
+a sign because it helps on the evaluation corpus is the evaluation corpus fitting the model, and
+this project has already refused that once (§0, "nothing here is salvageable by flipping the sign").
+
 ### The one public detector on this machine is at chance. Measured 2026-09-23.
 
 `assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
@@ -1459,8 +1525,17 @@ binding:
    most of it is a corpus shortcut rather than forensics. Whatever is trained must be measured
    ACROSS corpora, which is what the evidence gate already enforces.
 
-0c. **PROMOTED 2026-09-23 — a second slot, with different physics, is now the cheapest untried
-   lever.** The full fit (§0, "204,716 samples, and 500 would have done") shows the 30-dimension
+0c. ~~**PROMOTED — a second slot, with different physics, is the cheapest untried lever.**~~
+   **RUN AND REFUTED THE SAME DAY.** Slot C is built (`NPRStatsNet`, `training/fit_npr.py`) and
+   fitted. On the licence-clean pair it scores **0.316 on DF40, CI 0.184–0.372 — inverted, and
+   resolved**, the first cross-corpus interval this project has produced that excludes chance. The
+   control says the features are fine (fitted on DF40 val they reach 0.830, beating slot A's 0.800):
+   what is wrong is the training PAIR. See "Slot C is built, fitted, and refuted" in §0. **The next
+   experiment is the one untested cell — slot C on FairFace self-blends**, the only pair whose real
+   and fake halves share a camera and a codec. It needs no new data: `corpora/sbi.py` already builds
+   it. The original note follows.
+
+   **A second slot, with different physics.** The full fit (§0, "204,716 samples, and 500 would have done") shows the 30-dimension
    seam vector saturating at 500 examples a side: more licence-clean fakes buy nothing for it. Slot
    C reads a DIFFERENT physical property (upsampling fingerprint), it is declared and weightless,
    and SFHQ — generator output, 118,358 images already on disk — is precisely the data it wants.
