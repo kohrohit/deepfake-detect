@@ -214,3 +214,154 @@ def test_a_path_traversal_attempt_does_not_read_the_filesystem(
     status, body = _get(server, "/../../etc/passwd")
     assert status == 404
     assert b"root:" not in (body if isinstance(body, bytes) else b"")
+
+
+def test_a_negative_limit_does_not_return_the_whole_table(server):
+    """SQLite reads `LIMIT -1` as NO limit.
+
+    Verified 2026-09-23: `SELECT ... LIMIT ?` with -1 returns every row. So
+    `?limit=-1` turned a bounded listing endpoint into an unbounded one, and
+    the only visible symptom was a large response.
+    """
+    for i in range(5):
+        server.worker.submit_bytes(b"x" * 10, filename=f"f{i}.png", source="api")
+
+    status, body = _get(server, "/api/submissions?limit=-1")
+
+    assert status == 400
+    assert "at least 1" in body["error"]
+
+
+def test_a_zero_limit_is_refused_rather_than_returning_nothing(server):
+    """`LIMIT 0` returns no rows, which reads as 'no submissions' — a lie."""
+    server.worker.submit_bytes(b"x" * 10, filename="f.png", source="api")
+
+    status, body = _get(server, "/api/submissions?limit=0")
+
+    assert status == 400
+    assert "at least 1" in body["error"]
+
+
+def test_a_non_integer_limit_answers_400_rather_than_closing_the_connection(server):
+    """It used to raise inside the handler, which sends no response at all."""
+    status, body = _get(server, "/api/submissions?limit=abc")
+
+    assert status == 400
+    assert "must be an integer" in body["error"]
+
+
+def test_a_large_limit_is_clamped_to_the_ceiling(server):
+    """A caller asking for more than the ceiling gets the ceiling, not an error.
+
+    Asserted on the parser rather than over the wire: proving the clamp
+    through HTTP would need 500+ submissions, and a test that inserts one row
+    and asks for 100,000 passes whether or not any clamp exists.
+    """
+    from dfd.service.api import MAX_LISTING_LIMIT, _listing_limit
+
+    assert _listing_limit("100000") == MAX_LISTING_LIMIT
+    assert _listing_limit(str(MAX_LISTING_LIMIT + 1)) == MAX_LISTING_LIMIT
+    assert _listing_limit("7") == 7
+
+    server.worker.submit_bytes(b"x" * 10, filename="f.png", source="api")
+    status, body = _get(server, "/api/submissions?limit=100000")
+    assert status == 200
+    assert len(body["submissions"]) == 1
+
+
+def test_a_limit_actually_bounds_the_listing(server):
+    for i in range(4):
+        server.worker.submit_bytes(b"x" * 10, filename=f"f{i}.png", source="api")
+
+    status, body = _get(server, "/api/submissions?limit=2")
+
+    assert status == 200
+    assert len(body["submissions"]) == 2
+
+
+def test_a_chunked_upload_is_refused_rather_than_stored_empty(server):
+    """This handler reads Content-Length bytes and cannot decode chunked.
+
+    Without the check the body arrives as length 0 and is accepted as an
+    EMPTY submission, which then fails at decode — recording a refusal about
+    the file rather than about the request.
+    """
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1],
+                                      timeout=10)
+    conn.putrequest("POST", "/api/scan?filename=chunky.png")
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
+    conn.send(b"4\r\ntest\r\n0\r\n\r\n")
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 411
+    assert "chunked" in body["error"]
+    # And nothing was queued: an accepted-but-empty submission is the defect.
+    assert server.store.recent(limit=10) == []
+
+
+def test_a_truncated_body_is_refused_rather_than_stored_short(server):
+    """A caller that promises 100 bytes and sends 10 must not be stored as 10."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1],
+                                      timeout=10)
+    conn.putrequest("POST", "/api/scan?filename=short.png")
+    conn.putheader("Content-Length", "100")
+    conn.endheaders()
+    conn.send(b"0123456789")
+    conn.sock.shutdown(1)  # half-close: no more body is coming
+    resp = conn.getresponse()
+    body = json.loads(resp.read())
+    conn.close()
+
+    assert resp.status == 400
+    assert "of 100 bytes" in body["error"]
+    assert server.store.recent(limit=10) == []
+
+
+def test_the_handler_bounds_how_long_a_connection_may_stall(server):
+    """Slow-read denial of service: without a timeout one stalled caller holds
+    a worker thread until the process dies."""
+    from dfd.service.api import DEFAULT_REQUEST_TIMEOUT_S, _Handler
+
+    assert _Handler.timeout == DEFAULT_REQUEST_TIMEOUT_S
+    assert 0 < _Handler.timeout <= 120
+
+
+def test_concurrent_requests_are_capped_rather_than_unbounded(tmp_path):
+    """ThreadingHTTPServer spawns a thread per connection with no ceiling."""
+    from dfd.service.api import make_server
+
+    store = Store(tmp_path / "db.sqlite3")
+    worker = Worker(store=store, decide=lambda p: _Record(),
+                    inbox=tmp_path / "inbox", workdir=tmp_path / "work")
+    httpd = make_server("127.0.0.1", 0, store=store, worker=worker,
+                        evidence_path=tmp_path / "evidence.json",
+                        max_concurrent=1)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        # Take the only slot and hold it, then ask for another.
+        httpd.request_slots.acquire()
+        req = urllib.request.Request(base + "/health")
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=10)
+        assert exc.value.code == 503
+        httpd.request_slots.release()
+        # And every served request RETURNS its slot. Two successive requests,
+        # not one: with a single slot and no release, the first still
+        # succeeds on the slot just handed back and only the second exposes
+        # the leak.
+        for _ in range(3):
+            with urllib.request.urlopen(base + "/health", timeout=10) as r:
+                assert r.status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
