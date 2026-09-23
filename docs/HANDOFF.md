@@ -139,13 +139,46 @@ what it costs and what it buys, so none of them needs re-deriving before it can 
 
 | # | Action | Cost | Unblocks |
 |---|---|---|---|
-| 1 | **Create a Kaggle account and accept SFHQ's terms** (`SelfishGene/SFHQ-dataset`, part 3) | ~15 min | licence-clean **fakes to train on** — the single binding constraint (§0b) |
+| 1 | **Create a Kaggle account and accept SFHQ's terms** (`selfishgene/synthetic-faces-high-quality-sfhq-part-3`) | ~15 min, then 22.8 GB | licence-clean **fakes to train on** — the single binding constraint (§0b) |
 | 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
 | 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
 | 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
 | 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
 | 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
 | 7 | **Decide GPU or no GPU** | money | the detector class. CPU-only is why the path is handcrafted features rather than a trained CNN (§1 correction 3) |
+
+**Item 1, everything checkable without an account, checked 2026-09-23.** The Kaggle API answers
+dataset *listing* unauthenticated, so the slug, size and declared licence are confirmed rather than
+assumed; only the download needs a token.
+
+| part | slug | size | Kaggle declares |
+|---|---|---|---|
+| 1 | `selfishgene/synthetic-faces-high-quality-sfhq-part-1` | 14.9 GB | CC0: Public Domain |
+| 2 | `selfishgene/synthetic-faces-high-quality-sfhq-part-2` | 14.5 GB | CC0: Public Domain |
+| **3** | `selfishgene/synthetic-faces-high-quality-sfhq-part-3` | **22.8 GB** | CC0: Public Domain |
+| 4 | `selfishgene/synthetic-faces-high-quality-sfhq-part-4` | 24.4 GB | CC0: Public Domain |
+| T2I | `selfishgene/sfhq-t2i-synthetic-faces-from-text-2-image-models` | 24.4 GB | MIT |
+
+**Two licences for one dataset, and the manifest will have to say which was read.** §0 records SFHQ
+as MIT on the strength of the GitHub repo; Kaggle declares parts 1-4 **CC0** and only the separate
+T2I dataset MIT. Both are permissive and either would clear `commercial_use: true`, so nothing is
+blocked — but this repo already has one entry (`df40_eval_subset`) where a platform's licence tag
+was wrong, and the rule that came out of it was that a tag is not evidence. Read the LICENSE file
+inside the archive at download time and register what it actually says.
+
+**Disk:** 84 GB free on `/` at the time of writing, against 22.8 GB for part 3. It fits; it is not
+roomy. The archive can go where every other corpus does, outside the repo
+(`~/Desktop/agents/datasets/`), and never inside it.
+
+Once `~/.kaggle/kaggle.json` exists (Kaggle → Settings → API → Create New Token), the CLI is already
+installed:
+
+```bash
+chmod 600 ~/.kaggle/kaggle.json
+kaggle datasets files selfishgene/synthetic-faces-high-quality-sfhq-part-3   # look before pulling 22.8 GB
+kaggle datasets download -d selfishgene/synthetic-faces-high-quality-sfhq-part-3 \
+    -p ~/Desktop/agents/datasets/sfhq_part3
+```
 
 **1 is the one that matters this week.** 0b measured that the supervision, not the physics, is what
 is missing; SFHQ is the only licence-clean source of fakes found so far, and it is gated behind a
