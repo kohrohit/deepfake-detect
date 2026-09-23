@@ -159,12 +159,16 @@ assumed; only the download needs a token.
 | 4 | `selfishgene/synthetic-faces-high-quality-sfhq-part-4` | 24.4 GB | CC0: Public Domain |
 | T2I | `selfishgene/sfhq-t2i-synthetic-faces-from-text-2-image-models` | 24.4 GB | MIT |
 
-**Two licences for one dataset, and the manifest will have to say which was read.** §0 records SFHQ
-as MIT on the strength of the GitHub repo; Kaggle declares parts 1-4 **CC0** and only the separate
-T2I dataset MIT. Both are permissive and either would clear `commercial_use: true`, so nothing is
-blocked — but this repo already has one entry (`df40_eval_subset`) where a platform's licence tag
-was wrong, and the rule that came out of it was that a tag is not evidence. Read the LICENSE file
-inside the archive at download time and register what it actually says.
+**Two licences for one dataset — resolved 2026-09-23, and they cover different things.** The
+archive carries **no licence file at all**: all 474,312 zip entries are images, landmarks,
+pretrained features, segmentations and two sample folders, with no LICENSE, README or metadata
+among them, so the instruction to "read the archive's own LICENSE" had nothing to find. The GitHub
+repo's LICENSE is **MIT** (read at source), but its grant is in "the Software" — that repository is
+code, and the images are not hosted there. The images are distributed **on Kaggle under CC0**,
+declared by the same author, and his README says outright that "there are no privacy issues or
+license issues surrounding these images". Both routes are permissive and agree, so
+`commercial_use: true` rests on evidence rather than on a platform tag — the bar `df40_eval_subset`
+set by having a flatly wrong one.
 
 **Disk:** 84 GB free on `/` at the time of writing, against 22.8 GB for part 3. It fits; it is not
 roomy. The archive can go where every other corpus does, outside the repo

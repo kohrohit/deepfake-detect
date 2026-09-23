@@ -131,16 +131,32 @@ assets:
 
   sfhq_part3:
     source: "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3 — Synthetic Faces High Quality, part 3. ~118k 1024x1024 synthetic faces, documented as pure StyleGAN2 sampling. Upstream project: https://github.com/SelfishGene/SFHQ-dataset. Downloaded 2026-09-23 to ~/Desktop/agents/datasets/sfhq_part3, outside the repo."
-    # LICENCE DISCREPANCY, recorded rather than resolved by preference.
-    # Kaggle's dataset metadata declares "CC0: Public Domain" for parts 1-4
-    # (read from the API, 2026-09-23; the separate SFHQ-T2I dataset declares
-    # MIT). docs/HANDOFF.md had recorded SFHQ as MIT, read off the GitHub
-    # repository. Both are permissive and either clears commercial_use, so
-    # nothing downstream is blocked — but df40_eval_subset is already one
-    # entry where a platform's licence tag was simply wrong, and the rule
-    # from it is that a tag is not evidence. READ THE ARCHIVE'S OWN LICENSE
-    # FILE at ingest and replace this block with what it says.
-    license: "CC0 per Kaggle metadata / MIT per the upstream GitHub repo — UNRESOLVED, see note; both permit commercial use"
+    # LICENCE RESOLVED 2026-09-23, and the resolution is that the two
+    # declarations cover different things rather than contradicting.
+    #
+    #   - THE ARCHIVE CARRIES NO LICENCE FILE. Checked by listing all
+    #     474,312 entries of the downloaded zip: images, landmarks,
+    #     pretrained_features, segmentations and two sample folders, and not
+    #     one .txt/.md/.json/LICENSE among them. The instruction this entry
+    #     first carried — "read the archive's own LICENSE at ingest" — had
+    #     no answer to find, which is itself the finding.
+    #   - THE GITHUB LICENSE IS MIT (read at source: raw.githubusercontent
+    #     .com/SelfishGene/SFHQ-dataset/main/LICENSE, "Copyright (c) 2022
+    #     David Beniaguev"). Its text grants rights in "the Software" — that
+    #     repository is code and documentation; the images are not hosted
+    #     there. So MIT is the right answer for the code and a stretch as
+    #     the governing grant for 118,358 JPEGs distributed elsewhere.
+    #   - THE IMAGES ARE DISTRIBUTED ON KAGGLE UNDER CC0, declared by the
+    #     same author in the dataset metadata. That is the on-point
+    #     declaration for the files this project actually consumes.
+    #   - THE AUTHOR'S README states it plainly: "Since all images in this
+    #     dataset are synthetically generated there are no privacy issues or
+    #     license issues surrounding these images."
+    #
+    # Both routes are permissive and agree on the outcome, so commercial_use
+    # is true on evidence rather than on a platform tag — which is the bar
+    # df40_eval_subset's wrong apache-2.0 tag set.
+    license: "CC0 (Kaggle, where the images are distributed) for the images; MIT (upstream GitHub) for the code. Both permit commercial use."
     commercial_use: true
     # WHY THIS ONE IS DIFFERENT. Every other fake supply this project has
     # found is NonCommercial (df40_eval_subset, the SBI and DeepfakeBench
