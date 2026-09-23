@@ -6,6 +6,7 @@ failure flatters the result.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -63,6 +64,13 @@ class RunConfig:
     #: cross at ~0.21% with this embedder, so a large split with 0.0 here
     #: fails for arithmetic rather than leakage.
     identity_max_false_match_rate: float = 0.0
+    #: Acceptance criterion 8. Off by default: the attack is a gradient loop
+    #: per positive sample and costs far more than scoring does. Turning it
+    #: on for a detector that exposes no differentiable target records why
+    #: rather than silently measuring nothing.
+    adversarial: bool = False
+    #: L-inf budget for the attack, in [0, 1] pixel units.
+    adversarial_eps: float = 0.03
     #: Acceptance criterion 11. Strata come from the records' `stratum`
     #: field; a corpus without one is not measured for parity, and says so.
     parity_max_fpr_ratio: float = 2.0
@@ -148,6 +156,13 @@ class RunRecord:
     #: `RunConfig.parity_min_genuine_per_stratum`), "not_measurable" (no
     #: detector produced two labels' worth of finite scores), or "ok".
     parity_status: str = "no_strata"
+    #: detector -> why its adversarial number is absent, when it is.
+    #: "not_requested" (RunConfig.adversarial is False), "no_target" (the
+    #: detector exposes no differentiable module to attack — every
+    #: handcrafted-feature detector in this repo, by construction), or
+    #: "weights_absent" (it has a target and no weights loaded into it). An
+    #: adversarial TPR of None must never be readable as "the attack failed".
+    adversarial_status: dict[str, str] = field(default_factory=dict)
     #: stratum -> genuine sample count, for each stratum excluded as too
     #: small to compare. Present even on an "ok" run: a parity result over
     #: three of eight strata is a different claim from one over all eight,
@@ -269,6 +284,12 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
             name, s, labels, groups, latencies, abstentions, config,
             tpr_by_perturbation=tpr_by_perturbation)
 
+    adversarial_tprs, adversarial_status = _adversarial_results(
+        registry, observations, labels, config)
+    for name, value in adversarial_tprs.items():
+        results[name] = dataclasses.replace(results[name],
+                                            adversarial_tpr_at_1pct=value)
+
     splits = _logo_splits_or_none(records, config)
     logo_results, logo_dropped = _logo_results(
         records, registry, scores_by_detector, labels, groups, config, splits)
@@ -303,7 +324,8 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
                      identity_status=identity_status,
                      parity_by_detector=parity_by_detector,
                      parity_status=parity_status,
-                     parity_excluded_strata=parity_excluded)
+                     parity_excluded_strata=parity_excluded,
+                     adversarial_status=adversarial_status)
 
 
 def _detector_result(name, s, labels, groups, latencies, abstentions,
@@ -343,6 +365,58 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
         ece=ece(s[valid], labels[valid]),
         **base,
     )
+
+
+#: A detector opts into acceptance criterion 8 by exposing this method. It
+#: returns a differentiable `torch.nn.Module` mapping a (B, C, H, W) batch in
+#: [0, 1] to two logits, and a callable turning an `Observation` into one row
+#: of that batch — or None when the detector has no weights loaded. Declared
+#: as a name rather than a Protocol because every detector in this repo today
+#: is handcrafted features plus a linear model with no differentiable path
+#: from pixels, and a Protocol nothing implements reads as an interface
+#: somebody forgot to fill in rather than one that does not apply.
+ADVERSARIAL_TARGET = "adversarial_target"
+
+
+def _adversarial_results(registry, observations, labels, config):
+    """Acceptance criterion 8 per detector — or a stated reason.
+
+    Returns (tpr_by_detector, status_by_detector). A None TPR always comes
+    with a reason: "the attack was not run" and "the attack succeeded
+    completely" are opposite readings of the same missing number.
+    """
+    tprs: dict[str, float] = {}
+    status: dict[str, str] = {}
+    if not config.adversarial:
+        return tprs, dict.fromkeys(registry.names(), "not_requested")
+
+    import torch
+
+    from .adversarial import adversarial_tpr
+
+    for name in registry.names():
+        det = registry.get(name)
+        target = getattr(det, ADVERSARIAL_TARGET, None)
+        if target is None:
+            status[name] = "no_target"
+            continue
+        built = target()
+        if built is None:
+            status[name] = "weights_absent"
+            continue
+        module, to_row = built
+        rows = [to_row(obs) for obs in observations]
+        x = torch.stack([r for r in rows if r is not None])
+        keep = np.array([r is not None for r in rows], dtype=bool)
+        y = torch.as_tensor(labels[keep], dtype=torch.int64)
+        if len(np.unique(labels[keep])) < 2:
+            status[name] = "not_measurable"
+            continue
+        tprs[name] = float(adversarial_tpr(module, x, y,
+                                           eps=config.adversarial_eps,
+                                           fpr=0.01, seed=config.seed))
+        status[name] = "ok"
+    return tprs, status
 
 
 def _logo_splits_or_none(records, config):

@@ -43,6 +43,12 @@ def render_markdown(record: RunRecord) -> str:
             "splits are identity-disjoint by DECLARATION (`subject_id`) only; "
             "one person enrolled under two subject ids would sit on both "
             "sides and nothing here would see it.")
+    if record.adversarial_status:
+        states = sorted(set(record.adversarial_status.values()))
+        lines.append(f"- adversarial robustness (criterion 8): `{', '.join(states)}`")
+        for name, state in sorted(record.adversarial_status.items()):
+            if state != "ok":
+                lines.append(f"  - {name}: not attacked — `{state}`")
     lines.append(f"- demographic parity (criterion 11): `{record.parity_status}`")
     for name, pr in sorted(record.parity_by_detector.items()):
         rates = ", ".join(f"{k} {v:.4f}" for k, v in sorted(pr.fpr_by_stratum.items()))

@@ -576,3 +576,75 @@ def test_parity_violation_raises_while_guards_are_enforced():
                       RunConfig(seed=7, parity_at_fpr=0.5,
                                 parity_max_fpr_ratio=1.5,
                                 parity_min_genuine_per_stratum=5))
+
+
+def test_adversarial_is_not_requested_by_default_and_says_so():
+    """A None adversarial TPR must never read as 'the attack succeeded'."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert set(rec.adversarial_status.values()) == {"not_requested"}
+    assert all(r.adversarial_tpr_at_1pct is None
+               for r in rec.detector_results.values())
+
+
+def test_adversarial_reports_no_target_for_a_handcrafted_detector():
+    """Every detector in this repo is features plus a linear model: there is
+    no differentiable path from pixels, and that is a property to state
+    rather than a measurement to fake."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7, adversarial=True))
+    assert set(rec.adversarial_status.values()) == {"no_target"}
+
+
+def test_adversarial_reports_weights_absent_separately_from_no_target():
+    """A detector that COULD be attacked but has no weights is a different
+    state from one that never could be."""
+    class _Unloaded(SyntheticDetector):
+        def adversarial_target(self):
+            return None
+
+    reg = Registry()
+    reg.register(_Unloaded(name="unloaded", seed=1))
+    rec = run_benchmark(_records(), reg, RunConfig(seed=7, adversarial=True))
+    assert rec.adversarial_status == {"unloaded": "weights_absent"}
+
+
+def test_adversarial_tpr_is_measured_for_a_detector_that_exposes_a_target():
+    """Acceptance criterion 8, end to end over the real PGD loop."""
+    import torch
+
+    class _Tiny(torch.nn.Module):
+        """Two logits from the mean pixel — differentiable, and attackable."""
+
+        def forward(self, x):
+            m = x.mean(dim=(1, 2, 3), keepdim=False) * 10.0
+            return torch.stack([-m, m], dim=1)
+
+    class _Attackable(SyntheticDetector):
+        def adversarial_target(self):
+            def to_row(obs):
+                img = obs.payload.astype("float32") / 255.0
+                t = torch.from_numpy(img).permute(2, 0, 1)
+                return torch.nn.functional.interpolate(
+                    t[None], size=(16, 16), mode="bilinear")[0]
+            return _Tiny(), to_row
+
+    reg = Registry()
+    reg.register(_Attackable(name="attackable", seed=1))
+    rec = run_benchmark(_records(), reg,
+                        RunConfig(seed=7, adversarial=True, adversarial_eps=0.1))
+
+    assert rec.adversarial_status == {"attackable": "ok"}
+    tpr = rec.detector_results["attackable"].adversarial_tpr_at_1pct
+    assert tpr is not None
+    assert 0.0 <= tpr <= 1.0
+
+    # And the attack DID something. STRICTLY less, not `<=`: an
+    # implementation that ignores the configured budget and always attacks
+    # at eps=0 returns the clean number, which passes any non-strict
+    # comparison. Measured on this stub: eps=0 gives 0.05, eps>=0.03 gives
+    # 0.00, so the gap is real and the assertion can fail.
+    clean = run_benchmark(_records(), reg,
+                          RunConfig(seed=7, adversarial=True, adversarial_eps=0.0))
+    clean_tpr = clean.detector_results["attackable"].adversarial_tpr_at_1pct
+    assert clean_tpr is not None
+    assert tpr < clean_tpr, (
+        f"attack at eps=0.1 gave {tpr}, no better than the clean {clean_tpr}")
