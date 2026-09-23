@@ -12,7 +12,7 @@ from dfd.detectors.base import (
     NO_QUALITY,
     WEIGHTS_ABSENT,
 )
-from dfd.detectors.npr import NPRDetector, npr_feature
+from dfd.detectors.npr import NPRDetector, NPRStatsNet, npr_feature
 from dfd.types import Modality, Observation, Quality
 
 
@@ -548,3 +548,111 @@ def test_detector_abstains_quality_not_measured_secure_path(tiny_weights, tiny_m
     r = d.score(obs)
 
     assert r.abstained and r.reason == NO_QUALITY
+
+
+# --- Slot C's actual architecture (added 2026-09-23) -----------------------
+#
+# Until now `npr` shipped a feature function and no model, so the slot
+# abstained with `weights_absent` on every input this project has ever
+# scored. `NPRStatsNet` is the light head the CPU-only ruling calls for
+# (docs/HANDOFF.md §1, correction 3): handcrafted statistics of the
+# upsampling residual feeding a linear layer, fitted by
+# `training/fit_npr.py`.
+
+def test_the_residual_is_identically_zero_on_the_even_phase():
+    """Not a bug — the definition. Nearest-neighbour upsampling REPLICATES
+    the sampled pixel, so `up[2i, 2j] == x[2i, 2j]` for every image, real or
+    generated. Any statistic computed over that phase is a constant 0 and
+    carries no information, which is why `NPRStatsNet` reads the other three.
+    """
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    r = npr_feature(img)
+    assert np.abs(r[0::2, 0::2]).max() == 0.0
+    assert np.abs(r[1::2, 1::2]).max() > 0.0
+
+
+def test_stats_net_emits_two_logits_per_sample():
+    net = NPRStatsNet()
+    out = net(torch.zeros(4, 3, 32, 32))
+    assert out.shape == (4, 2)
+
+
+def test_stats_are_finite_on_a_flat_image():
+    """A constant image has a zero residual in every phase, so every ratio is
+    0/0. A NaN here would poison the linear layer silently."""
+    net = NPRStatsNet()
+    f = net.features(torch.zeros(1, 3, 32, 32))
+    assert f.shape == (1, NPRStatsNet.N_FEATURES)
+    assert torch.isfinite(f).all()
+
+
+def test_an_image_too_small_to_have_every_phase_is_still_finite():
+    """A 1x1 crop leaves all three informative phases EMPTY.
+
+    Without the guard, `mean` over an empty tensor is nan, and torch does
+    not raise — the nan reaches the linear layer and every logit becomes
+    nan. The detector's quality floor should keep crops this small out, but
+    "should" is not a guard, and a nan that only appears on degenerate input
+    is the kind that reaches production.
+    """
+    net = NPRStatsNet()
+    f = net.features(torch.zeros(1, 3, 1, 1))
+    assert f.shape == (1, NPRStatsNet.N_FEATURES)
+    assert torch.isfinite(f).all()
+
+
+def test_stats_separate_upsampled_content_from_natural_content():
+    """The physics the slot exists for, asserted rather than assumed.
+
+    Upsampled content reconstructs almost exactly under downsample-then-
+    upsample, so its residual is small; natural high-frequency content does
+    not, so its residual is large.
+    """
+    rng = np.random.default_rng(1)
+    natural = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    small = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
+    upsampled = np.repeat(np.repeat(small, 2, axis=0), 2, axis=1)
+    net = NPRStatsNet()
+    def energy(img):
+        r = torch.from_numpy(npr_feature(img)).permute(2, 0, 1)[None]
+        return float(net.features(r)[0, :9].abs().mean())
+    assert energy(upsampled) < energy(natural) / 2
+
+
+def test_the_normalisation_buffers_are_applied():
+    """They travel in the state_dict, so a fitted model that ignored them
+    would load clean and score as though it had never been standardised."""
+    net = NPRStatsNet()
+    rng = np.random.default_rng(2)
+    x = torch.from_numpy(rng.normal(0, 0.2, (2, 3, 32, 32)).astype(np.float32))
+    before = net(x).clone()
+    with torch.no_grad():
+        net.feature_mean.add_(1.0)
+        net.feature_scale.mul_(3.0)
+    assert not torch.allclose(before, net(x))
+
+
+def test_a_fitted_state_dict_loads_through_the_secure_path(tmp_path):
+    """End to end: what `training/fit_npr.py` writes is what the registry's
+    `model_factory` can load with weights_only=True."""
+    net = NPRStatsNet()
+    with torch.no_grad():
+        net.linear.weight.copy_(torch.randn(2, NPRStatsNet.N_FEATURES))
+    p = tmp_path / "npr.pt"
+    torch.save(net.state_dict(), p)
+    d = NPRDetector(weights_path=p, model_factory=NPRStatsNet)
+    rng = np.random.default_rng(3)
+    img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    score = d.score([_obs(img)])
+    assert not score.abstained
+    assert 0.0 <= score.score <= 1.0
+
+
+def test_the_registry_wires_the_factory_so_npr_never_needs_unsafe_loading():
+    """Without this the slot could only load a full pickle, which is the
+    path `loading.load_model` logs a warning for on every call."""
+    from dfd.detectors.registry import default_registry
+    npr = default_registry().get("npr")
+    assert npr.model_factory is NPRStatsNet
+    assert npr.allow_unsafe_load is False

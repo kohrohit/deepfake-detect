@@ -80,6 +80,110 @@ def npr_feature(
     return residual
 
 
+#: The four (dy, dx) sampling phases of a stride-2 grid, minus the one that
+#: carries nothing. Nearest-neighbour upsampling REPLICATES the sampled
+#: pixel, so `up[2i, 2j] == x[2i, 2j]` and the residual on the even phase is
+#: identically zero for every image, real or generated. A statistic computed
+#: there is a constant, not a feature.
+INFORMATIVE_PHASES: tuple[tuple[int, int], ...] = ((0, 1), (1, 0), (1, 1))
+
+#: Keeps the log-ratios finite when a phase's residual is exactly zero, which
+#: happens on flat fields and on synthetic test images. A nan here would
+#: reach the linear layer and poison every output silently.
+_RATIO_EPS = 1e-6
+
+
+class NPRStatsNet(nn.Module):
+    """Slot C's model: phase statistics of the NPR residual, then a linear layer.
+
+    **Why this shape and not a CNN.** The hardware ruling is CPU-only
+    (docs/HANDOFF.md §1, correction 3), which makes "handcrafted features
+    feeding a light model" the only detector this project can actually fit.
+    This is that: 27 numbers describing how the upsampling residual is
+    distributed across the stride-2 sampling phases, and a `Linear(27, 2)`.
+    It trains in seconds and runs in milliseconds.
+
+    **The physics it reads.** A generator that upsamples by replication or
+    interpolation leaves content that reconstructs almost exactly under
+    downsample-then-upsample, so its residual is small AND its residual is
+    distributed differently across the three informative phases than a
+    camera's optical chain leaves it. The ratios below are there to read the
+    second property, which is scale-free — the absolute magnitudes are not,
+    and that matters because resolution has already been measured as this
+    project's most reliable shortcut (docs/HANDOFF.md §0).
+
+    **Feature layout**, fixed because a fitted `state_dict` is meaningless
+    without it:
+
+        f[ 0: 9]  mean |residual|, channel-major over the three phases
+        f[ 9:18]  standard deviation of the residual, same order
+        f[18:27]  log-ratios of the phase means, per channel
+
+    **The normalisation travels in the state_dict.** `feature_mean` and
+    `feature_scale` are buffers, not fitter-side bookkeeping: a model that
+    standardised during fitting and not at inference loads clean, scores
+    confidently, and is wrong. `training/fit_npr.py` writes them.
+    """
+
+    #: Length of the feature vector `features` returns. A fitted state_dict
+    #: is tied to it, so changing it invalidates every saved model.
+    N_FEATURES = 27
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("feature_mean", torch.zeros(self.N_FEATURES))
+        self.register_buffer("feature_scale", torch.ones(self.N_FEATURES))
+        self.linear = nn.Linear(self.N_FEATURES, 2)
+
+    def features(self, residual: torch.Tensor) -> torch.Tensor:
+        """Phase statistics of an NPR residual batch.
+
+        Args:
+            residual: `(B, 3, H, W)` float tensor, as produced by
+                `npr_feature` and permuted to channels-first.
+
+        Returns:
+            `(B, N_FEATURES)` float tensor. Always finite: an empty phase
+            (an image smaller than the stride) and a flat field both
+            contribute zeros rather than nan.
+        """
+        means: list[torch.Tensor] = []
+        stds: list[torch.Tensor] = []
+        for dy, dx in INFORMATIVE_PHASES:
+            sub = residual[:, :, dy::2, dx::2].flatten(2)
+            if sub.shape[-1] == 0:
+                zeros = residual.new_zeros(residual.shape[0], residual.shape[1])
+                means.append(zeros)
+                stds.append(zeros)
+                continue
+            means.append(sub.abs().mean(-1))
+            stds.append(sub.std(-1, unbiased=False))
+
+        mean_stack = torch.stack(means, dim=2)          # (B, C, phase)
+        std_stack = torch.stack(stds, dim=2)
+        ratios = torch.stack([
+            torch.log((mean_stack[:, :, a] + _RATIO_EPS)
+                      / (mean_stack[:, :, b] + _RATIO_EPS))
+            for a, b in ((0, 1), (0, 2), (1, 2))
+        ], dim=2)
+        return torch.cat([mean_stack.flatten(1), std_stack.flatten(1),
+                          ratios.flatten(1)], dim=1)
+
+    def forward(self, residual: torch.Tensor) -> torch.Tensor:
+        """Two logits per sample, ordered (real, fake) to match `NPRDetector`.
+
+        Args:
+            residual: `(B, 3, H, W)` NPR residual batch.
+
+        Returns:
+            `(B, 2)` logits. `NPRDetector.score` softmaxes these and takes
+            column 1 as P(fake).
+        """
+        f = (self.features(residual) - self.feature_mean) / self.feature_scale
+        out: torch.Tensor = self.linear(f)
+        return out
+
+
 @dataclass(frozen=True)
 class NPRDetector:
     """Detector that reads upsampling fingerprints via NPR features.

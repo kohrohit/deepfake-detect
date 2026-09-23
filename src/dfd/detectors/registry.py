@@ -6,7 +6,7 @@ from pathlib import Path
 from .base import Detector, Registry, SyntheticDetector, abstain  # noqa: F401
 from .blend import DEFAULT_BLEND_WEIGHTS, BlendDetector
 from .effnet import EffNetDetector
-from .npr import NPRDetector
+from .npr import NPRDetector, NPRStatsNet
 
 #: Where a deployment is expected to place weights. Both files are gitignored
 #: and absent in this repo, so both detectors abstain with `weights_absent`.
@@ -33,7 +33,13 @@ def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,
             names ("npr", "blend_seam", "effnet_b4") cannot collide.
     """
     registry = Registry()
-    registry.register(NPRDetector(weights_path=npr_weights))
+    # The factory is what keeps slot C on `loading.load_model`'s SECURE
+    # path: with it, weights load under `weights_only=True` as a plain
+    # state_dict. Without it the only way to load anything is a full
+    # pickle, which is arbitrary code execution from a weights file and is
+    # logged as a warning on every call.
+    registry.register(NPRDetector(weights_path=npr_weights,
+                                  model_factory=NPRStatsNet))
     registry.register(BlendDetector(weights_path=blend_weights))
     registry.register(EffNetDetector(name="effnet_b4", slot="E",
                                      weights_path=effnet_weights))
