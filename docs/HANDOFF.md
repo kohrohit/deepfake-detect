@@ -131,6 +131,29 @@ where the correction lives until re-framing the spec becomes its own cycle.
 the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
 Local `p0-evidence-core` and `feat/sbi-corpus-and-blend-detector` still exist, merged and harmless.
 
+### The owner-action list (added 2026-09-23)
+
+`§0`'s SFHQ bullet has pointed at "the owner-action list" since 2026-09-22 and no such list
+existed. This is it: the things **no session can do**, ordered by how much each unblocks. Each says
+what it costs and what it buys, so none of them needs re-deriving before it can be decided.
+
+| # | Action | Cost | Unblocks |
+|---|---|---|---|
+| 1 | **Create a Kaggle account and accept SFHQ's terms** (`SelfishGene/SFHQ-dataset`, part 3) | ~15 min | licence-clean **fakes to train on** — the single binding constraint (§0b) |
+| 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
+| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
+| 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
+| 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
+| 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
+| 7 | **Decide GPU or no GPU** | money | the detector class. CPU-only is why the path is handcrafted features rather than a trained CNN (§1 correction 3) |
+
+**1 is the one that matters this week.** 0b measured that the supervision, not the physics, is what
+is missing; SFHQ is the only licence-clean source of fakes found so far, and it is gated behind a
+login rather than an agreement. 2 has weeks of lead time, so it should go out the same day even
+though what it buys arrives later.
+
+**Nothing on this list is engineering.** The engineering that does not depend on it is listed in §5.
+
 ### The corpus is 58 distinct images, not 442 sessions. Measured 2026-09-22, by hashing it.
 
 Every previous block in this file, this project's spec, and `corpora/captures.py`'s own module
@@ -321,7 +344,7 @@ the second time today a headline licence claim failed on contact with its source
 - **SFHQ** (MIT, ~425k synthetic faces) — the licence is ideal and the GitHub repo is MIT, but the
   images themselves are distributed through Kaggle, which needs an account. The HuggingFace mirror
   `bitmind/SyntheticFacesHQ` declares **no licence at all**, so it cannot be treated as MIT on the
-  strength of sharing a name. Needs a Kaggle login — see the owner-action list.
+  strength of sharing a name. Needs a Kaggle login — item 1 of the owner-action list in §0.
 - **DeepfakeBench / SBI pretrained weights** — both obtainable, both NonCommercial (verified above).
   Worth having as research-track baselines, but each needs its author's framework wired in to run,
   which is a task, not a download.
