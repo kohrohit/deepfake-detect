@@ -1,0 +1,141 @@
+{
+  "controls": "bench.vcip_controls",
+  "captures": "/home/rohit/Desktop/vkyc-server/captures",
+  "encoder_shortcut": {
+    "measured": true,
+    "what": "logistic regression on the quantisation tables alone",
+    "distinct_tables": 3,
+    "by_table": [
+      {
+        "first_luma_coefficient": 2,
+        "genuine": 4,
+        "swapped": 336
+      },
+      {
+        "first_luma_coefficient": 3,
+        "genuine": 146,
+        "swapped": 0
+      },
+      {
+        "first_luma_coefficient": 1,
+        "genuine": 25,
+        "swapped": 0
+      }
+    ],
+    "header_lookup_accuracy": 0.9921722113502935,
+    "frames": 511,
+    "frame_auc": 0.9852806122448979,
+    "sessions": 107,
+    "genuine": 39,
+    "swapped": 68,
+    "auc": 0.9345776772247361,
+    "caught_at_fpr_0.0": 0.0,
+    "caught_at_fpr_0.026": 0.17647058823529413,
+    "caught_at_fpr_0.05": 0.17647058823529413,
+    "caught_at_fpr_0.1": 0.5441176470588235
+  },
+  "matched_encoder": {
+    "measured": true,
+    "what": "genuine half re-encoded at quality 95, the one reproducing the swapped half's table exactly",
+    "quality": 95,
+    "distinct_tables": 1,
+    "frames": 506,
+    "frame_auc": 0.9636029411764706,
+    "sessions": 106,
+    "genuine": 38,
+    "swapped": 68,
+    "auc": 0.9485294117647058,
+    "caught_at_fpr_0.0": 0.3088235294117647,
+    "caught_at_fpr_0.026": 0.3088235294117647,
+    "caught_at_fpr_0.05": 0.5,
+    "caught_at_fpr_0.1": 0.9117647058823529
+  },
+  "preprocessing_and_blocks": {
+    "native": {
+      "measured": true,
+      "frames": 506,
+      "frame_auc": 0.9573879551820729,
+      "sessions": 106,
+      "genuine": 38,
+      "swapped": 68,
+      "auc": 0.9570433436532507,
+      "caught_at_fpr_0.0": 0.45588235294117646,
+      "caught_at_fpr_0.026": 0.45588235294117646,
+      "caught_at_fpr_0.05": 0.5882352941176471,
+      "caught_at_fpr_0.1": 0.9705882352941176
+    },
+    "native_phase_block_only": {
+      "measured": true,
+      "n_features": 27,
+      "frames": 506,
+      "frame_auc": 0.906827731092437,
+      "sessions": 106,
+      "genuine": 38,
+      "swapped": 68,
+      "auc": 0.8614551083591331,
+      "caught_at_fpr_0.0": 0.04411764705882353,
+      "caught_at_fpr_0.026": 0.04411764705882353,
+      "caught_at_fpr_0.05": 0.08823529411764706,
+      "caught_at_fpr_0.1": 0.5294117647058824
+    },
+    "native_spectral_block_only": {
+      "measured": true,
+      "n_features": 30,
+      "frames": 506,
+      "frame_auc": 0.9489670868347339,
+      "sessions": 106,
+      "genuine": 38,
+      "swapped": 68,
+      "auc": 0.9295665634674922,
+      "caught_at_fpr_0.0": 0.11764705882352941,
+      "caught_at_fpr_0.026": 0.11764705882352941,
+      "caught_at_fpr_0.05": 0.14705882352941177,
+      "caught_at_fpr_0.1": 0.9264705882352942
+    },
+    "aligned": {
+      "measured": true,
+      "frames": 498,
+      "frame_auc": 0.753413903899518,
+      "sessions": 105,
+      "genuine": 37,
+      "swapped": 68,
+      "auc": 0.6951510333863276,
+      "caught_at_fpr_0.0": 0.014705882352941176,
+      "caught_at_fpr_0.026": 0.014705882352941176,
+      "caught_at_fpr_0.05": 0.014705882352941176,
+      "caught_at_fpr_0.1": 0.029411764705882353
+    }
+  },
+  "per_band": {
+    "measured": true,
+    "basis": "frame",
+    "high": {
+      "n": 14,
+      "genuine": 14,
+      "swapped": 0,
+      "auc": null,
+      "caught_at_fpr_0.0": null
+    },
+    "low": {
+      "n": 8,
+      "genuine": 2,
+      "swapped": 6,
+      "auc": 1.0,
+      "caught_at_fpr_0.0": 1.0
+    },
+    "medium": {
+      "n": 244,
+      "genuine": 140,
+      "swapped": 104,
+      "auc": 0.9470467032967033,
+      "caught_at_fpr_0.0": 0.8557692307692307
+    },
+    "reject": {
+      "n": 240,
+      "genuine": 14,
+      "swapped": 226,
+      "auc": 0.8030973451327433,
+      "caught_at_fpr_0.0": 0.26548672566371684
+    }
+  }
+}

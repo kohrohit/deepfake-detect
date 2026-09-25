@@ -54,6 +54,48 @@ assets:
     evidence_url: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
     date_checked: "2026-09-20"
     checked_by: "kohrohit@gmail.com"
+  # Registered 2026-09-25, when training/fit_vcip.py first wrote this file
+  # and the asset gate went red locally — correctly: an unregistered weight
+  # file had appeared in the tree. It is NOT npr_weights above. That entry is
+  # the upstream NPR-DeepfakeDetection release, which this project has never
+  # downloaded; this is a head fitted here, from this project's own corpus,
+  # sharing only the feature definition.
+  npr_capture_head:
+    source: "Fitted in this repo by training/fit_vcip.py: a 57-feature logistic head over NPR residual statistics, from 506 frames of the v-CIP capture corpus (106 sessions). The genuine half is capture frames; the fake half is inswapper_128 swaps of those same frames. No upstream NPR weight file contributes to it — only the feature definition in dfd/detectors/npr.py."
+    # FAILS CLOSED, and on a question nobody has answered rather than on one
+    # answered against us. Two encumbrances are possible and neither is
+    # verified:
+    #
+    #   1. THE SWAPPER. Every positive example is inswapper_128 output.
+    #      InsightFace's distributed models are widely stated to be for
+    #      non-commercial research use, and that model in particular was
+    #      withdrawn from public distribution. A head fitted on its output is
+    #      derived data if that is so. NOT VERIFIED AT SOURCE — unlike every
+    #      `commercial_use: true` entry here, which cites a licence text read
+    #      at its origin. Verify before any commercial release.
+    #   2. THE CAPTURES. Same open question as blend_seam_weights below: the
+    #      owner attests rights to the corpus, no lawyer has reviewed whether
+    #      v-CIP recordings may train an unrelated product, and biometric
+    #      consent is a separate matter from rights in the recording.
+    #
+    # Either alone is enough to keep this false. Recorded as two distinct
+    # questions because they have different answers and different fixes: (1)
+    # is settled by re-generating the fake half with a licensed swapper, (2)
+    # is not settled by any amount of re-generation.
+    license: "UNRESOLVED — research/internal evaluation only. See the two questions above; both must be answered before this ships."
+    commercial_use: false
+    owner_attestation: "2026-09-21: the capture corpus is available with rights. Stated by the project owner; not independently verified, and it does not address the swapper question."
+    # MEASURED, and the controlled number is the one that counts: session AUC
+    # 0.949 and 30.9% of swapped sessions caught at a zero false-alarm budget
+    # with the corpus's encoder shortcut removed (0.957 / 45.6% without the
+    # control). bench/vcip_controls.json, docs/HANDOFF.md §0. Not calibrated
+    # for an automatic reject: assets/models/calibration.json is conditioned
+    # on a 66.4% fake base rate that live traffic does not have.
+    evidence_url: "docs/HANDOFF.md"
+    date_checked: "2026-09-25"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/npr.pt"
   sbi_effnetb4_weights:
     source: "https://github.com/mapooon/SelfBlendedImages"
     # VERIFIED at source 2026-09-22 (was "VERIFY before any commercial

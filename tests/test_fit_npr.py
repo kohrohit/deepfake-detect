@@ -201,12 +201,31 @@ def test_the_source_is_normalised_before_detection(tmp_path: Path) -> None:
     b = tmp_path / "b.png"
     cv2.imwrite(str(a), small)
     cv2.imwrite(str(b), big)
-    fa = stats_for(a, detect=_detect_one, norm_size=224)
-    fb = stats_for(b, detect=_detect_one, norm_size=224)
-    # Resampling is not lossless, so this is a closeness claim, not equality.
-    # Unnormalised, these vectors differ by orders of magnitude on the
-    # residual-energy terms; normalised, they track each other.
-    assert np.allclose(fa, fb, atol=0.05), np.abs(np.asarray(fa) - fb).max()
+    # **Not an equality claim, and deliberately not, since 2026-09-24.** The
+    # feature vector now carries resampling-sensitive terms (the spectral
+    # block's peak-to-mean ratio above all), because reading resampling
+    # history IS slot C's job — see `NPRStatsNet._spectral`. Asserting
+    # invariance would be asserting that the detector cannot see the thing it
+    # exists to see.
+    #
+    # What the resize still buys, and what this asserts, is a large REDUCTION
+    # in the gap. Measured on this fixture 2026-09-24:
+    #
+    #     without the resize   max gap 71.53, mean gap 3.615
+    #     with it (both 224)   max gap  7.10, mean gap 0.329
+    #
+    # A tenfold reduction on both. That is what keeps image width from
+    # separating SFHQ at 1024px from FairFace at 224px.
+    with_resize = np.abs(np.asarray(stats_for(a, detect=_detect_one, norm_size=224))
+                         - np.asarray(stats_for(b, detect=_detect_one, norm_size=224)))
+    without = np.abs(np.asarray(stats_for(a, detect=_detect_one, norm_size=128))
+                     - np.asarray(stats_for(b, detect=_detect_one, norm_size=512)))
+    assert with_resize.max() < without.max() / 5.0, (
+        f"the resize reduced the worst gap only from {without.max():.2f} to "
+        f"{with_resize.max():.2f}; source resolution is still leaking into "
+        f"the features")
+    assert with_resize.mean() < without.mean() / 5.0, (
+        f"mean gap {without.mean():.3f} -> {with_resize.mean():.3f}")
 
 
 def test_a_feature_with_no_variance_does_not_divide_by_zero(

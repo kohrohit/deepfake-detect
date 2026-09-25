@@ -193,6 +193,105 @@ though what it buys arrives later.
 
 **Nothing on this list is engineering.** The engineering that does not depend on it is listed in §5.
 
+### Slot C on the v-CIP capture corpus: the first number here that survives its control. 2026-09-25.
+
+**The headline, and it is the controlled one.** `training/fit_vcip.py` fits slot C on 506 capture
+frames from 106 sessions — genuine v-CIP frames against real `inswapper_128` swaps of those same
+frames, folds split on session. Held out, it reaches **session AUC 0.957 and catches 45.6% of
+swapped sessions at a zero false-alarm budget**. With the corpus's encoder shortcut removed (below)
+it holds **0.949 and 30.9%**. Quote the second pair. `bench/vcip_fit.json` is the fit,
+`bench/vcip_controls.json` the controls, and both regenerate from committed entry points:
+
+```bash
+python3 -m training.fit_vcip   --captures ~/Desktop/vkyc-server/captures
+python3 -m bench.vcip_controls --captures ~/Desktop/vkyc-server/captures
+```
+
+That is the first cross-validated, non-chance, control-surviving number this project has produced.
+Everything before it was either inside a permutation null (DF40, every number) or a corpus shortcut
+(SFHQ colour, FairFace resolution). It is also **not** a detector: read the four limits below
+before it is quoted anywhere.
+
+**This corpus is labelled by one byte of the JPEG header.** The swap pipeline decodes a capture
+frame, swaps the face and re-encodes at OpenCV quality 95; the capture path never re-encodes. So:
+
+| first luma quantisation coefficient | genuine | swapped |
+|---|---|---|
+| 2 | 4 | 336 |
+| 3 | 146 | 0 |
+| 1 | 25 | 0 |
+
+**99.2% of the corpus, from the header, with no pixel read.** A model on the tables alone reaches
+frame AUC **0.985** — above the head's own 0.957. Anything fitted on this corpus and reported
+without a control for this is measuring the encoder.
+
+**The control, and it is not the one the fitter used to claim.** The old limits list said the
+signal "survives re-encoding both halves". That is not a control here: the fakes were already
+compressed twice, so re-encoding both leaves them at three compressions and the genuine half at
+two. `bench.vcip_controls.matched_encoder` re-encodes the **genuine half alone**, at the quality
+that reproduces the swapped half's table *exactly* — found by search, and the control refuses to
+run if no quality matches or if more than one table survives. The corpus goes from three tables to
+one, and the head holds 0.949 / 30.9%. What it still cannot remove is the fakes' first compression,
+which happened inside the swap pipeline rather than in the camera; that needs a corpus whose halves
+share an imaging chain end to end, which this one does not.
+
+**Every number this slot's code quoted was stale, and all of them are now re-measured.** The
+figures in `npr.py` and `fit_vcip.py` were taken before `select_face` was corrected to the
+pipeline's largest-face rule (the defect that made the assembled system score 0.821 against the
+fitter's 0.954) and were never recomputed after it. The conclusions all survive; not one of the
+numbers did:
+
+| claim | as written | re-measured |
+|---|---|---|
+| native ROI crop vs aligned to 224 | 0.992 / 89.7% vs 0.924 / 51.5% | **0.957 / 45.6% vs 0.695 / 1.5%** |
+| phase block alone | AUC 0.869, caught 7.4% | **AUC 0.861, caught 4.4%** |
+| with the spectral block | caught 92.6% | **caught 45.6%** |
+| encoder shortcut | AUC 0.873 | **frame AUC 0.985, 99.2% from the header** |
+| `reject` band | AUC 0.992, caught 94.2% | **AUC 0.803, caught 26.5%** |
+| `medium` band | AUC 0.957, caught 29.8% | **AUC 0.947, caught 85.6%** |
+
+The last two are very nearly each other's, the other way round. **`min_quality_band = "reject"`
+did not change**, because the argument for it was never the per-band AUC: it is that the `reject`
+band holds 226 of 336 swapped frames against 14 of 170 genuine, so a floor above it discards two
+thirds of the attacks and almost none of the honest traffic. Those composition columns are
+identical in both measurements. What the re-measured table does add is the reliability drop the
+old one denied — `reject` is the worst band, not the best — which is what per-band calibration is
+for.
+
+**Why this happened, and what stops it recurring.** Same defect as §"The best LOGO fold is a
+selection effect": a number in prose with no committed script behind it. `bench/vcip_controls.py`
+is that script, with thirteen tests and nine mutations run against it, and every figure above now
+names the JSON it came from.
+
+**The four limits, unchanged and all measured.** One swapper (`inswapper_128` only — an attacker
+changes tools for free); ~12-20 distinct people, so no identity-disjoint number is computable here
+at all (attempted, permutation p=0.636); the encoder shortcut above; and these scores are not
+probabilities — `assets/models/calibration.json` is conditioned on a 66.4% fake base rate, which
+live traffic is not. Triage and internal evaluation only, never an automatic reject.
+
+**The asset gate is now RED on any machine that has run the fitter, and that is correct.**
+`training/fit_vcip.py` writes `assets/models/npr.pt`, which the release gate discovered and
+refused — first as unregistered, then, once registered as `npr_capture_head`, as not cleared for
+commercial release. Both refusals are the gate working. The head is recorded
+`commercial_use: false` on **two unverified encumbrances**, kept separate because they have
+different fixes:
+
+1. **The swapper.** Every positive example is `inswapper_128` output. InsightFace's swapping
+   models are non-commercial research releases and that one was withdrawn from distribution; if
+   that holds, a head fitted on its output is derived data. **Nobody has verified this at source**
+   — unlike every `commercial_use: true` entry in the manifest, each of which cites a licence text
+   read at its origin. Fixable by regenerating the fake half with a licensed swapper.
+2. **The captures.** The same open question `blend_seam_weights` carries: the owner attests rights
+   to the corpus, no lawyer has reviewed whether v-CIP recordings may train an unrelated product,
+   and consent to biometric processing is a separate matter from rights in the recording. **Not**
+   fixable by regenerating anything.
+
+**CI cannot see either.** Weight files are gitignored, so CI's asset gate runs with
+`allow_empty=True` against a tree holding no assets and passes. The only place this refusal
+appears is a local tree that has actually run the fitter. Do not read a green CI asset gate as
+clearance for this head.
+
+
 ### The corpus is 58 distinct images, not 442 sessions. Measured 2026-09-22, by hashing it.
 
 Every previous block in this file, this project's spec, and `corpora/captures.py`'s own module

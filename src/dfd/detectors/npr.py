@@ -93,6 +93,14 @@ INFORMATIVE_PHASES: tuple[tuple[int, int], ...] = ((0, 1), (1, 0), (1, 1))
 _RATIO_EPS = 1e-6
 
 
+#: The ROI was absent, so the detector does not know which pixels are the
+#: face. Mirrors `dfd.detectors.blend.NO_ROI` and exists for the same reason:
+#: scoring the whole frame instead silently reads mostly background. Distinct
+#: from the quality reasons (about capture, not about localisation) and from
+#: WEIGHTS_ABSENT (the detector never ran).
+NO_ROI = "roi_absent"
+
+
 class NPRStatsNet(nn.Module):
     """Slot C's model: phase statistics of the NPR residual, then a linear layer.
 
@@ -125,9 +133,42 @@ class NPRStatsNet(nn.Module):
     confidently, and is wrong. `training/fit_npr.py` writes them.
     """
 
+    #: Length of the PHASE block: per-channel mean and std over the three
+    #: informative phases, plus their log-ratios. Scale-free by design in the
+    #: ratio third, which is what makes it survive a resolution change.
+    N_PHASE_FEATURES = 27
+
+    #: Length of the SPECTRAL block appended 2026-09-24: per channel, three
+    #: magnitude moments and a coarse three-band profile of the residual's
+    #: 2-D spectrum, plus its peak. 10 numbers x 3 channels.
+    N_SPECTRAL_FEATURES = 30
+
     #: Length of the feature vector `features` returns. A fitted state_dict
     #: is tied to it, so changing it invalidates every saved model.
-    N_FEATURES = 27
+    #:
+    #: **Changed 2026-09-24, from 27 to 57, and nothing was invalidated**
+    #: because no fitted model had ever been written — `assets/models/npr.pt`
+    #: has been absent since this class was declared. Measured on 506 frames
+    #: of the v-CIP capture corpus (106 sessions, real `inswapper_128` swaps
+    #: of genuine capture frames, folds split on session), each block fitted
+    #: on its own columns of one shared feature matrix:
+    #:
+    #:     phase block only (27)      AUC 0.861, caught  4.4% at zero FPR
+    #:     spectral block only (30)   AUC 0.930, caught 11.8%
+    #:     both (57)                  AUC 0.957, caught 45.6%
+    #:
+    #: AUC understates what the spectral block buys and the operating point
+    #: does not, which is why both are quoted: the product decides at a
+    #: false-alarm budget, not at a ranking.
+    #:
+    #: **Re-measured 2026-09-25 and these numbers replace an earlier set**
+    #: (0.869/7.4% and 92.6%) that this comment carried until then. Those
+    #: were taken before `training.fit_vcip.select_face` was corrected to the
+    #: pipeline's largest-face rule and were never recomputed after it. The
+    #: ranking of the three rows is unchanged; every figure in them moved.
+    #: `bench/vcip_controls.json` is the committed measurement, and
+    #: `python3 -m bench.vcip_controls` regenerates it.
+    N_FEATURES = N_PHASE_FEATURES + N_SPECTRAL_FEATURES
 
     #: Declared for the type checker only. `register_buffer` assigns through
     #: `nn.Module.__setattr__`, so a reader of these attributes gets
@@ -175,8 +216,77 @@ class NPRStatsNet(nn.Module):
                       / (mean_stack[:, :, b] + _RATIO_EPS))
             for a, b in ((0, 1), (0, 2), (1, 2))
         ], dim=2)
-        return torch.cat([mean_stack.flatten(1), std_stack.flatten(1),
-                          ratios.flatten(1)], dim=1)
+        phase = torch.cat([mean_stack.flatten(1), std_stack.flatten(1),
+                           ratios.flatten(1)], dim=1)
+        return torch.cat([phase, self._spectral(residual)], dim=1)
+
+    def _spectral(self, residual: torch.Tensor) -> torch.Tensor:
+        """Magnitude moments and a coarse spectral profile, per channel.
+
+        **What this reads that the phase block cannot.** The phase block is
+        per-phase mean, std and ratios: two residuals can match on all of
+        those while distributing their energy across FREQUENCY completely
+        differently. An upsampled generator patch is smooth where a camera's
+        sensor noise is not, and that difference is the whole signal at low
+        false-alarm budgets — where the phase block alone caught 4.4% of
+        swapped sessions on the capture corpus and the two blocks together
+        catch 45.6% (`bench/vcip_controls.json`, re-measured 2026-09-25;
+        this line read 7.4% and 92.6% until then, from a run made before the
+        fitter's face rule was corrected).
+
+        Ten numbers per channel: mean, std and mean-absolute of the residual,
+        its 90th and 99th absolute percentiles, three band means of the 2-D
+        real FFT magnitude, and that spectrum's peak and mean.
+
+        Returns:
+            `(B, N_SPECTRAL_FEATURES)`, always finite. An image smaller than
+            two pixels has no spectrum to take, and contributes zeros rather
+            than nan — a nan here reaches the linear layer and leaves it as a
+            confident score.
+        """
+        b, c = residual.shape[0], residual.shape[1]
+        if residual.shape[-1] < 2 or residual.shape[-2] < 2:
+            return residual.new_zeros(b, self.N_SPECTRAL_FEATURES)
+
+        flat = residual.flatten(2)
+        absflat = flat.abs()
+        # `quantile` over the spatial axis; interpolation matches numpy's
+        # default so the fitter and the detector agree to the last bit.
+        q90 = absflat.quantile(0.90, dim=-1)
+        q99 = absflat.quantile(0.99, dim=-1)
+
+        spec = torch.fft.rfft2(residual).abs()
+        h = spec.shape[-2]
+        # Three bands over the vertical frequency axis. Coarse on purpose: a
+        # fine profile is a resolution fingerprint, and resolution is this
+        # project's most reliable shortcut.
+        #
+        # EVERY SPECTRAL TERM IS DIVIDED BY THE SPECTRUM'S OWN MEAN, which
+        # makes it dimensionless. Raw FFT magnitude scales with the number of
+        # pixels, so an un-normalised band mean is partly a measure of image
+        # SIZE — precisely the shortcut this project keeps rediscovering, and
+        # it broke `fit_npr`'s resolution-invariance test the moment it was
+        # added. What survives the division is how energy is DISTRIBUTED
+        # across frequency, which is the physical property worth reading.
+        spec_mean = spec.flatten(2).mean(-1).clamp_min(_RATIO_EPS)
+        lo = spec[:, :, :max(1, h // 4)].flatten(2).mean(-1) / spec_mean
+        mid = (spec[:, :, max(1, h // 4):max(2, h // 2)].flatten(2).mean(-1)
+               / spec_mean)
+        tail = spec[:, :, max(2, h // 2):]
+        hi = (tail.flatten(2).mean(-1) / spec_mean if tail.numel()
+              else spec.new_zeros(b, c))
+        peak = spec.flatten(2).amax(-1) / spec_mean
+
+        stacked = torch.stack([
+            flat.mean(-1), flat.std(-1, unbiased=False), absflat.mean(-1),
+            q90, q99, lo, mid, hi, peak,
+            # The one absolute term, in log space so it cannot dominate the
+            # standardiser: residual energy per pixel, which is a property of
+            # the imaging chain rather than of the image's size.
+            torch.log(absflat.mean(-1).clamp_min(_RATIO_EPS)),
+        ], dim=2)
+        return torch.nan_to_num(stacked.flatten(1), nan=0.0,
+                                posinf=0.0, neginf=0.0)
 
     def forward(self, residual: torch.Tensor) -> torch.Tensor:
         """Two logits per sample, ordered (real, fake) to match `NPRDetector`.
@@ -191,6 +301,59 @@ class NPRStatsNet(nn.Module):
         f = (self.features(residual) - self.feature_mean) / self.feature_scale
         out: torch.Tensor = self.linear(f)
         return out
+
+
+def _crop_to_roi_native(
+    payload: npt.NDArray[np.uint8],
+    roi: tuple[int, int, int, int] | None,
+) -> npt.NDArray[np.uint8] | None:
+    """Crop to the face ROI at its OWN resolution, or None.
+
+    **Deliberately does not resize, and that is the opposite of
+    `dfd.detectors.blend._crop_to_roi`.** The two differ because the
+    quantities differ. Seam features normalise annulus GEOMETRY by the
+    image's height and width, so they need a fixed scale to be comparable.
+    The NPR residual IS a scale-dependent quantity — it is the difference
+    between an image and its own stride-2 reconstruction — so resampling the
+    crop rewrites the very fingerprint this slot reads.
+
+    Measured on the v-CIP capture corpus (506 frames, 106 sessions, real
+    `inswapper_128` swaps of genuine capture frames, folds split on session;
+    re-measured 2026-09-25 by `bench/vcip_controls.py`, which varies the crop
+    and holds the face-selection rule fixed — the run this replaces varied
+    both at once). `inswapper_128` emits a 128x128 face and pastes it back
+    upscaled; the median face in a 720x1280 capture frame is 237px across, so
+    aligning to a 224 square DOWNSAMPLES it:
+
+        aligned to 224   AUC 0.695, caught  1.5% at a zero false-alarm budget
+        native ROI       AUC 0.957, caught 45.6% at the same budget
+
+    (The figures here until 2026-09-25 — 0.924/51.5% and 0.992/89.7% — were
+    taken before the fitter's face rule was corrected and were never
+    recomputed. The conclusion they supported holds and the gap is wider than
+    they showed; the numbers themselves were wrong.)
+
+    The consequence for anyone fitting this slot: the fitter MUST crop the
+    same way, or the weights describe features the detector never computes.
+
+    Args:
+        payload: the observation's image, HWC.
+        roi: `(x, y, w, h)` in `payload`'s coordinates, or None.
+
+    Returns:
+        The cropped view, or None when `roi` is None or the clamped region
+        is smaller than 2x2 — below which there is no spectrum to take.
+    """
+    if roi is None:
+        return None
+    x, y, w, h = roi
+    x0, y0 = max(0, int(x)), max(0, int(y))
+    x1 = min(payload.shape[1], int(x) + int(w))
+    y1 = min(payload.shape[0], int(y) + int(h))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    crop: npt.NDArray[np.uint8] = payload[y0:y1, x0:x1]
+    return crop
 
 
 @dataclass(frozen=True)
@@ -243,7 +406,45 @@ class NPRDetector:
     modalities: frozenset[Modality] = field(
         default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO})
     )
-    min_quality_band: Literal["low", "medium", "high"] = "low"
+    #: **`"reject"`, and that is deliberate — this detector must see blurred
+    #: faces.** Every other detector treats low quality as low reliability
+    #: and refuses. For slot C, low quality is positively CORRELATED with the
+    #: artefact: `inswapper_128` emits a 128x128 face pasted back upscaled,
+    #: so a swap blurs, and a sharpness-based floor reads that blur as a bad
+    #: capture. Measured on the v-CIP capture corpus, per band, held-out
+    #: scores from folds split on session (re-measured 2026-09-25 by
+    #: `bench.vcip_controls.per_band`):
+    #:
+    #:     band      n   genuine  swapped   AUC    caught at zero false alarms
+    #:     reject   240       14      226   0.803   26.5%
+    #:     medium   244      140      104   0.947   85.6%
+    #:     low        8        2        6   1.000  100.0%
+    #:     high      14       14        0     —       —
+    #:
+    #: **The argument for this default is the middle two columns, not the
+    #: last two.** A floor above `reject` discards 226 of 336 swapped frames
+    #: (67.3%) against 14 of 170 genuine — two thirds of the attacks thrown
+    #: away before the detector runs, and almost none of the honest traffic.
+    #: That is a security hole, not caution, and it holds whatever the
+    #: per-band AUC turns out to be.
+    #:
+    #: **This table is not the one that stood here until 2026-09-25**, which
+    #: read 0.992/94.2% for `reject` and 0.957/29.8% for `medium` — the two
+    #: bands' figures very nearly the other way round. Those were taken
+    #: before `training.fit_vcip.select_face` was corrected to the
+    #: pipeline's largest-face rule. The composition columns are identical
+    #: in both, which is why the default did not change.
+    #:
+    #: Reduced reliability at low quality is real and is expressed where it
+    #: belongs: the per-band calibration curve (`dfd.calibration`), which
+    #: exists for exactly this. The re-measured table now SHOWS that
+    #: reliability drop directly — `reject` is the worst band, not the best.
+    #:
+    #: READ THE DENOMINATORS. `reject` holds 14 genuine frames and `low`
+    #: holds 2, so their false-alarm columns rest on 14 and 2 negatives
+    #: respectively; `low`'s 1.000 is eight frames and means nothing. `high`
+    #: holds no swapped frame at all, so it has no AUC to report.
+    min_quality_band: Literal["reject", "low", "medium", "high"] = "reject"
 
     def score(self, obs: Sequence[Observation]) -> RawScore:
         """Score observations using the NPR feature.
@@ -300,11 +501,27 @@ class NPRDetector:
 
         # Compute NPR features and score
         try:
-            feats = np.stack([npr_feature(o.payload) for o in usable])
-            t = torch.from_numpy(feats).permute(0, 3, 1, 2).float()
+            maybe_crops = [_crop_to_roi_native(o.payload, o.roi)
+                           for o in usable]
+            if any(c is None for c in maybe_crops):
+                # Abstain rather than fall back to the whole frame: a score
+                # computed over background is indistinguishable, to every
+                # consumer downstream, from one computed over a face.
+                logger.debug("no usable ROI on at least one observation; "
+                             "abstaining with %s", NO_ROI)
+                return abstain(self.name, self.version, NO_ROI)
+            crops = [c for c in maybe_crops if c is not None]
 
+            # One at a time, NOT np.stack: these crops are at their native
+            # resolutions and therefore have different shapes. Stacking them
+            # raises, and resizing them to match would destroy the very
+            # fingerprint this slot reads (see `_crop_to_roi_native`).
             with torch.no_grad():
-                logits = model(t)
+                logits = torch.cat([
+                    model(torch.from_numpy(npr_feature(c))
+                          .permute(2, 0, 1)[None].float())
+                    for c in crops
+                ], dim=0)
 
             # Validate output shape (must be 2-class binary classifier)
             if logits.shape[1] != EXPECTED_NUM_CLASSES:
