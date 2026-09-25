@@ -5,13 +5,66 @@ number that always looks good and never means anything.
 """
 from __future__ import annotations
 
-from .runner import RunRecord, worst_logo_auc
+from .runner import REAL_CLASS, RunRecord, worst_logo_auc
 
 ADVERSARIAL_FLOOR = 0.10
 
 
 def _f(x) -> str:
     return "n/a" if x is None or x != x else f"{x:.3f}"
+
+
+
+def _rate(pair: tuple[int, int]) -> str:
+    done, total = pair
+    return f"{100.0 * done / total:.1f}% ({done}/{total})" if total else "n/a"
+
+
+def _abstention_block(record, detectors, generators) -> list[str]:
+    """Per-fold abstention, split into the genuine half and the held-out fakes.
+
+    Every AUC in the table above is computed over the records that did NOT
+    abstain. When abstention is correlated with the label, that AUC describes
+    the survivors rather than the technique — and the survivors of a quality
+    floor are the least degraded fakes, which is the direction that flatters
+    a detector. Measured on the swap corpus 2026-09-24: `blend_seam` abstains
+    on 74.3% of `swap_lowres_paste` fakes against 56.9% of reals, and
+    `swap_lowres_paste` is the fold with the best AUC in that report.
+
+    Rendered only when something was measured. An empty `abstention_by_class`
+    means "not measured", and printing it as 0% would read as "nothing
+    abstained" — the opposite claim.
+    """
+    measured = any(record.logo_results[g][name].abstention_by_class
+                   for g in generators for name in detectors
+                   if name in record.logo_results[g])
+    if not measured:
+        return []
+
+    lines = ["### Abstention by class, per fold\n",
+             "Every AUC above is computed over the records that did NOT "
+             "abstain. Where these two columns differ, the fold's AUC "
+             "describes the survivors rather than the technique — and the "
+             "survivors of a quality floor are the least degraded fakes, "
+             "which flatters the detector.\n",
+             "| held out | detector | genuine | held-out fakes |",
+             "|---|---|---|---|"]
+    for g in generators:
+        for name in detectors:
+            if name not in record.logo_results[g]:
+                continue
+            by_class = record.logo_results[g][name].abstention_by_class
+            if not by_class:
+                continue
+            # The held-out generator's own key, never an aggregate over the
+            # fold's fakes: a fold's test side is that generator alone, and
+            # naming the column after it is what lets a reader compare the
+            # two numbers on the same row.
+            lines.append(f"| {g} | {name} | "
+                         f"{_rate(by_class.get(REAL_CLASS, (0, 0)))} | "
+                         f"{_rate(by_class.get(g, (0, 0)))} |")
+    lines.append("")
+    return lines
 
 
 def render_markdown(record: RunRecord) -> str:
@@ -108,6 +161,7 @@ def render_markdown(record: RunRecord) -> str:
             lines.append(f"| {name} | **{_f(worst_logo_auc(record, name))}** | "
                          + " | ".join(cells) + " |")
         lines.append("")
+        lines.extend(_abstention_block(record, detectors, generators))
 
     lines.append("## In-dataset results — memorisation, not field performance\n")
     lines.append("These are computed over the whole corpus, with every "

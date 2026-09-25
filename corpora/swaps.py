@@ -265,3 +265,68 @@ def rng_for(*parts: str, seed: int = 0) -> np.random.Generator:
     """
     digest = hashlib.sha256("|".join(parts).encode()).digest()[:8]
     return np.random.default_rng([seed, int.from_bytes(digest, "big")])
+
+
+#: Generator labels whose SOURCE pixels are not a second FairFace photograph.
+#: They reach `bench.protocol.logo_splits` as generators like the four
+#: techniques above, but what distinguishes them is provenance rather than
+#: blending: both composite with `WARP_HULL`, and differ only in where the
+#: face being pasted came from.
+#:
+#: `SYNTH_SFHQ` pastes an SFHQ part-3 face — documented StyleGAN2 sampling,
+#: CC0/MIT, no depicted real person — into a FairFace photograph. It is the
+#: only fake in this project whose face pixels are genuine GENERATOR OUTPUT
+#: sitting inside a real camera's imaging chain, which is the cell no corpus
+#: here has ever filled: SFHQ used directly against FairFace reals separates
+#: on colour alone, because the two halves arrive down different chains.
+SYNTH_SFHQ = "synth_sfhq_stylegan2"
+#: `SYNTH_CONTROL` is the measurement that makes `SYNTH_SFHQ` readable, and
+#: neither may be reported without the other.
+#:
+#: SFHQ is 1024px and FairFace is 224px, so compositing one into the other
+#: DOWNSAMPLES the face roughly threefold — and a 3x downsample is a low-pass
+#: filter that destroys much of the high-frequency fingerprint an upsampling
+#: detector (slot C) reads. A detector that separates `SYNTH_SFHQ` from real
+#: might therefore be reading the generator, or might be reading the resample.
+#: Those are different claims and one of them is worthless.
+#:
+#: So the control runs the couple's OWN FairFace source through the identical
+#: path — upscaled to SFHQ's native size, then composited by the same
+#: technique. Its face pixels are photographic; only the resampling history is
+#: shared. **If a detector scores `SYNTH_SFHQ` and `SYNTH_CONTROL` alike, it
+#: has found the resample and learnt nothing about generators.** A gap between
+#: them is the generator fingerprint, and it is the only part of a number on
+#: this corpus that means what it appears to mean.
+SYNTH_CONTROL = "synth_control_resampled"
+
+#: The side length `SYNTH_CONTROL` upscales a FairFace source to before
+#: compositing. Equal to SFHQ part 3's native resolution, because the control
+#: is only a control if the two paths differ in ONE thing.
+SYNTH_NATIVE_SIZE = 1024
+
+
+def rescale(frame: npt.NDArray[np.uint8], box: FaceBox, size: int,
+            ) -> tuple[npt.NDArray[np.uint8], FaceBox]:
+    """Resize a square frame to `size`, carrying its detection with it.
+
+    The box is scaled rather than re-detected. Re-detecting would be the
+    obvious alternative and is wrong here: the control must differ from
+    `SYNTH_SFHQ` in resampling history alone, and a second detection would
+    introduce a different face box as well, which is a second difference.
+
+    Args:
+        frame: RGB HWC uint8. Non-square input is resized anyway; the box
+            scales per-axis, so the geometry stays consistent either way.
+        box: its detection.
+        size: target side length.
+
+    Returns:
+        The resized frame and its scaled box.
+    """
+    h, w = frame.shape[:2]
+    out = cv2.resize(frame, (size, size), interpolation=cv2.INTER_CUBIC)
+    sx, sy = size / float(w), size / float(h)
+    return out, FaceBox(
+        x=int(round(box.x * sx)), y=int(round(box.y * sy)),
+        w=max(1, int(round(box.w * sx))), h=max(1, int(round(box.h * sy))),
+        landmarks=box.landmarks * np.array([sx, sy]), score=box.score)

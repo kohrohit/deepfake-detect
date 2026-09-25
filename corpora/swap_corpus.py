@@ -44,7 +44,16 @@ import numpy as np
 from dfd.faces import FaceBox, align, clamp_roi, detect_faces
 
 from .face_pool import DetectFn
-from .swaps import TECHNIQUES, rng_for, swap
+from .swaps import (
+    SYNTH_CONTROL,
+    SYNTH_NATIVE_SIZE,
+    SYNTH_SFHQ,
+    TECHNIQUES,
+    WARP_HULL,
+    rescale,
+    rng_for,
+    swap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +75,10 @@ DEGENERATE_BOX = "degenerate_box"
 UNREADABLE = "unreadable"
 SWAP_FAILED = "swap_failed"
 NO_STRATUM = "no_stratum"
+#: A synthetic source image that could not be read, or held no detectable
+#: face. Counted separately from `NO_FACE` so a pool that is simply the wrong
+#: directory is distinguishable from ordinary detector misses.
+SYNTH_UNUSABLE = "synth_source_unusable"
 
 
 @dataclass(frozen=True)
@@ -151,6 +164,7 @@ def build_swap_corpus(
     seed: int = 0,
     detect: DetectFn = detect_faces,
     techniques: Sequence[str] = TECHNIQUES,
+    synthetic_sources: Sequence[str | Path] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Build the corpus as `bench.runner` records.
 
@@ -183,6 +197,31 @@ def build_swap_corpus(
         detect: face detector, injected so tests need no weight file.
         techniques: which generators to emit. Defaults to all four; a caller
             wanting a two-generator corpus passes two, and LOGO still folds.
+        synthetic_sources: paths to GENERATOR-OUTPUT face images (SFHQ part 3
+            — StyleGAN2, CC0/MIT, no depicted real person). When given, each
+            couple gains TWO further fakes, and they are emitted together
+            because neither is readable alone:
+
+            - `SYNTH_SFHQ`: one of these images composited into the couple's
+              target photograph. Its face pixels are genuine generator output
+              inside a real camera's imaging chain — the cell no corpus in
+              this project has filled. Using SFHQ directly against FairFace
+              reals instead separates on colour alone, because the two halves
+              arrive down different chains.
+            - `SYNTH_CONTROL`: the couple's OWN FairFace source, upscaled to
+              `SYNTH_NATIVE_SIZE` and composited by the identical path. Its
+              face pixels are photographic; only the resampling history is
+              shared.
+
+            **Why the control is mandatory.** SFHQ is 1024px and FairFace is
+            224px, so the composite downsamples the face roughly threefold,
+            and a 3x downsample is a low-pass filter that destroys much of
+            the high-frequency fingerprint an upsampling detector reads. A
+            detector separating `SYNTH_SFHQ` from real might be reading the
+            generator, or might be reading the resample. The gap between the
+            two labels is the only part of such a number that means what it
+            appears to mean, so this function will not emit one without the
+            other.
 
     Returns:
         A (records, skipped) pair. Each couple contributes two REAL records
@@ -202,6 +241,7 @@ def build_swap_corpus(
     faces = list(_load_faces(root, limit=limit, offset=offset, detect=detect,
                              skipped=skipped))
     records: list[dict[str, Any]] = []
+    pool = [Path(p) for p in (synthetic_sources or [])]
 
     for source, target in _couples(faces, seed=seed):
         couple = f"{source.person_id}+{target.person_id}"
@@ -237,10 +277,73 @@ def build_swap_corpus(
                 generator=technique, label=1,
                 image=align(result.image, box, size=CROP_SIZE)))
 
+        if pool:
+            records.extend(_synthetic_pair(
+                couple, source, target, pool, seed=seed, detect=detect,
+                skipped=skipped))
+
     logger.info("swap corpus: %d records (%d fake) from %d faces, skipped %s",
                 len(records), sum(r["label"] for r in records), len(faces),
                 skipped or "nothing")
     return records, skipped
+
+
+def _synthetic_pair(couple: str, source: _Face, target: _Face,
+                    pool: Sequence[Path], *, seed: int, detect: DetectFn,
+                    skipped: dict[str, int]) -> list[dict[str, Any]]:
+    """The `SYNTH_SFHQ` fake and its `SYNTH_CONTROL`, or neither.
+
+    Returns an empty list when the synthetic source cannot be used, rather
+    than the control alone: a control with nothing to control for would enter
+    LOGO as a generator in its own right and be read as a result.
+    """
+    # Indexed by the couple rather than drawn from an iterator, so the same
+    # seed and the same pool give the same corpus however the couples are
+    # ordered — the reproducibility property every other record here has.
+    pick = int(rng_for(couple, SYNTH_SFHQ, seed=seed).integers(len(pool)))
+    synth_bgr = cv2.imread(str(pool[pick]))
+    if synth_bgr is None:
+        skipped[SYNTH_UNUSABLE] = skipped.get(SYNTH_UNUSABLE, 0) + 1
+        return []
+    synth = cv2.cvtColor(synth_bgr, cv2.COLOR_BGR2RGB)
+    synth_boxes = detect(synth)
+    if not synth_boxes:
+        skipped[SYNTH_UNUSABLE] = skipped.get(SYNTH_UNUSABLE, 0) + 1
+        return []
+    synth_box = max(synth_boxes, key=lambda b: b.score)
+
+    # The control's source is the couple's own FairFace photograph, put
+    # through the SAME resampling the synthetic one undergoes. Upscaled with
+    # `rescale` rather than re-detected, so the two paths differ in exactly
+    # one thing: whether the pasted pixels were photographed or generated.
+    control_frame, control_box = rescale(
+        source.frame, source.box, SYNTH_NATIVE_SIZE)
+
+    out: list[dict[str, Any]] = []
+    for generator, src_frame, src_box in (
+            (SYNTH_SFHQ, synth, synth_box),
+            (SYNTH_CONTROL, control_frame, control_box)):
+        result = swap(src_frame, src_box, target.frame, target.box,
+                      WARP_HULL, rng_for(couple, generator, seed=seed))
+        if result is None:
+            skipped[SWAP_FAILED] = skipped.get(SWAP_FAILED, 0) + 1
+            continue
+        boxes = detect(result.image)
+        if not boxes:
+            skipped[NO_FACE] = skipped.get(NO_FACE, 0) + 1
+            continue
+        box = max(boxes, key=lambda b: b.score)
+        if clamp_roi(result.image.shape, box) is None:
+            skipped[DEGENERATE_BOX] = skipped.get(DEGENERATE_BOX, 0) + 1
+            continue
+        out.append(_record(
+            sample_id=f"{couple}/{generator}",
+            subject_id=couple, stratum=target.stratum,
+            generator=generator, label=1,
+            image=align(result.image, box, size=CROP_SIZE)))
+
+    # Both or neither, for the reason in this function's docstring.
+    return out if len(out) == 2 else []
 
 
 def _record(*, sample_id: str, subject_id: str, stratum: str,

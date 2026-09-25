@@ -174,3 +174,119 @@ def test_offset_skips_the_first_photographs(tmp_path):
     assert people(early) and people(late)
     assert not (people(early) & people(late)), "offset did not move the window"
     assert people(late) <= {f"ff-{i:04d}" for i in range(8, 16)}
+
+
+# --- Synthetic-source fakes, and their matched control ------------------
+
+def _synth_pool(tmp_path, n=4):
+    """Stand-in SFHQ images: 1024px square, as part 3 actually ships."""
+    d = tmp_path / "sfhq"
+    d.mkdir()
+    out = []
+    for i in range(n):
+        img = np.random.default_rng(100 + i).integers(
+            40, 215, (1024, 1024, 3), np.uint8)
+        p = d / f"SFHQ_pt3_{i:08d}.jpg"
+        cv2.imwrite(str(p), img)
+        out.append(p)
+    return out
+
+
+def test_synthetic_sources_add_both_the_fake_and_its_control(tmp_path):
+    """Neither label may appear without the other.
+
+    `SYNTH_SFHQ` alone cannot be read: SFHQ is 1024px and FairFace is 224px,
+    so the composite downsamples ~3x and a detector separating it from real
+    may be reading the generator OR the resample. `SYNTH_CONTROL` runs a
+    photographic face through the identical path, so the gap between them is
+    the only interpretable quantity.
+    """
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ
+
+    records, _ = build_swap_corpus(
+        _sessions(tmp_path, 8), detect=_detect,
+        synthetic_sources=_synth_pool(tmp_path))
+
+    generators = {r["generator"] for r in records if r["label"] == 1}
+    assert SYNTH_SFHQ in generators
+    assert SYNTH_CONTROL in generators
+    # One of each per couple, exactly as the four techniques get one each.
+    couples = {r["subject_id"] for r in records}
+    for label in (SYNTH_SFHQ, SYNTH_CONTROL):
+        made = [r for r in records if r["generator"] == label]
+        assert {r["subject_id"] for r in made} == couples
+
+
+def test_the_control_is_not_emitted_without_synthetic_sources(tmp_path):
+    """A control with nothing to control for is a fake with no purpose, and
+    it would enter LOGO as a generator on its own."""
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ
+
+    records, _ = build_swap_corpus(_sessions(tmp_path, 8), detect=_detect)
+    generators = {r["generator"] for r in records if r["label"] == 1}
+    assert SYNTH_SFHQ not in generators
+    assert SYNTH_CONTROL not in generators
+    assert generators == set(TECHNIQUES)
+
+
+def test_synthetic_fakes_are_labelled_fake_and_carry_the_couple(tmp_path):
+    """They must split with their couple. A synthetic face has no real
+    identity, but the PHOTOGRAPH it lands in does, and filing the record
+    anywhere else puts that identity on both sides of a split."""
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ
+
+    records, _ = build_swap_corpus(
+        _sessions(tmp_path, 8), detect=_detect,
+        synthetic_sources=_synth_pool(tmp_path))
+    made = [r for r in records
+            if r["generator"] in (SYNTH_SFHQ, SYNTH_CONTROL)]
+    assert made
+    for r in made:
+        assert r["label"] == 1
+        assert "+" in r["subject_id"]
+        assert r["stratum"]
+        assert r["image"].shape == (CROP_SIZE, CROP_SIZE, 3)
+
+
+def test_the_synthetic_pair_differs_only_in_source_provenance(tmp_path):
+    """The whole design rests on this: both go through the same compositing
+    technique into the same target, so the ONLY difference is where the
+    pasted face came from. If the two images were identical the control
+    would be vacuous; if they differed in geometry it would not be a
+    control."""
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ
+
+    records, _ = build_swap_corpus(
+        _sessions(tmp_path, 8), detect=_detect,
+        synthetic_sources=_synth_pool(tmp_path))
+    by_couple = {}
+    for r in records:
+        if r["generator"] in (SYNTH_SFHQ, SYNTH_CONTROL):
+            by_couple.setdefault(r["subject_id"], {})[r["generator"]] = r
+
+    pairs = [v for v in by_couple.values() if len(v) == 2]
+    assert pairs, "no couple produced both halves of the pair"
+    for v in pairs:
+        a, b = v[SYNTH_SFHQ]["image"], v[SYNTH_CONTROL]["image"]
+        assert a.shape == b.shape
+        assert not np.array_equal(a, b)
+
+
+def test_an_unusable_synthetic_pool_emits_neither_label_and_says_why(tmp_path):
+    """A control emitted without its fake would enter LOGO as a generator in
+    its own right, and a reader would take it for a result."""
+    from corpora.swap_corpus import SYNTH_UNUSABLE
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    junk = bad / "not-an-image.jpg"
+    junk.write_bytes(b"this is not a JPEG")
+
+    records, skipped = build_swap_corpus(
+        _sessions(tmp_path, 8), detect=_detect, synthetic_sources=[junk])
+
+    generators = {r["generator"] for r in records if r["label"] == 1}
+    assert SYNTH_SFHQ not in generators
+    assert SYNTH_CONTROL not in generators
+    assert skipped.get(SYNTH_UNUSABLE, 0) > 0

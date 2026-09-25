@@ -740,3 +740,71 @@ def test_the_headline_includes_the_corpus_check_not_only_the_folds():
         "no fold should see this crossing, or the test proves nothing"
     assert rec.identity_report is not None
     assert rec.identity_report.violations == 1
+
+
+# --- Abstention by class -----------------------------------------------
+#
+# Added 2026-09-24. `abstention_rate` is one number over the whole corpus,
+# and every AUC in a report is computed over the records that did NOT
+# abstain. If abstention is correlated with the label, that AUC is measured
+# on a label-selected subsample and means less than it says. Measured on the
+# swap corpus: blend_seam abstains on 74.3% of `swap_lowres_paste` fakes
+# against 56.9% of reals, and `swap_lowres_paste` is the fold with the
+# headline AUC. One aggregate rate cannot show that.
+
+class _AbstainsOnChosenSources:
+    """Abstains on the sources it is given, scores everything else.
+
+    Keyed on `source_id` rather than on pixels because the point is to
+    produce a KNOWN skew: the test must be able to say which class was
+    starved, and a payload hash cannot be aimed.
+    """
+    name = "skewed"
+    version = "test-1"
+    slot = "synthetic"
+    min_quality_band = "low"
+
+    def __init__(self, starve: set[str]):
+        self.starve = starve
+        from dfd.types import Modality
+        self.modalities = frozenset({Modality.IMAGE})
+
+    def score(self, obs):
+        from dfd.detectors.base import OK, abstain
+        from dfd.types import RawScore
+        if obs[0].source_id in self.starve:
+            return abstain(self.name, self.version, "below_quality_floor")
+        return RawScore(detector=self.name, version=self.version,
+                        score=0.5, abstained=False, reason=OK)
+
+
+def test_abstention_is_broken_down_by_class_so_a_label_skew_is_visible():
+    records = _records()
+    starve = {r["source_id"] for r in records
+              if r["generator"] == "deepfacelive"}
+    reg = Registry()
+    reg.register(_AbstainsOnChosenSources(starve))
+
+    rec = run_benchmark(records, reg, RunConfig(seed=7))
+    by_class = rec.detector_results["skewed"].abstention_by_class
+
+    # Real records and the other generator are untouched; one generator is
+    # starved completely. An aggregate rate of 25% describes all three.
+    assert by_class["real"] == (0, 20)
+    assert by_class["faceswap"] == (0, 10)
+    assert by_class["deepfacelive"] == (10, 10)
+
+
+def test_abstention_by_class_counts_every_record_so_rates_are_computable():
+    """The denominators must sum to the corpus, or a class silently vanishes.
+
+    A breakdown that omits a class reads as "that class did not abstain".
+    """
+    records = _records()
+    reg = Registry()
+    reg.register(_AbstainsOnChosenSources(set()))
+    rec = run_benchmark(records, reg, RunConfig(seed=7))
+    by_class = rec.detector_results["skewed"].abstention_by_class
+
+    assert sum(total for _, total in by_class.values()) == len(records)
+    assert set(by_class) == {"real", "deepfacelive", "faceswap"}

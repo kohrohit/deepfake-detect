@@ -36,6 +36,12 @@ from .robustness import robustness_sweep
 
 logger = logging.getLogger(__name__)
 
+#: The class name genuine records are counted under in
+#: `DetectorResult.abstention_by_class`. Fakes are counted under their
+#: generator id. A literal rather than None because this key reaches the
+#: report JSON, where `null` reads as a label somebody forgot to set.
+REAL_CLASS = "real"
+
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -120,6 +126,18 @@ class DetectorResult:
     #: fold — the sweep is never re-run per fold (see `_logo_results`), so
     #: an empty dict here means "not measured", never "measured as zero".
     tpr_by_perturbation: dict[str, float] = field(default_factory=dict)
+    #: class -> (abstained, total), where class is "real" for genuine records
+    #: and the generator id for fakes. Added 2026-09-24 because
+    #: `abstention_rate` above is one number over the whole corpus and every
+    #: metric beside it is computed over the records that did NOT abstain.
+    #: When abstention is correlated with the label, those metrics are
+    #: measured on a label-selected subsample and overstate what a reader
+    #: takes them to mean. Measured on the swap corpus: `blend_seam` abstains
+    #: on 74.3% of `swap_lowres_paste` fakes against 56.9% of reals, and
+    #: `swap_lowres_paste` is the fold carrying the best AUC in the report.
+    #: One aggregate rate cannot show that, and the skew is not a detail: it
+    #: is the reason the fold looks strong.
+    abstention_by_class: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -227,6 +245,10 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
     # enforce_guards=False is a supported path and that is exactly where an
     # honest interval matters most.
     groups = np.array([r["source_id"] for r in records])
+    # "real" rather than the generator id for genuine records: `generator` is
+    # None on those, and a None key serialises to `null` in the report JSON
+    # where it reads as a missing label rather than as the genuine half.
+    classes = np.array([r["generator"] or REAL_CLASS for r in records])
     observations = [_observation(r) for r in records]
 
     results: dict[str, DetectorResult] = {}
@@ -289,7 +311,7 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
 
         results[name] = _detector_result(
             name, s, labels, groups, latencies, abstentions, config,
-            tpr_by_perturbation=tpr_by_perturbation)
+            classes=classes, tpr_by_perturbation=tpr_by_perturbation)
 
     adversarial_tprs, adversarial_status = _adversarial_results(
         registry, observations, labels, config)
@@ -299,7 +321,8 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
 
     splits = _logo_splits_or_none(records, config)
     logo_results, logo_dropped = _logo_results(
-        records, registry, scores_by_detector, labels, groups, config, splits)
+        records, registry, scores_by_detector, labels, groups, classes,
+        config, splits)
 
     # Criteria 2 and 11. Both raise through their guards when they fail and
     # guards are enforced; with guards waived the failure is still measured
@@ -346,7 +369,8 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
 
 
 def _detector_result(name, s, labels, groups, latencies, abstentions,
-                     config, tpr_by_perturbation=None) -> DetectorResult:
+                     config, classes=None,
+                     tpr_by_perturbation=None) -> DetectorResult:
     """Metrics for one detector over one set of rows.
 
     Split out so a LOGO fold can reuse it verbatim: the fold differs only in
@@ -357,6 +381,11 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
     `_logo_results`) and an empty dict there means "not measured", the same
     posture the fold already takes for `p95_latency_ms` (reported as NaN
     rather than a false zero).
+
+    `classes` is the per-row class ("real", or the generator id) used for
+    `DetectorResult.abstention_by_class`. It defaults to None so an existing
+    caller keeps working, and None yields an EMPTY breakdown rather than a
+    fabricated one — "not measured", never "nothing abstained".
     """
     n = len(s)
     valid = np.isfinite(s)
@@ -367,6 +396,7 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
         "p95_latency_ms": float(np.percentile(latencies, 95)) if latencies else 0.0,
         "n_samples": n,
         "tpr_by_perturbation": dict(tpr_by_perturbation or {}),
+        "abstention_by_class": _abstention_by_class(s, classes),
     }
     if valid.sum() == 0 or len(np.unique(labels[valid])) < 2:
         nan = float("nan")
@@ -382,6 +412,23 @@ def _detector_result(name, s, labels, groups, latencies, abstentions,
         ece=ece(s[valid], labels[valid]),
         **base,
     )
+
+
+def _abstention_by_class(s, classes) -> dict[str, tuple[int, int]]:
+    """(abstained, total) per class, over the rows given.
+
+    Counts EVERY row, so the totals sum to the corpus: a class missing from
+    this mapping reads as "that class did not abstain", which is the failure
+    this breakdown exists to prevent.
+    """
+    if classes is None:
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    finite = np.isfinite(s)
+    for cls in sorted({str(c) for c in classes}):
+        rows = np.asarray(classes) == cls
+        out[cls] = (int((~finite[rows]).sum()), int(rows.sum()))
+    return out
 
 
 #: A detector opts into acceptance criterion 8 by exposing this method. It
@@ -548,9 +595,10 @@ def _parity_reports(records, scores_by_detector, labels, config):
     return out, ("ok" if out else "not_measurable"), excluded
 
 
-def _logo_results(records, registry, scores_by_detector, labels, groups,
-                  config, splits) -> tuple[dict[str, dict[str, DetectorResult]],
-                                           dict[str, int]]:
+def _logo_results(
+    records, registry, scores_by_detector, labels, groups, classes, config,
+    splits,
+) -> tuple[dict[str, dict[str, DetectorResult]], dict[str, int]]:
     """Per-held-out-generator metrics — spec 8.1, the number that predicts field
     performance.
 
@@ -606,7 +654,8 @@ def _logo_results(records, registry, scores_by_detector, labels, groups,
             fold_abstentions = int((~np.isfinite(sliced)).sum())
             fold_results[name] = _detector_result(
                 name, sliced, labels[rows], groups[rows],
-                [float("nan")], fold_abstentions, config)
+                [float("nan")], fold_abstentions, config,
+                classes=classes[rows])
         out[split.held_out_generator] = fold_results
     return out, dropped
 

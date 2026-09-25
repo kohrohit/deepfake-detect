@@ -209,3 +209,45 @@ def test_the_swap_pipeline_actually_applies_colour_transfer():
     assert abs(composited - target_level) < 20.0, (
         f"composited core at {composited:.1f} against a target level of "
         f"{target_level:.1f}; the raw source was {raw_source:.1f}")
+
+
+# --- Synthetic-source provenance, and the control that makes it readable ---
+
+def test_rescale_carries_the_box_with_the_frame():
+    """A scaled frame whose box did not scale composites the wrong pixels."""
+    from corpora.swaps import rescale
+    frame = np.random.default_rng(0).integers(
+        0, 255, (224, 224, 3), dtype=np.uint8)
+    box = FaceBox(x=50, y=60, w=100, h=110,
+                  landmarks=np.array([[70.0, 80.0], [130.0, 80.0],
+                                      [100.0, 110.0], [76.0, 140.0],
+                                      [124.0, 140.0]]), score=0.9)
+    out, scaled = rescale(frame, box, 1024)
+
+    assert out.shape == (1024, 1024, 3)
+    factor = 1024 / 224
+    assert scaled.x == round(50 * factor)
+    assert scaled.w == round(100 * factor)
+    # The landmarks move with the box, or alignment lands elsewhere.
+    assert np.allclose(scaled.landmarks, box.landmarks * factor)
+
+
+def test_rescale_preserves_the_boxs_fraction_of_the_frame():
+    """The property that actually matters: a face filling 45% of a frame must
+    still fill 45% after rescaling, whatever the sizes involved."""
+    from corpora.swaps import rescale
+    frame = np.zeros((224, 224, 3), dtype=np.uint8)
+    box = FaceBox(x=50, y=60, w=100, h=110,
+                  landmarks=np.zeros((5, 2)), score=0.9)
+    _, scaled = rescale(frame, box, 1024)
+    assert abs(scaled.w / 1024 - box.w / 224) < 0.01
+    assert abs(scaled.h / 1024 - box.h / 224) < 0.01
+
+
+def test_the_synthetic_generator_labels_are_distinct_from_the_techniques():
+    """They reach `logo_splits` as generators, but they are not techniques:
+    `swap()` dispatches on TECHNIQUES and would raise on either of these."""
+    from corpora.swaps import SYNTH_CONTROL, SYNTH_SFHQ, TECHNIQUES
+    assert SYNTH_SFHQ not in TECHNIQUES
+    assert SYNTH_CONTROL not in TECHNIQUES
+    assert SYNTH_SFHQ != SYNTH_CONTROL

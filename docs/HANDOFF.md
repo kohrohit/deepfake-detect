@@ -125,7 +125,7 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-23, after the service was built and gated)
+## 0. Resume here (last touched 2026-09-25, after the v-CIP fit was controlled)
 
 `main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
 the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
@@ -139,8 +139,8 @@ what it costs and what it buys, so none of them needs re-deriving before it can 
 
 | # | Action | Cost | Unblocks |
 |---|---|---|---|
-| 1 | **Create a Kaggle account and accept SFHQ's terms** (`selfishgene/synthetic-faces-high-quality-sfhq-part-3`) | ~15 min, then 22.8 GB | licence-clean **fakes to train on** — the single binding constraint (§0b) |
-| 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
+| 1 | ~~**Create a Kaggle account and accept SFHQ's terms**~~ **STRUCK 2026-09-24 — blocked upstream AND not needed.** SFHQ part 3 is already downloaded, and no installable Kaggle client can read the access token Kaggle now issues (`docs/EULA-ACCESS.md` §4a item 1) | — | nothing; it is off the critical path |
+| 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3). **Now item 1 in practice**, and DF40's own form turns out to sit downstream of it rather than beside it (§4b) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
 | 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
 | 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
 | 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
@@ -186,7 +186,7 @@ kaggle datasets download -d selfishgene/synthetic-faces-high-quality-sfhq-part-3
     -p ~/Desktop/agents/datasets/sfhq_part3
 ```
 
-**1 is the one that matters this week.** 0b measured that the supervision, not the physics, is what
+**Corrected 2026-09-24: 2 is the one that matters, and 1 is struck.** 0b measured that the supervision, not the physics, is what
 is missing; SFHQ is the only licence-clean source of fakes found so far, and it is gated behind a
 login rather than an agreement. 2 has weeks of lead time, so it should go out the same day even
 though what it buys arrives later.
@@ -751,7 +751,13 @@ because `logo_splits` correctly refuses a corpus whose only generator is the one
 every corpus this project had carried exactly one. `corpora/swaps.py` makes four (see the commit);
 `corpora/swap_corpus.py` builds 8,864 records from 1,483 FairFace couples, and LOGO folds.
 
-`blend_seam` v0.2.0-fairface10k, evaluated on each held-out technique in turn:
+`blend_seam` v0.2.0-fairface10k, evaluated on each held-out technique in turn. Reproduce with
+`bench/eval_swaps.py`, which did not exist when this was first written — see the section below it:
+
+```bash
+python3 -m bench.eval_swaps --root ~/Desktop/agents/datasets/fairface_sessions \
+    --offset 10000 --limit 3000 --seed 0 --identity
+```
 
 | held out | AUC | 95% CI (grouped) | resolved? |
 |---|---|---|---|
@@ -792,6 +798,76 @@ compared subject pairs cross at 0.307%, above the 0.21% unrelated-face rate, max
 FairFace couples are genuinely the same person or near-twins. Parity: the per-stratum FPR ratio
 exceeds the 2x ceiling. Both are now measured numbers on a corpus that can carry them, which is
 what criteria 2 and 11 were built for and what no corpus here could previously supply.
+
+### The best LOGO fold is a selection effect, and the run was not reproducible. 2026-09-24, later.
+
+Two defects in the section above, found by reading its own report rather than its headline.
+
+**FIRST: the report had no committed script behind it.** `bench/swap_corpus_report.md` was written
+by an ad-hoc script that was never committed, so the first LOGO result this project ever produced
+could not be regenerated from the repository. That is the same defect as an unpinned dependency —
+the artifact is here and the thing that made it is not. `bench/eval_swaps.py` is that script now,
+and it does one thing the ad-hoc version could not: **it enforces the offset rule.**
+`build_swap_corpus`'s docstring says the training window is a property of the WEIGHTS, not of the
+corpus, so the builder cannot check it. The entry point knows which weights are loaded, so it can,
+and it refuses `--offset 9999` against `blend_seam` `0.2.0-fairface10k` by name, version and
+window. Keyed on the version string rather than the detector name: a future `blend_seam` refitted
+elsewhere must not inherit this window. The rule that produced the retracted 0.923 is now a gate
+rather than a paragraph.
+
+**SECOND, and it changes how the LOGO table reads: abstention is correlated with the label, and
+most strongly on the fold with the best number.** Every AUC in that table is computed over the
+records that did NOT abstain — `bench.runner` scores an abstention as NaN and the metrics drop it.
+The report stated one aggregate rate, 59.8%, which describes all five classes as though they were
+alike. They are not. Measured over the same 8,864 records, `blend_seam` at its `medium` quality
+floor:
+
+| class | abstained | rate |
+|---|---|---|
+| genuine | 1,700 / 2,986 | 56.9% |
+| `swap_mouth_patch` | 832 / 1,489 | 55.9% |
+| `swap_poisson` | 832 / 1,467 | 56.7% |
+| `swap_warp_hull` | 859 / 1,463 | 58.7% |
+| **`swap_lowres_paste`** | **1,084 / 1,459** | **74.3%** |
+
+Three of the four techniques abstain at the genuine rate to within two points. `lowres_paste`
+abstains 17.4 points above it — and `lowres_paste` is the fold reported at **0.928**, the number
+that makes the table look like slot A works on something.
+
+**Why, and it is not a coincidence.** `lowres_paste` downsamples the source face to a quarter scale
+before compositing it back. That is the technique aimed squarely at leaving a resolution artefact,
+and it is also the one most likely to push a crop under a sharpness-based quality floor. So the
+floor removes three quarters of that technique's fakes, and the AUC is computed over the quarter
+that survived — the least degraded ones. The selection is label-dependent, which is exactly the
+condition under which a survivors-only metric stops meaning what a reader takes it to mean.
+
+**What it is worth if abstentions are counted rather than dropped.** Scoring every abstention at
+chance — one honest accounting, on the grounds that a detector which refuses to answer has not
+detected anything — the same one-technique-against-all-genuine comparison gives:
+
+| technique | AUC over survivors | AUC with abstentions at chance |
+|---|---|---|
+| `swap_lowres_paste` | 0.913 | **0.701** |
+| `swap_poisson` | 0.649 | 0.587 |
+| `swap_warp_hull` | 0.644 | 0.588 |
+| `swap_mouth_patch` | 0.544 | 0.517 |
+
+(These are technique-against-all-genuine, not the LOGO folds themselves — a fold also drops records
+for identity disjointness — which is why 0.913 here and 0.928 there. The gap between the two
+columns is the point, not the third decimal.)
+
+**What this does and does not retract.** It does NOT touch the headline. The worst fold is
+`mouth_patch` at 0.527, that fold has no abstention skew, and slot A still fails the 0.75 gate by a
+wide margin — if anything the imputed column makes the failure broader. What it retracts is the
+consolation: `lowres_paste` at 0.928 was being read as proof the features work when the physics
+suits them, and most of that number is the quality floor choosing which fakes to grade.
+
+**Fixed so it cannot travel again.** `DetectorResult.abstention_by_class` carries
+`(abstained, total)` per class — `"real"` for genuine records, the generator id for fakes — and the
+report renders it under every LOGO table as genuine-versus-held-out-fakes. An empty breakdown means
+"not measured" and renders nothing, because printing it as 0% would read as "nothing abstained".
+Three mutations of the counting and three of the offset gate were run and each failed for the right
+reason.
 
 ### DF40's declared subjects are not distinct people. Measured 2026-09-23, by the new guard.
 
