@@ -363,3 +363,448 @@ def test_duplicate_sample_id_raises_rather_than_silently_mis_slicing_folds():
     records[1]["sample_id"] = records[0]["sample_id"]
     with pytest.raises(ValueError, match="duplicate sample_id"):
         run_benchmark(records, _registry(), RunConfig(seed=7, enforce_guards=False))
+
+
+def _embeddings(records, *, leak: tuple[str, str] | None = None):
+    """One orthogonal unit vector per sample — different people by construction.
+
+    `leak` makes two named samples the same person, which is what the guard
+    must catch and what a declared-subject-id split cannot see.
+    """
+    n = len(records)
+    eye = np.eye(n * 2)
+    emb = {r["sample_id"]: eye[i] for i, r in enumerate(records)}
+    if leak is not None:
+        emb[leak[0]] = emb[leak[1]]
+    return emb
+
+
+def test_identity_criterion_is_unmeasured_without_embeddings():
+    """An unmeasured criterion and a clean one must never read alike.
+
+    This was the state of the repo until 2026-09-23: `identity_report` was
+    hardcoded None, which a reader could take either way.
+    """
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.identity_report is None
+    assert rec.identity_status == "not_measured"
+
+
+def test_identity_criterion_is_measured_when_embeddings_are_supplied():
+    records = _records()
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(records)))
+
+    assert rec.identity_status == "ok"
+    assert rec.identity_report is not None
+    assert rec.identity_report.violations == 0
+    # Per fold, not one aggregate: a corpus with two generators has two folds.
+    assert set(rec.identity_by_fold) == {"deepfacelive", "faceswap"}
+    # And it actually compared pairs — a report over zero pairs proves nothing.
+    assert rec.identity_report.n_train > 0 and rec.identity_report.n_test > 0
+
+
+def test_identity_leakage_raises_while_guards_are_enforced():
+    """The declared split is clean; the FACES are not. That is the whole point.
+
+    The message asserted is the CORPUS-level one. Two samples carrying
+    different `subject_id` that embed to the same person is a broken subject
+    partition first and a broken fold second — the corpus check sees it
+    without needing a split, runs first, and is strictly the more sensitive
+    of the two. A fixture where the fold check fires and the corpus check
+    does not cannot be built: any pair the fold check catches is a pair of
+    subjects the corpus check already compared.
+    """
+    records = _records()
+    cfg = RunConfig(seed=7)
+    from bench.runner import _logo_splits_or_none
+
+    splits = _logo_splits_or_none(records, cfg)
+    split = splits[0]
+    train_id = split.train[0]["sample_id"]
+    test_id = split.test_ids()[0]
+    emb = _embeddings(records, leak=(train_id, test_id))
+
+    with pytest.raises(GuardViolation, match="not distinct people"):
+        run_benchmark(records, _registry(),
+                      RunConfig(seed=7, identity_embeddings=emb))
+
+
+def test_identity_leakage_is_recorded_rather_than_raised_when_guards_are_waived():
+    """A waived guard must leave evidence, not a blank that reads as clean."""
+    records = _records()
+    cfg = RunConfig(seed=7)
+    from bench.runner import _logo_splits_or_none
+
+    split = _logo_splits_or_none(records, cfg)[0]
+    emb = _embeddings(records,
+                      leak=(split.train[0]["sample_id"], split.test_ids()[0]))
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, enforce_guards=False,
+                                  identity_embeddings=emb))
+    assert rec.identity_status == "violation"
+    # And the MEASUREMENT survives the waiver. "violation" with no numbers
+    # tells a reader something failed and not how badly, which is the one
+    # thing they need to decide whether to care.
+    assert rec.identity_report is not None
+    assert rec.identity_report.violations >= 1
+    assert rec.identity_report.max_similarity > 0.0
+
+
+def test_identity_headline_is_the_worst_fold_not_the_average():
+    """A reader who takes one number must take the pessimistic one.
+
+    The leak is placed in a pair that crosses train/test in ONE fold only, so
+    the folds carry different rates and a headline taking the best fold, the
+    mean, or an arbitrary fold all differ from taking the worst. Leaking a
+    pair that crosses in both folds would make every one of those choices
+    agree, and the test would pass for an implementation that picked any of
+    them.
+    """
+    records = _records()
+    cfg = RunConfig(seed=7)
+    from bench.runner import _logo_splits_or_none
+
+    a, b = _logo_splits_or_none(records, cfg)
+    train_a, test_a = {r["sample_id"] for r in a.train}, set(a.test_ids())
+    train_b, test_b = {r["sample_id"] for r in b.train}, set(b.test_ids())
+    # Same SIDE in fold b, not merely a different side-assignment: the leak
+    # is symmetric, so a pair that merely swaps sides still crosses b's
+    # train x test product and both folds would score alike.
+    def _same_side_in_b(x, y):
+        return (x in train_b and y in train_b) or (x in test_b and y in test_b)
+
+    pair = next((x, y) for x in sorted(train_a) for y in sorted(test_a)
+                if _same_side_in_b(x, y))
+    emb = _embeddings(records, leak=pair)
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=emb,
+                                  identity_max_false_match_rate=1.0))
+
+    rates = [r.violation_rate for r in rec.identity_by_fold.values()]
+    assert max(rates) > min(rates), "fixture must separate the folds"
+    assert rec.identity_report is not None
+    assert rec.identity_report.violation_rate == pytest.approx(max(rates))
+
+
+def test_parity_is_not_measured_on_a_corpus_without_strata():
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert rec.parity_by_detector == {}
+    assert rec.parity_status == "no_strata"
+
+
+def test_parity_excludes_strata_too_small_to_compare():
+    """Rule of three: zero false positives in 6 genuine samples bounds the true
+    FPR at ~50%, so comparing that stratum's 0.00 against another's 0.14 fires
+    the guard on arithmetic rather than on bias."""
+    records = _records()
+    for i, r in enumerate(records):
+        r["stratum"] = ["East Asian", "White", "Black"][(i // 2) % 3]
+
+    rec = run_benchmark(records, _registry(), RunConfig(seed=7))
+
+    assert rec.parity_status == "too_few_per_stratum"
+    assert rec.parity_by_detector == {}
+    # And it says which strata and how small, rather than going quiet.
+    assert set(rec.parity_excluded_strata) == {"East Asian", "White", "Black"}
+    assert all(0 < n < 150 for n in rec.parity_excluded_strata.values())
+
+
+def test_parity_is_measured_when_the_strata_are_large_enough():
+    """Acceptance criterion 11. FairFace sessions carry age/gender/race.
+
+    Read at a 20% operating point, not the default 1%. That is not a
+    convenience: at a 1% FPR over a 40-row fixture the threshold sits above
+    every genuine score in one stratum, so both rates round to zero and the
+    ratio is arithmetic rather than measurement — the same effect
+    `parity_min_genuine_per_stratum` exists to keep out of real runs. A unit
+    test cannot conjure the hundreds of genuine samples per stratum a 1%
+    comparison needs, so it moves the operating point instead of pretending.
+    """
+    records = _records()
+    for i, r in enumerate(records):
+        r["stratum"] = ["East Asian", "White"][(i // 2) % 2]
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, parity_at_fpr=0.2,
+                                  parity_min_genuine_per_stratum=5,
+                                  parity_max_fpr_ratio=10.0))
+
+    assert rec.parity_status == "ok"
+    assert set(rec.parity_by_detector) == {"synth_a", "synth_b"}
+    report = rec.parity_by_detector["synth_a"]
+    assert set(report.fpr_by_stratum) == {"East Asian", "White"}
+    assert report.ceiling == pytest.approx(10.0)
+    assert rec.parity_excluded_strata == {}
+    # Rates were actually computed, not defaulted: at a 20% operating point
+    # over 20 genuine samples a stratum cannot legitimately be empty.
+    assert all(0.0 <= v <= 1.0 for v in report.fpr_by_stratum.values())
+    assert max(report.fpr_by_stratum.values()) > 0.0
+
+
+def test_parity_violation_raises_while_guards_are_enforced():
+    """One stratum rejected far more often than another must stop the run."""
+    from dfd.types import RawScore
+
+    records = _records()
+    for i, r in enumerate(records):
+        r["stratum"] = "A" if (i // 2) % 2 else "B"
+        # The detector cannot see a stratum, so the fixture encodes it in the
+        # payload's height and the stub reads that.
+        r["image"] = np.random.default_rng(i).integers(
+            0, 255, (128 if r["stratum"] == "A" else 144,
+                     161 if r["label"] == 1 else 160, 3), dtype=np.uint8)
+
+    class _Biased:
+        name = "biased"
+        version = "0.0.1"
+
+        def score(self, observations):
+            obs = observations[0]
+            biased_up = obs.payload.shape[0] == 144
+            # Fakes score 1.0 — above both genuine clusters — so the quantile
+            # over ALL scores lands in a different place from the quantile
+            # over genuine scores alone. Fixing an FPR means reading the
+            # genuine distribution; a threshold taken from the mixture is a
+            # different and much looser operating point, and this fixture is
+            # what makes that substitution visible.
+            if obs.payload.shape[1] == 161:
+                return RawScore(detector="biased", version="0.0.1", score=1.0,
+                                abstained=False, reason="ok")
+            return RawScore(detector="biased", version="0.0.1",
+                            score=0.99 if biased_up else 0.01,
+                            abstained=False, reason="ok")
+
+    reg = Registry()
+    reg.register(_Biased())
+    # Read at the MEDIAN genuine score. The stub emits two values, so with
+    # ten genuine rows per stratum the median falls exactly between them:
+    # every genuine row of one stratum is above the threshold and none of the
+    # other's is. That is a 1.0-vs-0.0 disparity, which is what this guard is
+    # for, and it is arithmetic rather than luck — the assertion cannot pass
+    # for a run that computed nothing.
+    with pytest.raises(GuardViolation, match="disparity"):
+        run_benchmark(records, reg,
+                      RunConfig(seed=7, parity_at_fpr=0.5,
+                                parity_max_fpr_ratio=1.5,
+                                parity_min_genuine_per_stratum=5))
+
+
+def test_adversarial_is_not_requested_by_default_and_says_so():
+    """A None adversarial TPR must never read as 'the attack succeeded'."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7))
+    assert set(rec.adversarial_status.values()) == {"not_requested"}
+    assert all(r.adversarial_tpr_at_1pct is None
+               for r in rec.detector_results.values())
+
+
+def test_adversarial_reports_no_target_for_a_handcrafted_detector():
+    """Every detector in this repo is features plus a linear model: there is
+    no differentiable path from pixels, and that is a property to state
+    rather than a measurement to fake."""
+    rec = run_benchmark(_records(), _registry(), RunConfig(seed=7, adversarial=True))
+    assert set(rec.adversarial_status.values()) == {"no_target"}
+
+
+def test_adversarial_reports_weights_absent_separately_from_no_target():
+    """A detector that COULD be attacked but has no weights is a different
+    state from one that never could be."""
+    class _Unloaded(SyntheticDetector):
+        def adversarial_target(self):
+            return None
+
+    reg = Registry()
+    reg.register(_Unloaded(name="unloaded", seed=1))
+    rec = run_benchmark(_records(), reg, RunConfig(seed=7, adversarial=True))
+    assert rec.adversarial_status == {"unloaded": "weights_absent"}
+
+
+def test_adversarial_tpr_is_measured_for_a_detector_that_exposes_a_target():
+    """Acceptance criterion 8, end to end over the real PGD loop."""
+    import torch
+
+    class _Tiny(torch.nn.Module):
+        """Two logits from the mean pixel — differentiable, and attackable."""
+
+        def forward(self, x):
+            m = x.mean(dim=(1, 2, 3), keepdim=False) * 10.0
+            return torch.stack([-m, m], dim=1)
+
+    class _Attackable(SyntheticDetector):
+        def adversarial_target(self):
+            def to_row(obs):
+                img = obs.payload.astype("float32") / 255.0
+                t = torch.from_numpy(img).permute(2, 0, 1)
+                return torch.nn.functional.interpolate(
+                    t[None], size=(16, 16), mode="bilinear")[0]
+            return _Tiny(), to_row
+
+    reg = Registry()
+    reg.register(_Attackable(name="attackable", seed=1))
+    rec = run_benchmark(_records(), reg,
+                        RunConfig(seed=7, adversarial=True, adversarial_eps=0.1))
+
+    assert rec.adversarial_status == {"attackable": "ok"}
+    tpr = rec.detector_results["attackable"].adversarial_tpr_at_1pct
+    assert tpr is not None
+    assert 0.0 <= tpr <= 1.0
+
+    # And the attack DID something. STRICTLY less, not `<=`: an
+    # implementation that ignores the configured budget and always attacks
+    # at eps=0 returns the clean number, which passes any non-strict
+    # comparison. Measured on this stub: eps=0 gives 0.05, eps>=0.03 gives
+    # 0.00, so the gap is real and the assertion can fail.
+    clean = run_benchmark(_records(), reg,
+                          RunConfig(seed=7, adversarial=True, adversarial_eps=0.0))
+    clean_tpr = clean.detector_results["attackable"].adversarial_tpr_at_1pct
+    assert clean_tpr is not None
+    assert tpr < clean_tpr, (
+        f"attack at eps=0.1 gave {tpr}, no better than the clean {clean_tpr}")
+
+
+def test_identity_is_measured_on_a_corpus_that_cannot_be_split():
+    """Every corpus this project holds carries ONE generator, so `logo_splits`
+    refuses them all. A fold-only criterion 2 would be wired and structurally
+    unable to fire; the corpus-level check is what makes it real.
+    """
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(records)))
+
+    assert rec.logo_results == {}, "fixture must be unsplittable"
+    assert rec.identity_status == "ok_corpus_only"
+    assert rec.identity_report is not None
+    assert rec.identity_report.n_train == rec.identity_report.n_test
+    assert rec.identity_report.n_train > 1, "must have compared real pairs"
+    assert rec.identity_report.violations == 0
+
+
+def test_the_corpus_check_catches_two_subject_ids_that_are_one_person():
+    records = _records()
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+    emb = _embeddings(records, leak=("s0", "s3"))
+
+    with pytest.raises(GuardViolation, match="not distinct people"):
+        run_benchmark(records, _registry(),
+                      RunConfig(seed=7, identity_embeddings=emb))
+
+
+def test_the_corpus_check_samples_a_large_corpus_and_says_how_many(monkeypatch):
+    """The comparison is quadratic in subjects: 86,000 of them is 3.7 billion
+    pairs. Sampling is required, and the count compared must be visible."""
+    records = _records(40)
+    for r in records:
+        if r["label"] == 1:
+            r["generator"] = "only_one"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(records),
+                                  identity_max_subjects=6))
+
+    assert rec.identity_report is not None
+    assert rec.identity_report.n_train == 6
+
+
+def test_the_headline_includes_the_corpus_check_not_only_the_folds():
+    """A broken subject partition that happens to sit on ONE side of every
+    fold leaks nothing across those folds and still means every split built
+    on those ids is unsound. A headline taken from the folds alone reports
+    0.0000 for it."""
+    records = _records()
+    cfg = RunConfig(seed=7)
+    from bench.runner import _logo_splits_or_none
+
+    a, b = _logo_splits_or_none(records, cfg)
+    train_a, train_b = ({r["sample_id"] for r in a.train},
+                        {r["sample_id"] for r in b.train})
+    # Two samples on the TRAIN side of both folds, so no fold sees a crossing.
+    pair = sorted(train_a & train_b)[:2]
+    assert len(pair) == 2, "fixture must offer two same-side samples"
+    subjects = {r["sample_id"]: r["subject_id"] for r in records}
+    assert subjects[pair[0]] != subjects[pair[1]], "must be different subjects"
+
+    rec = run_benchmark(records, _registry(),
+                        RunConfig(seed=7, identity_embeddings=_embeddings(
+                            records, leak=(pair[0], pair[1])),
+                            identity_max_false_match_rate=1.0))
+
+    assert all(f.violations == 0 for f in rec.identity_by_fold.values()), \
+        "no fold should see this crossing, or the test proves nothing"
+    assert rec.identity_report is not None
+    assert rec.identity_report.violations == 1
+
+
+# --- Abstention by class -----------------------------------------------
+#
+# Added 2026-09-24. `abstention_rate` is one number over the whole corpus,
+# and every AUC in a report is computed over the records that did NOT
+# abstain. If abstention is correlated with the label, that AUC is measured
+# on a label-selected subsample and means less than it says. Measured on the
+# swap corpus: blend_seam abstains on 74.3% of `swap_lowres_paste` fakes
+# against 56.9% of reals, and `swap_lowres_paste` is the fold with the
+# headline AUC. One aggregate rate cannot show that.
+
+class _AbstainsOnChosenSources:
+    """Abstains on the sources it is given, scores everything else.
+
+    Keyed on `source_id` rather than on pixels because the point is to
+    produce a KNOWN skew: the test must be able to say which class was
+    starved, and a payload hash cannot be aimed.
+    """
+    name = "skewed"
+    version = "test-1"
+    slot = "synthetic"
+    min_quality_band = "low"
+
+    def __init__(self, starve: set[str]):
+        self.starve = starve
+        from dfd.types import Modality
+        self.modalities = frozenset({Modality.IMAGE})
+
+    def score(self, obs):
+        from dfd.detectors.base import OK, abstain
+        from dfd.types import RawScore
+        if obs[0].source_id in self.starve:
+            return abstain(self.name, self.version, "below_quality_floor")
+        return RawScore(detector=self.name, version=self.version,
+                        score=0.5, abstained=False, reason=OK)
+
+
+def test_abstention_is_broken_down_by_class_so_a_label_skew_is_visible():
+    records = _records()
+    starve = {r["source_id"] for r in records
+              if r["generator"] == "deepfacelive"}
+    reg = Registry()
+    reg.register(_AbstainsOnChosenSources(starve))
+
+    rec = run_benchmark(records, reg, RunConfig(seed=7))
+    by_class = rec.detector_results["skewed"].abstention_by_class
+
+    # Real records and the other generator are untouched; one generator is
+    # starved completely. An aggregate rate of 25% describes all three.
+    assert by_class["real"] == (0, 20)
+    assert by_class["faceswap"] == (0, 10)
+    assert by_class["deepfacelive"] == (10, 10)
+
+
+def test_abstention_by_class_counts_every_record_so_rates_are_computable():
+    """The denominators must sum to the corpus, or a class silently vanishes.
+
+    A breakdown that omits a class reads as "that class did not abstain".
+    """
+    records = _records()
+    reg = Registry()
+    reg.register(_AbstainsOnChosenSources(set()))
+    rec = run_benchmark(records, reg, RunConfig(seed=7))
+    by_class = rec.detector_results["skewed"].abstention_by_class
+
+    assert sum(total for _, total in by_class.values()) == len(records)
+    assert set(by_class) == {"real", "deepfacelive", "faceswap"}

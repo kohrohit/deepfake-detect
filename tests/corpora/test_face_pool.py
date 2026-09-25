@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from corpora.captures import CaptureSession
-from corpora.face_pool import NO_FACE, UNREADABLE, build_face_pool
+from corpora.face_pool import (DEGENERATE_BOX, DUPLICATE, NO_FACE, UNREADABLE,
+                               build_face_pool)
 
 
 def _session(session_id: str, folder: str, swapped: bool = False) -> CaptureSession:
@@ -111,3 +112,74 @@ def test_a_session_folder_is_used_as_the_complete_path_it_is(
     crops, skipped = build_face_pool([session], detect=lambda f: [_fake_box()])
     assert len(crops) == 1
     assert skipped == {}
+
+
+def _write_same_frame(root: Path, session_id: str, payload: bytes) -> None:
+    d = root / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "frame_00.jpg").write_bytes(payload)
+
+
+def test_byte_identical_frames_across_sessions_yield_one_crop(tmp_path: Path) -> None:
+    """The same image enrolled under many session ids is one observation, not many.
+
+    Measured on the real corpus, 2026-09-22: 979 of its 1088 frame files are
+    byte-identical to `assets/attack/victim_id.jpg`, spread over 368 of the
+    442 sessions. Keeping one crop per session would hand `split_by_subject`
+    — which splits on session id — the SAME image on both sides of the
+    holdout, so the held-out AUC would measure memorisation of one picture
+    and report it as generalisation. Deduplicating is what makes that split
+    mean anything.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    rng = np.random.default_rng(0)
+    cv2.imwrite(str(src / "f.jpg"),
+                rng.integers(0, 255, (120, 100, 3), dtype=np.uint8))
+    payload = (src / "f.jpg").read_bytes()
+    for sid in ("s1", "s2", "s3"):
+        _write_same_frame(tmp_path, sid, payload)
+
+    crops, skipped = build_face_pool(
+        [_session(sid, str(tmp_path / sid)) for sid in ("s1", "s2", "s3")],
+        detect=lambda f: [_fake_box()])
+
+    assert len(crops) == 1, "the same image must not enter the pool three times"
+    assert crops[0].session_id == "s1", "the first session to carry it wins"
+    assert skipped == {DUPLICATE: 2}
+
+
+def _box(x: int, y: int, w: int, h: int):
+    from dfd.faces import FaceBox
+    lms = np.array([[30.0, 40.0], [60.0, 40.0], [45.0, 55.0],
+                    [33.0, 70.0], [57.0, 70.0]])
+    return FaceBox(x=x, y=y, w=w, h=h, landmarks=lms, score=0.95)
+
+
+def test_a_box_hanging_off_the_frame_is_clamped_not_crashed(tmp_path: Path) -> None:
+    """A detection may extend past the frame edge, and usually does on a
+    tightly-cropped face dataset.
+
+    Measured 2026-09-22 against FairFace (97,698 pre-aligned 224x224 faces):
+    YuNet returned a box reaching outside the image on 146 of the first 300.
+    `measure_quality` slices `frame[y:y + h, x:x + w]` with no clamping, so a
+    negative origin slices from the FAR END of the array and yields an empty
+    crop, and `cv2.cvtColor` then raises. `dfd.pipeline._clamp_roi` and
+    `dfd.faces.align` both already guard this; `build_face_pool` was the one
+    site that did not, so the whole pool builder crashed on image 2 of any
+    public face dataset.
+    """
+    _write_frames(tmp_path, "s1", n=1)
+    crops, skipped = build_face_pool([_session("s1", str(tmp_path / "s1"))],
+                                     detect=lambda f: [_box(50, -5, 173, 217)])
+    assert len(crops) == 1
+    assert skipped == {}
+
+
+def test_a_box_that_misses_the_frame_entirely_is_counted_not_crashed(
+        tmp_path: Path) -> None:
+    _write_frames(tmp_path, "s1", n=1)
+    crops, skipped = build_face_pool([_session("s1", str(tmp_path / "s1"))],
+                                     detect=lambda f: [_box(-500, -500, 100, 100)])
+    assert crops == []
+    assert skipped == {DEGENERATE_BOX: 1}

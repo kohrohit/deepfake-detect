@@ -31,3 +31,10 @@ pillow==12.3.0
 scikit-learn==1.7.2
 pyyaml==6.0.3
 torch==2.14.0
+
+# pyarrow reads the FairFace parquet shards in training/export_fairface.py.
+# Dev-only: nothing under src/ imports it, so it is NOT a runtime dependency
+# in pyproject.toml, and it is therefore held CONSTANT across both CI legs
+# like ruff and mypy -- a tool that moved between legs would make a red
+# floor leg ambiguous (see test_the_two_requirement_files_differ_only_in_runtime_dependencies).
+pyarrow==17.0.0

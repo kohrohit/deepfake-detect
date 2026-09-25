@@ -46,7 +46,7 @@ def abstain(detector: str, version: str, reason: str) -> RawScore:
 
 def filter_by_quality_floor(
     obs: Sequence[Observation],
-    min_quality_band: Literal["low", "medium", "high"],
+    min_quality_band: Literal["reject", "low", "medium", "high"],
 ) -> tuple[list[Observation], str | None]:
     """Select observations meeting the floor, and diagnose why none did.
 
@@ -139,8 +139,19 @@ class Detector(Protocol):
         ...
 
     @property
-    def min_quality_band(self) -> Literal["low", "medium", "high"]:
-        """Quality floor declaration. Read-only after registration."""
+    def min_quality_band(self) -> Literal["reject", "low", "medium", "high"]:
+        """The lowest band this detector will score.
+
+        `"reject"` admitted 2026-09-24 for slot C alone. For most detectors
+        low quality means low reliability and refusing is right; for an
+        upsampling-fingerprint detector the blur IS the artefact, so a floor
+        above `reject` discards the most detectable attacks before the
+        detector runs (`dfd.detectors.npr.NPRDetector.min_quality_band`
+        carries the measurement). Reduced reliability belongs in the
+        per-band calibration curve, not in a pre-filter.
+
+        Read-only after registration.
+        """
         ...
 
     def score(self, obs: Sequence[Observation]) -> RawScore:

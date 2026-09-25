@@ -10,7 +10,9 @@
 # `files` entry: none of those weight files exist on this machine yet, and
 # guessing a path risks it silently matching the wrong file once one is added
 # (see dfd/asset_scan.py). Fill in `files` for each when its weight file is
-# actually vendored.
+# actually vendored. fairface_corpus has none for a different reason — it is a
+# corpus that lives OUTSIDE the repo, like the capture corpus, and is reached
+# by a path argument rather than vendored at all.
 assets:
   yunet_face_detector:
     source: "https://github.com/opencv/opencv_zoo — face_detection_yunet_2023mar.onnx"
@@ -21,6 +23,21 @@ assets:
     checked_by: "kohrohit@gmail.com"
     files:
       - "assets/models/face_detection_yunet_2023mar.onnx"
+  sface_face_recogniser:
+    source: "https://github.com/opencv/opencv_zoo — face_recognition_sface_2021dec.onnx"
+    # Apache-2.0, verified at source 2026-09-23: opencv_zoo's LICENSE is
+    # Apache-2.0 and models/face_recognition_sface/LICENSE carries the same.
+    # This matters more than for a detector weight: the embedder decides
+    # whether a benchmark split is identity-disjoint (criterion 2), so a
+    # research-only embedder would make every certified split research-only
+    # with it.
+    license: "Apache-2.0"
+    commercial_use: true
+    evidence_url: "https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/LICENSE"
+    date_checked: "2026-09-23"
+    checked_by: "kohrohit@gmail.com"
+    files:
+      - "assets/models/face_recognition_sface_2021dec.onnx"
   dima806_vit_weights:
     source: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
     license: "Apache-2.0"
@@ -37,20 +54,189 @@ assets:
     evidence_url: "https://github.com/chuangchuangtan/NPR-DeepfakeDetection"
     date_checked: "2026-09-20"
     checked_by: "kohrohit@gmail.com"
+  # Registered 2026-09-25, when training/fit_vcip.py first wrote this file
+  # and the asset gate went red locally — correctly: an unregistered weight
+  # file had appeared in the tree. It is NOT npr_weights above. That entry is
+  # the upstream NPR-DeepfakeDetection release, which this project has never
+  # downloaded; this is a head fitted here, from this project's own corpus,
+  # sharing only the feature definition.
+  npr_capture_head:
+    source: "Fitted in this repo by training/fit_vcip.py: a 57-feature logistic head over NPR residual statistics, from 506 frames of the v-CIP capture corpus (106 sessions). The genuine half is capture frames; the fake half is inswapper_128 swaps of those same frames. No upstream NPR weight file contributes to it — only the feature definition in dfd/detectors/npr.py."
+    # FAILS CLOSED, and on a question nobody has answered rather than on one
+    # answered against us. Two encumbrances are possible and neither is
+    # verified:
+    #
+    #   1. THE SWAPPER. Every positive example is inswapper_128 output.
+    #      InsightFace's distributed models are widely stated to be for
+    #      non-commercial research use, and that model in particular was
+    #      withdrawn from public distribution. A head fitted on its output is
+    #      derived data if that is so. NOT VERIFIED AT SOURCE — unlike every
+    #      `commercial_use: true` entry here, which cites a licence text read
+    #      at its origin. Verify before any commercial release.
+    #   2. THE CAPTURES. Same open question as blend_seam_weights below: the
+    #      owner attests rights to the corpus, no lawyer has reviewed whether
+    #      v-CIP recordings may train an unrelated product, and biometric
+    #      consent is a separate matter from rights in the recording.
+    #
+    # Either alone is enough to keep this false. Recorded as two distinct
+    # questions because they have different answers and different fixes: (1)
+    # is settled by re-generating the fake half with a licensed swapper, (2)
+    # is not settled by any amount of re-generation.
+    license: "UNRESOLVED — research/internal evaluation only. See the two questions above; both must be answered before this ships."
+    commercial_use: false
+    owner_attestation: "2026-09-21: the capture corpus is available with rights. Stated by the project owner; not independently verified, and it does not address the swapper question."
+    # MEASURED, and the controlled number is the one that counts: session AUC
+    # 0.949 and 30.9% of swapped sessions caught at a zero false-alarm budget
+    # with the corpus's encoder shortcut removed (0.957 / 45.6% without the
+    # control). bench/vcip_controls.json, docs/HANDOFF.md §0. Not calibrated
+    # for an automatic reject: assets/models/calibration.json is conditioned
+    # on a 66.4% fake base rate that live traffic does not have.
+    evidence_url: "docs/HANDOFF.md"
+    date_checked: "2026-09-25"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/npr.pt"
   sbi_effnetb4_weights:
     source: "https://github.com/mapooon/SelfBlendedImages"
-    license: "research-only — VERIFY before any commercial release (spec §11)"
+    # VERIFIED at source 2026-09-22 (was "VERIFY before any commercial
+    # release"). The repository states verbatim: "Our code and pretrained
+    # model are freely available for research purpose. For commercial use: A
+    # license agreement is required." Commercial use therefore needs a signed
+    # agreement with the author, not merely attribution.
+    # SECOND, INDEPENDENT BAR: the released weights were trained on FF-raw and
+    # FF-c23 — FaceForensics++. A model fitted on that data is "derived data"
+    # under the FF++ terms, so these weights could not ship commercially even
+    # if the author granted a licence. Research benchmark baseline only.
+    license: "research-only — author's own terms; commercial use requires a signed licence agreement"
     commercial_use: false
     evidence_url: "https://github.com/mapooon/SelfBlendedImages"
-    date_checked: "2026-09-20"
+    date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
   ffpp_effnetb4_weights:
     source: "https://github.com/SCLBD/DeepfakeBench"
-    license: "research-only — VERIFY before any commercial release (spec §11)"
+    # VERIFIED at source 2026-09-22 (was "VERIFY before any commercial
+    # release"). DeepfakeBench is released under CC BY-NC-4.0, and that
+    # licence covers the pretrained weights it distributes for each of its 36
+    # detectors. NonCommercial is a licence term, not a preference. Its own
+    # dataset table also marks FaceForensics++ "Rights Cleared: NO".
+    license: "CC BY-NC-4.0 — NonCommercial; weights inherit it"
     commercial_use: false
     evidence_url: "https://github.com/SCLBD/DeepfakeBench"
-    date_checked: "2026-09-20"
+    date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
+  fairface_corpus:
+    source: "https://github.com/joojs/fairface — 97,698 real faces, pre-cropped and aligned to 224x224, with age/gender/race labels. Mirrored as HuggingFaceM4/FairFace (ungated). Sampled from Yahoo's YFCC-100M Flickr set."
+    # The only face supply this project has found that is BOTH commercially
+    # usable and reachable without an EULA, a PI or an academic address — the
+    # three walls docs/EULA-ACCESS.md documents. Self-blending (corpora/sbi.py)
+    # consumes only REAL faces, so this is a direct substitute for the capture
+    # corpus's 19 usable genuine crops (docs/HANDOFF.md §0).
+    license: "CC BY 4.0"
+    # ATTRIBUTION IS A LICENCE CONDITION. training/export_fairface.py writes
+    # the dataset, licence and URL into every exported session's results.json
+    # for that reason. Do not strip it.
+    commercial_use: true
+    # CAVEAT, recorded rather than glossed: CC BY 4.0 settles the COPYRIGHT
+    # question and nothing else. These are photographs of real people who
+    # licensed an image, not people who consented to biometric processing of
+    # their faces. For a product in the identity-verification space that is a
+    # data-protection question (GDPR Art. 9 / India's DPDP Act treat biometric
+    # data as sensitive), and it is NOT answered by this licence field. The
+    # same question the owner attestations below leave open for the capture
+    # corpus is open here too, for different reasons.
+    evidence_url: "https://github.com/joojs/fairface"
+    date_checked: "2026-09-22"
+    checked_by: "kohrohit@gmail.com"
+    # No `files` entry: the corpus lives OUTSIDE the repo, like the capture
+    # corpus, and training/export_fairface.py takes a path to it.
+
+  df40_eval_subset:
+    source: "https://huggingface.co/datasets/pujanpaudel/deepfake_face_classification — a repackaging of the DF40 TEST split (SCLBD / CUHK-Shenzhen, NeurIPS 2024). Downloaded 2026-09-22: test.zip and val.zip, 3212 images each, balanced real/fake, 256-1024px RGB."
+    # LICENCE CONFLICT, resolved against the source. The HuggingFace page
+    # declares `apache-2.0`. That cannot be right: the data is derived from
+    # DF40, which its own repository restricts to CC BY-NC-4.0, and a
+    # derivative work cannot grant rights the upstream licence withholds.
+    # Recorded as NonCommercial accordingly. This is exactly the failure this
+    # manifest exists to catch -- a permissive tag on a repackaged dataset is
+    # not evidence of anything.
+    license: "CC BY-NC-4.0 — inherited from DF40 upstream; the HF page's apache-2.0 tag is not authoritative"
+    commercial_use: false
+    # WHAT IT IS AND IS NOT. DF40 covers 40 techniques (10 face-swap, 13
+    # reenactment, 12 entire-face-synthesis, 5 editing), which is why this was
+    # fetched: leave-one-generator-out needs several generators. But THIS
+    # repackaging is a flat fake/ vs real/ split with NO per-technique label —
+    # verified by listing both archives, 2026-09-22. Filenames fall into
+    # families that may track technique, but that is a guess and a guess used
+    # as a label is how this project's recurring defect starts. So it is a
+    # binary sanity benchmark, NOT a LOGO benchmark. The full DF40, which IS
+    # organised per technique, needs its Google form (docs/EULA-ACCESS.md).
+    # FILENAME FAMILIES ARE USED FOR ONE THING, added 2026-09-23. The
+    # paragraph above refuses them as a GENERATOR label and that still
+    # stands. `corpora.df40.source_group` does use them as a SOURCE group,
+    # which is the opposite kind of guess: a wrong generator label invents a
+    # LOGO axis and flatters the benchmark, while a wrong source group only
+    # changes what the bootstrap resamples over, and that one is built to
+    # over-merge. It had to be done: 999 of the test split's 1,601 fakes are
+    # one family, an effective sample size of 2.4, and resampling those rows
+    # as independent reported intervals ~26x too narrow.
+    # Its `real` half is also drawn from upstream forensics corpora, so treat
+    # those frames as encumbered too, not as free real faces.
+    evidence_url: "https://github.com/YZY-stack/DF40"
+    date_checked: "2026-09-22"
+    checked_by: "kohrohit@gmail.com"
+    # No `files`: lives outside the repo at ~/Desktop/agents/datasets/df40_eval.
+
+  sfhq_part3:
+    source: "https://www.kaggle.com/datasets/selfishgene/synthetic-faces-high-quality-sfhq-part-3 — Synthetic Faces High Quality, part 3. ~118k 1024x1024 synthetic faces, documented as pure StyleGAN2 sampling. Upstream project: https://github.com/SelfishGene/SFHQ-dataset. Downloaded 2026-09-23 to ~/Desktop/agents/datasets/sfhq_part3, outside the repo."
+    # LICENCE RESOLVED 2026-09-23, and the resolution is that the two
+    # declarations cover different things rather than contradicting.
+    #
+    #   - THE ARCHIVE CARRIES NO LICENCE FILE. Checked by listing all
+    #     474,312 entries of the downloaded zip: images, landmarks,
+    #     pretrained_features, segmentations and two sample folders, and not
+    #     one .txt/.md/.json/LICENSE among them. The instruction this entry
+    #     first carried — "read the archive's own LICENSE at ingest" — had
+    #     no answer to find, which is itself the finding.
+    #   - THE GITHUB LICENSE IS MIT (read at source: raw.githubusercontent
+    #     .com/SelfishGene/SFHQ-dataset/main/LICENSE, "Copyright (c) 2022
+    #     David Beniaguev"). Its text grants rights in "the Software" — that
+    #     repository is code and documentation; the images are not hosted
+    #     there. So MIT is the right answer for the code and a stretch as
+    #     the governing grant for 118,358 JPEGs distributed elsewhere.
+    #   - THE IMAGES ARE DISTRIBUTED ON KAGGLE UNDER CC0, declared by the
+    #     same author in the dataset metadata. That is the on-point
+    #     declaration for the files this project actually consumes.
+    #   - THE AUTHOR'S README states it plainly: "Since all images in this
+    #     dataset are synthetically generated there are no privacy issues or
+    #     license issues surrounding these images."
+    #
+    # Both routes are permissive and agree on the outcome, so commercial_use
+    # is true on evidence rather than on a platform tag — which is the bar
+    # df40_eval_subset's wrong apache-2.0 tag set.
+    license: "CC0 (Kaggle, where the images are distributed) for the images; MIT (upstream GitHub) for the code. Both permit commercial use."
+    commercial_use: true
+    # WHY THIS ONE IS DIFFERENT. Every other fake supply this project has
+    # found is NonCommercial (df40_eval_subset, the SBI and DeepfakeBench
+    # weights). This is the first that a shipping detector may be fitted on
+    # — and, because no depicted person exists, the biometric-consent
+    # question left open under fairface_corpus does not arise here at all.
+    # Its generator label is also documented rather than guessed, so unlike
+    # df40_eval_subset it can carry an honest leave-one-generator-out axis
+    # once a second generator sits beside it.
+    #
+    # WHAT IT IS NOT. Entire-face synthesis, not face swapping. A
+    # synthesised face has no composite boundary, so slot A
+    # (dfd.detectors.blend) has nothing to find here by construction: these
+    # are the positives for a SYNTHESIS detector and say nothing about
+    # swaps. And fitting them against FairFace reals pairs two corpora from
+    # different sources, which is exactly the configuration measured to
+    # separate at AUC 0.843 on colour alone (docs/HANDOFF.md §0). Measure
+    # that shortcut before trusting any number from the pair.
+    evidence_url: "https://github.com/SelfishGene/SFHQ-dataset"
+    date_checked: "2026-09-23"
+    checked_by: "kohrohit@gmail.com"
+    # No `files`: lives outside the repo, like fairface_corpus.
+
   # Unlike the research-only entries above, blend_seam_weights DOES declare
   # `files`: this project produces the file itself at a known, fixed path
   # (training/fit_blend.py writes exactly assets/models/blend_seam.npz), so
@@ -59,8 +245,20 @@ assets:
   # checks *discovered* paths against the manifest, and this path is not
   # discovered until the fitter actually runs.
   blend_seam_weights:
-    source: "Fitted in this repo by training/fit_blend.py from self-blended crops of the project's own capture corpus. No external dataset or generator weight file contributes to it."
-    license: "owned — no third-party dataset or model contributed to these coefficients"
+    # PROVENANCE CHANGED 2026-09-22. The shipped coefficients are no longer
+    # fitted on the capture corpus: that corpus holds 19 usable genuine crops
+    # (docs/HANDOFF.md §0), which cannot fit anything. They are fitted on
+    # FairFace instead — 9,974 crops from 10,000 sessions, self-blended by
+    # corpora/sbi.py. The previous wording ("the project's own capture
+    # corpus") is kept nowhere: it would now be false, and a stale provenance
+    # line is worse than none.
+    source: "Fitted in this repo by training/fit_blend.py from self-blended crops of the FairFace corpus (see fairface_corpus above). No generator weight file and no licensed deepfake dataset contributes to them."
+    # NOT "owned" any more. FairFace is CC BY 4.0 and these coefficients are
+    # derived from those photographs, so the attribution condition travels
+    # with them: anything that ships this file must carry the FairFace
+    # attribution the fairface_corpus entry records. CC BY permits commercial
+    # use, so commercial_use stays true — but on a condition, not freely.
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship"
     # `owned` covers the third-party question only: no licensed dataset, weight
     # file or encumbered code reaches these coefficients (audited by provenance
     # chain 2026-09-21). It does NOT by itself establish the right to fit and
@@ -68,6 +266,10 @@ assets:
     # derived from. That rests on the owner's attestations, recorded below and
     # in docs/HANDOFF.md §0. Nobody with legal standing has reviewed it.
     commercial_use: true
+    # MEASURED, not assumed: these coefficients score 0.289 AUC on the DF40
+    # eval subset — inverted, not merely weak (docs/HANDOFF.md §0,
+    # bench/df40_report.md). The licence permits shipping them; the
+    # measurement says there is nothing here worth shipping yet.
     owner_attestation: "2026-09-21: the 442-session capture corpus and the 24 cached Reality Defender results are available with rights. 2026-09-22: this product is not ScoreMe's. Both stated by the project owner; not independently verified, and no legal review has been done on whether captures recorded in a v-CIP context may train a model for an unrelated product."
     evidence_url: "docs/EULA-ACCESS.md"
     date_checked: "2026-09-22"

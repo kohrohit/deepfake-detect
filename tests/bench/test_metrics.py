@@ -360,3 +360,128 @@ def test_bootstrap_reports_degenerate_drop_rate_in_sparse_minority(caplog):
     assert len(observed_rates) == 3, "Should have logged 3 seeds"
     for rate in observed_rates:
         assert rate > 0, "Rate should be > 0"
+
+
+def _recording_fitter(seen):
+    """A fitter that records the label vector it was handed and returns AUC-ish."""
+    def refit(y):
+        seen.append(np.asarray(y).copy())
+        return 0.5
+    return refit
+
+
+def test_permutation_null_refits_on_shuffled_labels_not_the_originals():
+    """Each draw must be a PERMUTATION of the labels, not the labels.
+
+    Permuting the scores of an already-fitted model, or passing the true
+    labels through, tests a much weaker hypothesis and would report the
+    observed statistic as its own null.
+    """
+    from bench.metrics import permutation_null
+
+    y = np.r_[np.zeros(40, int), np.ones(40, int)]
+    seen = []
+    permutation_null(_recording_fitter(seen), y, n=6, seed=0)
+
+    assert len(seen) == 6
+    for drawn in seen:
+        # Same multiset: class balance preserved.
+        assert sorted(drawn.tolist()) == sorted(y.tolist())
+    # And actually shuffled: with 80 labels the chance of any draw matching
+    # the sorted original ordering is vanishing.
+    assert not any(np.array_equal(d, y) for d in seen)
+    # Distinct draws, not one shuffle repeated n times.
+    assert len({d.tobytes() for d in seen}) == 6
+
+
+def test_permutation_null_is_deterministic_under_seed():
+    from bench.metrics import permutation_null
+
+    y = np.r_[np.zeros(20, int), np.ones(20, int)]
+    a, b, c = [], [], []
+    permutation_null(_recording_fitter(a), y, n=4, seed=7)
+    permutation_null(_recording_fitter(b), y, n=4, seed=7)
+    permutation_null(_recording_fitter(c), y, n=4, seed=8)
+
+    assert all(np.array_equal(x, z) for x, z in zip(a, b))
+    assert not all(np.array_equal(x, z) for x, z in zip(a, c))
+
+
+def test_permutation_null_keeps_non_finite_draws():
+    """A fit that produced no number is information; dropping it narrows the null."""
+    from bench.metrics import permutation_null
+
+    y = np.r_[np.zeros(10, int), np.ones(10, int)]
+    calls = {"i": 0}
+
+    def flaky(_y):
+        calls["i"] += 1
+        return float("nan") if calls["i"] == 2 else 0.4
+
+    out = permutation_null(flaky, y, n=4, seed=0)
+    assert len(out) == 4
+    assert np.isnan(out).sum() == 1
+
+
+def test_permutation_null_refuses_one_class_labels():
+    """A one-class vector permutes to itself: the null would equal the observed."""
+    from bench.metrics import permutation_null
+
+    with pytest.raises(ValueError, match="both labels"):
+        permutation_null(lambda y: 0.5, np.ones(10, int), n=3)
+
+
+def test_permutation_null_refuses_n_below_one():
+    from bench.metrics import permutation_null
+
+    with pytest.raises(ValueError, match="n must be >= 1"):
+        permutation_null(lambda y: 0.5, np.r_[np.zeros(4, int), np.ones(4, int)], n=0)
+
+
+def test_permutation_p_counts_the_inverted_tail_too():
+    """A result as far BELOW chance as the observed is above it is as extreme.
+
+    A one-sided comparison would call 0.70 significant against a null that
+    routinely reaches 0.30 — which is exactly the mistake that made an
+    inverted 0.315 look resolved.
+    """
+    from bench.metrics import permutation_p
+
+    null = np.array([0.30, 0.50, 0.52, 0.48])  # 0.30 is 0.20 from chance
+    p = permutation_p(0.70, null)              # 0.70 is also 0.20 from chance
+    assert p == pytest.approx(2.0 / 5.0)       # (1 extreme + 1) / (4 + 1)
+
+    # Self-guard: the one-sided answer differs, so this test can fail.
+    one_sided = (int((null >= 0.70).sum()) + 1) / (null.size + 1)
+    assert one_sided == pytest.approx(1.0 / 5.0)
+
+
+def test_permutation_p_is_never_zero():
+    """With the +1 correction, n draws can never claim more than 1/(n+1)."""
+    from bench.metrics import permutation_p
+
+    p = permutation_p(0.99, np.full(19, 0.5))
+    assert p == pytest.approx(1.0 / 20.0)
+    assert p > 0.0
+
+
+def test_permutation_p_is_one_when_every_draw_is_as_extreme():
+    from bench.metrics import permutation_p
+
+    assert permutation_p(0.5, np.array([0.2, 0.8, 0.5])) == pytest.approx(1.0)
+
+
+def test_permutation_p_honours_a_non_default_centre():
+    from bench.metrics import permutation_p
+
+    # Centred at 0.8, the draw at 0.6 (distance 0.2) is as extreme as 1.0.
+    assert permutation_p(1.0, np.array([0.6, 0.8]), centre=0.8) == pytest.approx(2.0 / 3.0)
+    # Centred at 0.5 it is not: only distances >= 0.5 would count.
+    assert permutation_p(1.0, np.array([0.6, 0.8]), centre=0.5) == pytest.approx(1.0 / 3.0)
+
+
+def test_permutation_p_refuses_an_empty_null():
+    from bench.metrics import permutation_p
+
+    with pytest.raises(ValueError, match="at least one draw"):
+        permutation_p(0.7, np.array([]))

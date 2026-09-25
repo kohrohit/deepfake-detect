@@ -125,7 +125,1197 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
-## 0. Resume here (last touched 2026-09-21, after PR #2 merged and the three questions were answered)
+## 0. Resume here (last touched 2026-09-25, after the v-CIP fit was controlled)
+
+`main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
+the CPU-only blend-seam detector in slot A, and its fitter). Both CI legs were green on that merge.
+Local `p0-evidence-core` and `feat/sbi-corpus-and-blend-detector` still exist, merged and harmless.
+
+### The owner-action list (added 2026-09-23)
+
+`§0`'s SFHQ bullet has pointed at "the owner-action list" since 2026-09-22 and no such list
+existed. This is it: the things **no session can do**, ordered by how much each unblocks. Each says
+what it costs and what it buys, so none of them needs re-deriving before it can be decided.
+
+| # | Action | Cost | Unblocks |
+|---|---|---|---|
+| 1 | ~~**Create a Kaggle account and accept SFHQ's terms**~~ **STRUCK 2026-09-24 — blocked upstream AND not needed.** SFHQ part 3 is already downloaded, and no installable Kaggle client can read the access token Kaggle now issues (`docs/EULA-ACCESS.md` §4a item 1) | — | nothing; it is off the critical path |
+| 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3). **Now item 1 in practice**, and DF40's own form turns out to sit downstream of it rather than beside it (§4b) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
+| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
+| 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
+| 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
+| 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
+| 7 | **Decide GPU or no GPU** | money | the detector class. CPU-only is why the path is handcrafted features rather than a trained CNN (§1 correction 3) |
+
+**Item 1, everything checkable without an account, checked 2026-09-23.** The Kaggle API answers
+dataset *listing* unauthenticated, so the slug, size and declared licence are confirmed rather than
+assumed; only the download needs a token.
+
+| part | slug | size | Kaggle declares |
+|---|---|---|---|
+| 1 | `selfishgene/synthetic-faces-high-quality-sfhq-part-1` | 14.9 GB | CC0: Public Domain |
+| 2 | `selfishgene/synthetic-faces-high-quality-sfhq-part-2` | 14.5 GB | CC0: Public Domain |
+| **3** | `selfishgene/synthetic-faces-high-quality-sfhq-part-3` | **22.8 GB** | CC0: Public Domain |
+| 4 | `selfishgene/synthetic-faces-high-quality-sfhq-part-4` | 24.4 GB | CC0: Public Domain |
+| T2I | `selfishgene/sfhq-t2i-synthetic-faces-from-text-2-image-models` | 24.4 GB | MIT |
+
+**Two licences for one dataset — resolved 2026-09-23, and they cover different things.** The
+archive carries **no licence file at all**: all 474,312 zip entries are images, landmarks,
+pretrained features, segmentations and two sample folders, with no LICENSE, README or metadata
+among them, so the instruction to "read the archive's own LICENSE" had nothing to find. The GitHub
+repo's LICENSE is **MIT** (read at source), but its grant is in "the Software" — that repository is
+code, and the images are not hosted there. The images are distributed **on Kaggle under CC0**,
+declared by the same author, and his README says outright that "there are no privacy issues or
+license issues surrounding these images". Both routes are permissive and agree, so
+`commercial_use: true` rests on evidence rather than on a platform tag — the bar `df40_eval_subset`
+set by having a flatly wrong one.
+
+**Disk:** 84 GB free on `/` at the time of writing, against 22.8 GB for part 3. It fits; it is not
+roomy. The archive can go where every other corpus does, outside the repo
+(`~/Desktop/agents/datasets/`), and never inside it.
+
+Once the API token exists (Kaggle → Settings → API → Create New Token), the CLI is already
+installed. **The token goes in `~/.config/kaggle/`, not `~/.kaggle/`** — the installed CLI names
+that path in its own error, and the `~/.kaggle/` this file first gave is the older convention:
+
+```bash
+mkdir -p ~/.config/kaggle && mv ~/Downloads/kaggle.json ~/.config/kaggle/
+chmod 600 ~/.config/kaggle/kaggle.json
+kaggle datasets files selfishgene/synthetic-faces-high-quality-sfhq-part-3   # look before pulling 22.8 GB
+kaggle datasets download -d selfishgene/synthetic-faces-high-quality-sfhq-part-3 \
+    -p ~/Desktop/agents/datasets/sfhq_part3
+```
+
+**Corrected 2026-09-24: 2 is the one that matters, and 1 is struck.** 0b measured that the supervision, not the physics, is what
+is missing; SFHQ is the only licence-clean source of fakes found so far, and it is gated behind a
+login rather than an agreement. 2 has weeks of lead time, so it should go out the same day even
+though what it buys arrives later.
+
+**Nothing on this list is engineering.** The engineering that does not depend on it is listed in §5.
+
+### Slot C on the v-CIP capture corpus: the first number here that survives its control. 2026-09-25.
+
+**The headline, and it is the controlled one.** `training/fit_vcip.py` fits slot C on 506 capture
+frames from 106 sessions — genuine v-CIP frames against real `inswapper_128` swaps of those same
+frames, folds split on session. Held out, it reaches **session AUC 0.957 and catches 45.6% of
+swapped sessions at a zero false-alarm budget**. With the corpus's encoder shortcut removed (below)
+it holds **0.949 and 30.9%**. Quote the second pair. `bench/vcip_fit.json` is the fit,
+`bench/vcip_controls.json` the controls, and both regenerate from committed entry points:
+
+```bash
+python3 -m training.fit_vcip   --captures ~/Desktop/vkyc-server/captures
+python3 -m bench.vcip_controls --captures ~/Desktop/vkyc-server/captures
+```
+
+That is the first cross-validated, non-chance, control-surviving number this project has produced.
+Everything before it was either inside a permutation null (DF40, every number) or a corpus shortcut
+(SFHQ colour, FairFace resolution). It is also **not** a detector: read the four limits below
+before it is quoted anywhere.
+
+**This corpus is labelled by one byte of the JPEG header.** The swap pipeline decodes a capture
+frame, swaps the face and re-encodes at OpenCV quality 95; the capture path never re-encodes. So:
+
+| first luma quantisation coefficient | genuine | swapped |
+|---|---|---|
+| 2 | 4 | 336 |
+| 3 | 146 | 0 |
+| 1 | 25 | 0 |
+
+**99.2% of the corpus, from the header, with no pixel read.** A model on the tables alone reaches
+frame AUC **0.985** — above the head's own 0.957. Anything fitted on this corpus and reported
+without a control for this is measuring the encoder.
+
+**The control, and it is not the one the fitter used to claim.** The old limits list said the
+signal "survives re-encoding both halves". That is not a control here: the fakes were already
+compressed twice, so re-encoding both leaves them at three compressions and the genuine half at
+two. `bench.vcip_controls.matched_encoder` re-encodes the **genuine half alone**, at the quality
+that reproduces the swapped half's table *exactly* — found by search, and the control refuses to
+run if no quality matches or if more than one table survives. The corpus goes from three tables to
+one, and the head holds 0.949 / 30.9%. What it still cannot remove is the fakes' first compression,
+which happened inside the swap pipeline rather than in the camera; that needs a corpus whose halves
+share an imaging chain end to end, which this one does not.
+
+**Every number this slot's code quoted was stale, and all of them are now re-measured.** The
+figures in `npr.py` and `fit_vcip.py` were taken before `select_face` was corrected to the
+pipeline's largest-face rule (the defect that made the assembled system score 0.821 against the
+fitter's 0.954) and were never recomputed after it. The conclusions all survive; not one of the
+numbers did:
+
+| claim | as written | re-measured |
+|---|---|---|
+| native ROI crop vs aligned to 224 | 0.992 / 89.7% vs 0.924 / 51.5% | **0.957 / 45.6% vs 0.695 / 1.5%** |
+| phase block alone | AUC 0.869, caught 7.4% | **AUC 0.861, caught 4.4%** |
+| with the spectral block | caught 92.6% | **caught 45.6%** |
+| encoder shortcut | AUC 0.873 | **frame AUC 0.985, 99.2% from the header** |
+| `reject` band | AUC 0.992, caught 94.2% | **AUC 0.803, caught 26.5%** |
+| `medium` band | AUC 0.957, caught 29.8% | **AUC 0.947, caught 85.6%** |
+
+The last two are very nearly each other's, the other way round. **`min_quality_band = "reject"`
+did not change**, because the argument for it was never the per-band AUC: it is that the `reject`
+band holds 226 of 336 swapped frames against 14 of 170 genuine, so a floor above it discards two
+thirds of the attacks and almost none of the honest traffic. Those composition columns are
+identical in both measurements. What the re-measured table does add is the reliability drop the
+old one denied — `reject` is the worst band, not the best — which is what per-band calibration is
+for.
+
+**Why this happened, and what stops it recurring.** Same defect as §"The best LOGO fold is a
+selection effect": a number in prose with no committed script behind it. `bench/vcip_controls.py`
+is that script, with thirteen tests and nine mutations run against it, and every figure above now
+names the JSON it came from.
+
+**The four limits, unchanged and all measured.** One swapper (`inswapper_128` only — an attacker
+changes tools for free); ~12-20 distinct people, so no identity-disjoint number is computable here
+at all (attempted, permutation p=0.636); the encoder shortcut above; and these scores are not
+probabilities — `assets/models/calibration.json` is conditioned on a 66.4% fake base rate, which
+live traffic is not. Triage and internal evaluation only, never an automatic reject.
+
+**The asset gate is now RED on any machine that has run the fitter, and that is correct.**
+`training/fit_vcip.py` writes `assets/models/npr.pt`, which the release gate discovered and
+refused — first as unregistered, then, once registered as `npr_capture_head`, as not cleared for
+commercial release. Both refusals are the gate working. The head is recorded
+`commercial_use: false` on **two unverified encumbrances**, kept separate because they have
+different fixes:
+
+1. **The swapper.** Every positive example is `inswapper_128` output. InsightFace's swapping
+   models are non-commercial research releases and that one was withdrawn from distribution; if
+   that holds, a head fitted on its output is derived data. **Nobody has verified this at source**
+   — unlike every `commercial_use: true` entry in the manifest, each of which cites a licence text
+   read at its origin. Fixable by regenerating the fake half with a licensed swapper.
+2. **The captures.** The same open question `blend_seam_weights` carries: the owner attests rights
+   to the corpus, no lawyer has reviewed whether v-CIP recordings may train an unrelated product,
+   and consent to biometric processing is a separate matter from rights in the recording. **Not**
+   fixable by regenerating anything.
+
+**CI cannot see either.** Weight files are gitignored, so CI's asset gate runs with
+`allow_empty=True` against a tree holding no assets and passes. The only place this refusal
+appears is a local tree that has actually run the fitter. Do not read a green CI asset gate as
+clearance for this head.
+
+
+### The corpus is 58 distinct images, not 442 sessions. Measured 2026-09-22, by hashing it.
+
+Every previous block in this file, this project's spec, and `corpora/captures.py`'s own module
+docstring describe "the 442-session v-CIP capture corpus". That count is real but it is a count of
+**session folders**, and nobody had ever checked what is inside them. Hashing every frame file:
+
+```
+442 session folders, 1088 frame_NN.jpg files
+   -> 58 DISTINCT images
+979 of those 1088 files are byte-identical to assets/attack/victim_id.jpg,
+   a demo asset, spread over 368 of the 442 sessions
+368 sessions consist ENTIRELY of that one image
+ 74 sessions contain any non-asset frame; they hold 57 distinct images
+   26 distinct images in the 7 swapped sessions   (the positives)
+   31 distinct images everywhere else             (the negatives)
+```
+
+Run the real face pool over it and the number that actually reaches training is smaller still:
+
+```
+build_face_pool(435 genuine sessions) -> 19 crops, skipped {duplicate: 715, no_face: 2}
+                                          from 15 distinct sessions
+build_face_pool(7 swapped sessions)   -> 12 crops, skipped nothing   (evaluation only)
+```
+
+**19 genuine face crops.** Not 435 sessions, not 870 frames — nineteen distinct faces.
+
+**What this would have done, left alone.** `training/fit_blend.py` builds its SBI corpus from that
+pool and splits it with `split_by_subject`, whose subject is the capture SESSION id. Before the fix
+below, 368 sessions each contributed the same image under a different session id, so that split
+would have placed one identical picture on **both sides of the holdout** several hundred times over.
+The fitter would have run clean, written a model file, and printed a held-out AUC that measured
+memorisation of a single demo asset and reported it as generalisation — the project's recurring
+defect (§6), this time at the corpus level rather than in a test. It was never caught because every
+guard in the chain counted sessions, and the sessions were genuinely there.
+
+**Fixed 2026-09-22.** `build_face_pool` now deduplicates crops by content hash across the whole pool
+and counts every drop under the new `DUPLICATE` skip reason, which already flows into
+`fit_blend`'s JSON report via `skipped`. The hash is over the ALIGNED CROP, not the source frame,
+because the crop is what reaches training. Test:
+`tests/corpora/test_face_pool.py::test_byte_identical_frames_across_sessions_yield_one_crop`,
+watched failing (3 crops where 1 is correct) before the guard existed.
+
+**What this does NOT fix.** Deduplication removes only byte-identical crops. Two different frames of
+the same person in the same session remain near-duplicates and still split apart, which is the
+identity-disjointness gap already recorded below — now with a much shorter corpus to hide in. And
+nothing here makes 19 negatives and 26 positives a training set. §0a's line "7 positives is not a
+training set" was correct and understated: **the negatives are the binding constraint.** Generating
+real faces, or licensing them, is not one option among several — it is the whole remaining path.
+
+### Criterion 4 cannot be built from the RD cache. Measured 2026-09-22.
+
+Every previous block calls the 24 cached Reality Defender results "free, already labelled" and makes
+the RD adapter the next engineering step. They are free; they are not joinable. The cache key is
+`sha256_file(path)` of the submitted image (`core/cache.py:34` in the source project), so the join is
+computable — and it mostly fails:
+
+```
+24 cached RD results
+10 of their source images still exist anywhere on this machine; 14 are gone
+ 8 of those 10 are assets/demo/applicant_NN.jpg or assets/attack/*.jpg, not captures
+ 2 are actual capture frames
+```
+
+So the head-to-head this criterion asks for has **n = 2**:
+
+| capture session | our label | RD verdict | RD score |
+|---|---|---|---|
+| `20260831-142708-227903` | swapped **and approved** — one of the five missed attacks | MANIPULATED | 0.98 |
+| `20260831-143114-545797` | not swapped | AUTHENTIC | 0.24 |
+
+RD got both right. Two samples is an anecdote, not a benchmark, and no adapter, table or metric
+should be built to dress it as one. **Criterion 4 is not blocked on engineering — it is blocked on
+data that no longer exists.** Closing it honestly means either re-submitting known-label captures to
+RD (spends quota, and `cache/quota.json` is the budget) or recording the criterion as unmeetable
+from the cache and saying why. That is a decision for the owner, not a task to pick up.
+
+### The negatives are solved. FairFace, 2026-09-22.
+
+The measurement above said the binding constraint is real faces, not fakes. That constraint is now
+lifted, without an EULA, a PI, or an academic address — the three walls `docs/EULA-ACCESS.md`
+documents.
+
+**FairFace** (`github.com/joojs/fairface`, mirrored ungated as `HuggingFaceM4/FairFace`): 97,698
+real faces, **CC BY 4.0**, already cropped and aligned to **224x224** — which is exactly
+`face_pool.DEFAULT_CROP_SIZE` and exactly the resolution `dfd.detectors.blend`'s seam features
+assume. Downloaded (2.5 GB) to `/home/rohit/Desktop/agents/datasets/fairface`, outside the repo, as
+the capture corpus is. CC BY 4.0 permits **commercial** use with attribution, so unlike FF++ and
+Celeb-DF this does not poison a later commercial turn. Registered as `fairface_corpus` in
+`assets/manifest.yaml`.
+
+`training/export_fairface.py` writes it into the capture layout, so every already-tested stage —
+`load_capture_sessions`, `build_face_pool` (real YuNet landmarks, dedup, ROI clamping),
+`build_sbi_corpus` — is reused rather than duplicated. JPEG bytes are copied **verbatim**: the
+parquet holds the original files, and re-encoding would stack a second generation of JPEG
+quantisation on every real face while its pseudo-fake is blended from decoded pixels — a
+corpus-wide shortcut a seam detector would learn in preference to the seam.
+
+Measured end to end on 2,000 exported faces:
+
+```
+build_face_pool(2000 FairFace sessions) -> 1995 crops, skipped {no_face: 5}   [25 s, CPU]
+                          vs the captures ->   19 crops
+```
+
+20,000 are exported at `/home/rohit/Desktop/agents/datasets/fairface_sessions`. The full 97,698 are
+one command away.
+
+**Two things this surfaced that were latent bugs, not FairFace quirks:**
+
+- **`build_face_pool` had no ROI clamp and crashed on 49% of real face crops.** YuNet returns a box
+  hanging off the frame edge on 146 of the first 300 FairFace images (a tightly-cropped face fills
+  the frame, so the box overshoots). `measure_quality` slices `frame[y:y + h, x:x + w]` unclamped,
+  a negative origin slices from the FAR end of the array, and `cv2.cvtColor` raises on the empty
+  crop. `dfd.pipeline._clamp_roi` and `dfd.faces.align` each already solved this privately;
+  `build_face_pool` was the third site and had nothing. The rule now lives once, as
+  `dfd.faces.clamp_roi`, and pipeline delegates to it. This is §6's "correct about the case it was
+  shown, blind one level down" again. It never fired on the captures because those faces sit well
+  inside the frame — it would have fired the first time anyone pointed this at a public dataset.
+- **No FairFace crop bands `high`, and the reason is not the one it looks like.** `dfd.quality`'s
+  docstring already asks for this ("Thresholds here are starting values ... so they can be set from
+  data rather than from intuition"), so the distribution was recorded rather than guessed. Over
+  2,990 FairFace crops and the deduped capture pool:
+
+  | corpus | n | iod p50 | blur p50 | forced `reject` by blur | by iod | bands |
+  |---|---|---|---|---|---|---|
+  | FairFace crops | 2990 | 79.2 | 29.6 | **1070** | 111 | medium 1689, reject 1132, low 169, high 0 |
+  | captures, genuine | 19 | 90.4 | 86.5 | 5 | 0 | medium 12, reject 5, low 1, high 1 |
+  | captures, **swapped** | 12 | 110.0 | **14.7** | **11** | 0 | reject 11, medium 1 |
+
+  Interocular distance does cap the `high` band — `MIN_IOD_HIGH = 96.0` against a FairFace p95 of
+  88.6 makes `high` all but unreachable on a 224x224 pre-aligned crop, where iod is a different
+  quantity than on a full camera frame. But it is **not** what drives the `reject` band: blur is.
+  1,070 crops fall below `MIN_BLUR_LOW = 20.0` against 111 below `MIN_IOD_REJECT`. Laplacian
+  variance on a downscaled, re-compressed 224x224 thumbnail is simply a smaller number than on a
+  full frame.
+
+- **The serious one: this project's only real fraud almost all bands `reject`, on blur.** 11 of the
+  12 swapped crops have `blur_var < 20`; their median is 14.7 against 86.5 for genuine crops from
+  the same corpus. Their interocular distances are fine (89-167). **A detector with any quality
+  floor above `reject` would never be consulted on the five missed attacks the whole project exists
+  to catch** — `decide` would abstain for quality reasons and never score them.
+
+  The mechanism is not a threshold being slightly off. A swapped face is generated at a fixed,
+  usually lower resolution and upsampled into the frame, which destroys exactly the high-frequency
+  detail `_laplacian_var` measures. **So the quality gate reads the artifact as an absence of
+  evidence.** Blur is confounded with the thing being detected, and the abstention mechanism is
+  anti-correlated with the signal — it is most likely to refuse to look precisely when there is
+  something to see. `corpora/sbi.py`'s `RESCALE_RANGE = (0.70, 1.00)` encodes the same physical
+  fact deliberately, as a *feature*; `dfd.quality` encodes it accidentally, as a *disqualification*.
+
+  **n = 12. Do not treat this as established** — it is one corpus, one swap tool, and a sample far
+  too small to set a threshold from. It is, however, the sharpest prediction available about what
+  the pipeline will do the first day it is calibrated, and it is cheap to test properly.
+
+  **Not fixed here, deliberately.** Re-tuning a threshold to make a number look better, before the
+  number exists, is how you get a detector that agrees with you. The right fix is probably not a
+  new constant at all: it is separating "the image carries too little information to judge" from
+  "the image carries a low-frequency signature", which are the same measurement today.
+
+### What else open source could supply, and what it could not (2026-09-22)
+
+Swept for anything reachable without a form, a PI or an academic address. Two things came back, and
+only one of them is worth much.
+
+**Taken — `df40_eval_subset`.** A repackaging of the DF40 test split on HuggingFace
+(`pujanpaudel/deepfake_face_classification`), ungated: 3,212 test and 3,212 val images, balanced
+real/fake, 256-1024px. DF40 itself spans 40 techniques — 10 face-swap, 13 reenactment, 12
+entire-face-synthesis, 5 editing — which is why it was fetched, because leave-one-generator-out
+needs several generators to hold out. **It does not deliver that.** Verified by listing both
+archives: the repackaging is a flat `fake/` vs `real/` split with **no per-technique label**.
+Filenames fall into families that may track technique, but using a guessed grouping as a generator
+axis is precisely how this project's recurring defect (§6) starts, so it is not used as one.
+
+What it is: an ungated multi-technique **binary sanity benchmark**, far better than anything the
+project had. What it is not: a LOGO benchmark. Its `real` half is also drawn from upstream
+forensics corpora, so those frames are encumbered too — they are not free real faces.
+
+Its HuggingFace page declares `apache-2.0`. That is not authoritative: DF40 restricts itself to
+CC BY-NC-4.0, and a derivative cannot grant rights the upstream withholds. Registered as
+NonCommercial. **A permissive tag on a repackaged dataset is not evidence of anything** — this is
+the second time today a headline licence claim failed on contact with its source.
+
+**Not taken, and why:**
+
+- **OpenFake** (`ComplexDataLab/OpenFake`, CC BY-NC-4.0, ungated) — **3.4 TB**, and it is
+  text-to-image political imagery, not face swaps. Wrong content at an impossible size.
+- **SFHQ** (MIT, ~425k synthetic faces) — the licence is ideal and the GitHub repo is MIT, but the
+  images themselves are distributed through Kaggle, which needs an account. The HuggingFace mirror
+  `bitmind/SyntheticFacesHQ` declares **no licence at all**, so it cannot be treated as MIT on the
+  strength of sharing a name. Needs a Kaggle login — item 1 of the owner-action list in §0.
+- **DeepfakeBench / SBI pretrained weights** — both obtainable, both NonCommercial (verified above).
+  Worth having as research-track baselines, but each needs its author's framework wired in to run,
+  which is a task, not a download.
+
+### The detector is fitted, and measured on an unseen corpus it is worse than a coin. 2026-09-22.
+
+Everything above this line was about supply. This is the first section in this document that reports
+what the detector **does**, because until today there were no weights to ask.
+
+**Fitted.** `training/fit_blend.py` over 10,000 FairFace sessions: 9,974 aligned crops (23 no face,
+3 duplicate), self-blended by `corpora/sbi.py` into 19,948 samples, split 13,964 train / 5,984 test
+over 9,974 subjects — subject-disjoint, never row-disjoint, because a crop and the pseudo-fake made
+from it share a face. **Held-out AUC 0.870.** That is the number to be careful with: the fakes it
+was tested on are self-blends of the same FairFace photographs the model trained on, so 0.870 says
+the seam features separate *a FairFace face from a warped copy of itself*. It is an in-family number.
+
+**Measured on DF40.** `python3 -m bench.eval_df40` over the ungated DF40 test split — 3,207 records
+from 3,212 files (2 no face, 3 duplicate crops), a corpus this model has never seen and whose fakes
+were made by techniques it has never seen. `bench/df40_report.md` is committed. The result:
+
+| | blend_seam on DF40 |
+|---|---|
+| AUC | **0.289** |
+| TPR@FPR=1% | **0.000** |
+| ECE | 0.485 |
+| abstained | 15.4% (495 records, all below the quality floor) |
+| n | 3,207 |
+
+**0.289 is not "bad", it is inverted.** A coin is 0.500. This model ranks DF40's *real* frames as
+more fake than its fakes: mean score 0.148 on reals against 0.027 on fakes. Nothing here is
+salvageable by flipping the sign — a sign chosen because it helps on the test set is the test set
+fitting the model.
+
+**Corrected 2026-09-23: the interval around that 0.289 is 0.230–0.670, and it contains 0.500.**
+The table above reported `95% CI 0.271–0.308`, computed by resampling ROWS because
+`corpora/df40.py` declared every image its own source video. It is not: 999 of the test split's
+1,601 fakes are one filename family, and the honest interval — resampled over families — is **12×
+wider** and straddles chance. `bench/df40_report.md` has been regenerated and now carries it. The
+point estimate is unchanged and the *direction* of every claim below still holds (the mean scores,
+0.148 on reals against 0.027 on fakes, are not intervals and did not move); what does not survive
+is the **precision**. "Inverted" is what the point estimate says. "Inverted rather than merely
+weak" is what this corpus, at n_effective ≈ 2.4 on the fake side, cannot establish. See "Matching
+the shortcut away does not work" below for how that number was arrived at.
+
+**And the resolution slice below inherits the same defect.** The 512px bucket's 2,320 records hold
+1,000 fakes — *all one filename family, one source*. Its AUC 0.232 is therefore one video scored
+against 1,329 real frames from 27 sources, not an independent replication of the inversion. The
+conclusion it was used to support (that resolution does not explain the inversion) is separately
+confirmed by the matched-slice measurement below, which is why it stands; the slice itself should
+not be quoted as evidence on its own.
+
+**The obvious explanation is wrong, which matters.** DF40's labels are not balanced across
+resolution (fakes run 559 at 256px / 1,000 at 512px / 42 at 1,024px; reals 277 / 1,329 / 0), so
+resolution is the first thing to suspect. It does not explain it. Sliced by source resolution:
+
+| bucket | n scored | AUC |
+|---|---|---|
+| 256px | 350 | 0.494 — chance |
+| 512px | 2,320 | **0.232** — inverted |
+| 1,024px | 42 | all fake, unmeasurable |
+
+Controlling for resolution leaves the inversion exactly where it was. So this is not a resampling
+artifact; it is the features. The seam features read high-frequency energy in concentric annuli, and
+on DF40 the thing with the most high-frequency structure is a *real* compressed video frame from a
+forensics corpus, not a synthesised face — DF40's entire-face-synthesis and reenactment fakes are
+smooth. The detector is reading compression and texture, calling that a seam, and the corpus it was
+fitted on could never have told it otherwise: FairFace photographs are clean Flickr stills, so
+"clean means real" was never contradicted in training.
+
+**What this measurement does and does not license you to say:**
+
+- It *is* honest cross-corpus evidence, over an unseen multi-technique corpus. That is strictly more
+  than this project had yesterday, when the pipeline abstained and there was nothing to measure.
+- It is *not* a leave-one-generator-out result, and it is guard-waived — two of the five spec §8.2
+  guards cannot pass on this data (see the waiver block at the top of the report). Do not quote the
+  number without the waiver.
+- It *is* a refutation of one specific claim: that a seam detector fitted on licence-clean real
+  faces alone transfers to fakes in the wild. Measured, it does not. The SBI paper's own result
+  stands on FF++ frames as the real half; swapping in Flickr portraits is not the same experiment,
+  and this is what that substitution costs.
+
+**The quality floor also matters more than expected.** 495 of 3,207 records (15.4%) abstained at
+`below_quality_floor`, 494 of them banded `reject` — overwhelmingly the 256px images, of which only
+350 of 836 were scored at all. On a corpus where a sixth of the evidence is refused, an operating
+point set from the scored sixth-fewer is not the operating point the field will see.
+
+### The features are not blind — the training target was wrong. And DF40 has a colour shortcut. 2026-09-23.
+
+Two sections above conclude that slot A is the wrong physics for DF40. That conclusion was reached
+by refitting the *self-blend* objective and watching it stay inverted. It left one question open,
+and it is the question that decides what to buy next: **are the seam features blind to DF40, or was
+only the objective wrong?**
+
+Fit the same 30-dimension feature vector — no new physics, no new model class — on DF40's **val**
+split and report on its **test** split:
+
+| fitted on | reported on | AUC | TPR@FPR=1% |
+|---|---|---|---|
+| FairFace self-blends | DF40 test | 0.289 | 0.000 |
+| **DF40 val** | **DF40 test** | **0.800** | 0.139 |
+
+The features carry substantial signal about DF40's fakes. What could not find it was
+self-blending — a training target built from warped copies of Flickr portraits. **Recommendation 2
+above ("stand up a second slot") is therefore not the first thing to buy. Fake data to train on
+is.** The physics was never the binding constraint; the supervision was.
+
+**But 0.800 is mostly a colour shortcut, and that is the more important half.** The feature vector
+mixes residual and laplacian statistics — the blending seam it claims to read — with Lab colour
+means per annulus. DF40's fakes and reals come from different upstream sources, so colour alone
+could separate them with no forensic content whatsoever. Ablated:
+
+| features | d | test AUC | TPR@FPR=1% |
+|---|---|---|---|
+| all | 30 | 0.800 | 0.139 |
+| seam only (residual, laplacian) | 15 | 0.750 | 0.059 |
+| **colour only (Lab means)** | **15** | **0.843** | 0.104 |
+
+**Colour alone beats everything together.** Fifteen numbers describing the average colour of four
+concentric rings separate DF40's real half from its fake half better than the forensic features do,
+and better than both combined. That is not deepfake detection; it is source identification. Any
+model tuned on this corpus will find that shortcut first, because it is the cheapest thing in the
+data, and it will evaporate the moment real and fake share a colour pipeline — which, in the field,
+they always do, because both went through the same camera and the same codec.
+
+Three consequences, all of which bind:
+
+1. **Every in-distribution number on this corpus is suspect**, including the 0.800 above. DF40's
+   halves are separable by trivial low-level statistics, so an in-dataset AUC here measures how well
+   a model found the shortcut, not whether it can detect a fake.
+2. **The evidence gate's cross-corpus rule is doing real work**, not ceremony. A val-fit/test-report
+   number of 0.800 would have cleared a naive floor comfortably. It is refused because `trained_on`
+   and `corpus` are the same manifest asset — which is exactly the case this measurement is.
+3. **The seam-only 0.750 is the honest upper bound available here**, and it is still in-distribution
+   and still possibly tracking compression rather than blending. It is a reason to pursue supervised
+   training on licence-clean fakes, not a detector.
+
+The weights from this experiment are fitted on CC BY-NC data and stay in the session scratchpad.
+Nothing was written to `assets/models/`.
+
+### Matching the shortcut away does not work, and the corpus is worth 2.4 fakes. 2026-09-23.
+
+The section above found that Lab colour means alone separate DF40's halves at AUC 0.843 and called
+it source identification. The obvious next move — and the one the next person would spend a day
+on — is to **match** the two halves: hold the confound constant and re-measure. That was done. It
+does not work, and finding out why turned up something worse than the colour shortcut.
+
+**First, what the halves are actually made of.** Native image size and container format, read from
+the files rather than assumed, over both splits this repackaging ships:
+
+| split | real | fake |
+|---|---|---|
+| **val** | 512×512 PNG 1354, 256×256 PNG 197, 256×256 JPEG 55 | 256×256 PNG 1322, 1024×1024 JPEG 133, 256×256 JPEG 138 |
+| **test** | 512×512 PNG 1329, 256×256 PNG 221, 256×256 JPEG 56 | **512×512 PNG 1000**, 256×256 PNG 515, 256×256 JPEG 44, 1024×1024 JPEG 42 |
+
+**val has no 512×512 fake at all. test has a thousand of them.** So the cheapest rule in val — "512
+pixels wide means real", right 1354 times out of 1354 — is wrong a thousand times in test. Measured
+as a detector with no access to pixels whatsoever:
+
+| | val | test |
+|---|---|---|
+| AUC(image width) | 0.155 → **0.845 inverted** | 0.423 → 0.577 inverted |
+| AUC(is JPEG) | 0.568 | 0.509 |
+
+A single integer read from the file header scores 0.845 on val. That number is not a detector; it is
+the label leaking through the repackaging. And it **reverses between the two splits**, so the
+"fit on val, report on test" protocol used above is not a held-out protocol on this corpus: the two
+splits are not exchangeable.
+
+**Then the matching, which fails in the interesting direction.** Fit on a slice of val, report on
+the same-resolution, same-format slice of test:
+
+| slice | fit (f/r) | report (f/r) | all d=30 | seam only d=15 | colour only d=15 |
+|---|---|---|---|---|---|
+| unmatched (reproduces the ablation above) | 1593/1606 | 1601/1606 | 0.800 | 0.751 | 0.843 |
+| **matched 256px PNG** | 1322/197 | 515/221 | **0.904** | 0.787 | 0.844 |
+| matched 256px JPEG | 138/55 | 44/56 | 0.653 | 0.575 | 0.642 |
+
+Holding resolution and format constant does not remove the separation — it **raises** it, 0.800 →
+0.904. Colour-only is unmoved at 0.844. So resolution was never the shortcut; it was one more
+correlate of a difference that runs all the way through the two halves.
+
+**Three controls, and the last one is the finding.**
+
+| control | result | reads as |
+|---|---|---|
+| A. fit val 256px PNG → report test **512px** PNG | 0.678 | the boundary transfers across a resolution shift only weakly |
+| B. within test 512px PNG, random half → half | **0.984** (colour only 0.979) | the matched slice is almost perfectly separable |
+| C. val reals vs test reals, 512px PNG | 0.567 | the two splits' REAL halves are the same source — the features are not merely reading "which split" |
+
+Control B looks like the matched slice being the cleanest evidence in the corpus. It is the
+opposite. Grouping that slice's filenames into families gives **27 real groups of ~50 frames each,
+and exactly ONE fake group of 999 frames.** A group-disjoint split of it is impossible — every fake
+is the same family — so 0.984 is a model recognising one video, split across a random line drawn
+through its own frames.
+
+**The number that should govern every interval on this corpus.** Filename families, both splits:
+
+| split | half | n | families | largest | effective n (Kish) |
+|---|---|---|---|---|---|
+| val | fake | 1593 | 140 | 271 (17%) | 25.7 |
+| val | real | 1606 | 83 | 82 (5%) | 35.9 |
+| **test** | **fake** | **1601** | **45** | **999 (62%)** | **2.4** |
+| test | real | 1606 | 80 | 82 (5%) | 35.2 |
+
+The test split's 1,601 fakes carry the evidential weight of about **2.4 independent observations**.
+`corpora/df40.py` set `source_id = sample_id` — each image its own source video — and said in its
+own docstring that where that is wrong "the bootstrap interval is narrower than the truth." This is
+how wrong: roughly `sqrt(1601/2.4)` ≈ **26× too narrow** on the fake side. Every CI in
+`bench/df40_report.md` before this date — including `0.289, 95% CI 0.271–0.308` — was computed that
+way.
+
+**Fixed, not just recorded.** `corpora.df40.source_group` now groups frames of one filename family
+into one source, and `subject_id` tracks it (`bench.protocol` refuses a source that straddles
+subjects). The grouping is a filename guess, which this loader refuses to make for *generator*
+labels — and the distinction is the whole point: a guessed generator label fabricates a LOGO axis
+and makes a benchmark look like it generalises, while a guessed source group only decides what gets
+resampled, and this one is built to fail safe. A name it cannot parse (`00042.png`, no separator
+before the digits) goes into one shared `unnumbered` bucket rather than becoming its own source, so
+the error it can make is to claim **less** independence than the data has, never more. Six mutations
+of it were run and each failed for the right reason — including the two that a first draft of these
+tests could not catch, where collapsing every name into one bucket satisfied "frames of one family
+share a source" by making *everything* share a source.
+
+Consequences beyond the report:
+
+1. **Guard 2 (`check_video_level`) now genuinely fails on this corpus**, where before it was
+   satisfied by a 1:1 mapping that existed only because the grouping was fake. The DF40 run was
+   already guard-waived for two other reasons; this is the third, and the waiver block says so.
+2. **`training/fit_calibration.py`'s test corpus had to gain source structure.** Its fixture wrote
+   flat names (`f000.png`), all of which now land in one `unnumbered` bucket per label — two sources
+   total, so `split_by_source` put one whole label on each side and every curve was skipped as
+   unfittable. The fixture now writes four frames per source. A test fixture that only passes
+   because the loader treats every file as independent is a fixture measuring the bug.
+3. **There is no matched slice of this repackaging on which an in-corpus number means anything.**
+   Match the resolution and the separation goes up; match the source and there is one fake group.
+   This corpus can **refute** a detector — a detector that fails here has failed — and it cannot
+   support one. That is the entire ruling, and it does not change with more analysis.
+
+### SFHQ landed, and it buys a lead rather than a detector. Measured 2026-09-23.
+
+The Kaggle login arrived, part 3 downloaded (22.75 GB, 118,358 images), and `corpora/sfhq.py`
+reads it. What follows was measured on a 6,000-image random sample against 6,000 FairFace sessions —
+**5,577 SFHQ crops and 5,986 FairFace crops**, both through the identical YuNet-then-align path.
+
+**Fitted on the pair, it looks excellent. It is not.**
+
+| features | d | in-family AUC | DF40 transfer AUC | 95% CI (125 source groups) |
+|---|---|---|---|---|
+| all | 30 | 0.969 | **0.461** | 0.186–0.557 |
+| seam only | 15 | 0.961 | 0.467 | 0.116–0.589 |
+| colour only | 15 | 0.866 | 0.466 | 0.441–0.516 |
+
+**0.969 in-family, chance on an unseen corpus.** Native image width alone — 1024 for SFHQ, 224 for
+FairFace, no pixel examined — separates the two halves at **AUC 1.000**. This is the DF40 lesson
+arriving on schedule: pair two corpora from different sources and the cheapest thing in the data is
+which corpus a crop came from.
+
+**The control that changes the picture.** `dfd.detectors.blend._crop_to_roi`'s own docstring already
+measured the 12 residual/Laplacian features as strongly scale-sensitive (ROI 112 → mean 15.6
+training-set standard deviations). SFHQ crops descend from 1024px sources; FairFace crops from
+native 224px ones. So every SFHQ source was resized to 224×224 **before** detection — matching
+FairFace's frame size — and the identical path re-run:
+
+| | in-family AUC | DF40 transfer AUC | 95% CI (grouped) |
+|---|---|---|---|
+| SFHQ as shipped | 0.969 | 0.461 | 0.186–0.557 |
+| **SFHQ resampling-matched** | 0.955 | **0.629** | 0.338–0.734 |
+| — seam only | 0.936 | **0.644** | 0.313–0.762 |
+| — colour only | 0.901 | 0.550 | 0.474–0.578 |
+
+**In-family performance went DOWN and transfer went UP.** That is the signature of removing a
+shortcut rather than adding signal, and it is the first time in this project that any fitted model
+has produced an above-chance point estimate on a corpus it has never seen. For comparison, the
+shipped `blend_seam` scores 0.289 on the same records.
+
+**And it is still not a result, because the interval says so.** 0.644 carries a grouped 95% CI of
+**0.313–0.762**, which contains 0.500. DF40's fake half is 45 filename families with an effective
+sample size of 2.4 (see the section above); it cannot resolve a difference this size. Reporting
+"first cross-corpus signal, AUC 0.644" would have been the easiest sentence of the day to write and
+it would have been the row bootstrap talking. The morning's fix is what stopped it.
+
+**What is established, and what is not:**
+
+- **Established:** SFHQ used naively — at its native resolution against native-resolution
+  FairFace — produces a model that transfers at chance. The in-family 0.969 is a resolution
+  artefact. Anyone reaching for this pair should match the source scale first. This one DF40 *can*
+  settle, because refuting is what a shortcut-ridden corpus is good for.
+- **Not established:** that the resampling-matched model detects anything. The point estimate says
+  0.644; the interval spans chance; the corpus cannot adjudicate.
+- **Unchanged:** SFHQ is entire-face synthesis, and DF40's fakes are mostly swaps and reenactment.
+  A model trained on one technique family scoring 0.63 on another is a *generalisation* claim, which
+  is the hardest kind and the one that most needs an interval it does not have.
+
+**What this changes about the next step.** The recommendation list said "licence-clean fakes to
+train on" was the first thing to buy. It has been bought, it works better than anything before it,
+and the binding constraint has moved: **there is now no corpus on this machine that can measure
+whether it works.** That is the EULA item (§5, step 0a), and it has gone from "changes what every
+later number means" to the only thing standing between a lead and a detector.
+
+The 22.75 GB archive holds `images/`, `landmarks/`, `pretrained_features/` and `segmentations/`;
+only the first is used. A 6,000-image sample sits at `~/Desktop/agents/datasets/sfhq_part3/probe`,
+and the weights from these experiments stayed in the session scratchpad — nothing was written to
+`assets/models/`.
+
+### The full fit: 204,716 samples, and 500 would have done. Measured 2026-09-23.
+
+The section above measured a 6,000-image SFHQ sample. This is the whole thing — **118,358 SFHQ
+fakes** (every image in part 3; face found in every one, no duplicate crops) against **86,358
+FairFace reals** (the full `train` split exported, 248 with no detected face, 138 duplicate crops),
+with DF40's 3,209 records re-extracted through the identical chain so the transfer test is
+like-for-like. Every source normalised to 224px before detection — the control the section above
+showed was the difference between transferring at chance and transferring at all.
+
+| features | d | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|---|
+| all | 30 | 0.961 | 0.615 | 0.370–0.701 |
+| **seam only** | 15 | 0.942 | **0.634** | 0.371–0.724 |
+| colour only | 15 | 0.900 | 0.582 | 0.493–0.613 |
+
+**Twenty times the training data moved the transfer number by −0.01.** The 6,000-image sample gave
+0.644; the full 118,358 gives 0.634. Both intervals contain 0.500 and each other.
+
+**So the learning curve was run, because two points are not a curve.** Seam-only features, DF40
+transfer, training set grown 237-fold:
+
+| SFHQ fakes | FairFace reals | in-family | DF40 transfer | 95% CI (grouped) |
+|---|---|---|---|---|
+| 500 | 500 | 0.930 | 0.629 | 0.321–0.734 |
+| 2,000 | 2,000 | 0.931 | **0.652** | 0.331–0.762 |
+| 8,000 | 8,000 | 0.942 | 0.636 | 0.343–0.736 |
+| 30,000 | 30,000 | 0.942 | 0.631 | 0.357–0.724 |
+| 118,358 | 86,358 | 0.942 | 0.633 | 0.369–0.723 |
+
+**It is flat.** Five hundred examples a side reach 0.629; two hundred thousand reach 0.633. The
+best point estimate on the curve belongs to the 2,000-sample fit. In-family saturates by 8,000 and
+does not move again.
+
+**What that settles, and what it costs the plan.** Recommendation 0b — "licence-clean fakes to
+train on is the first thing to buy" — was right that the supervision was missing and wrong about
+the quantity: **500 would have done.** A 30-dimension logistic regression has no capacity to use
+more, so the 22.75 GB bought a supply that is now demonstrably not the bottleneck. Two things are:
+
+1. **Capacity and physics.** The feature vector is 15 residual/Laplacian numbers over four annuli.
+   It saturates immediately. Slot C (NPR's upsampling fingerprint) is declared, weightless, and
+   reads a different physical property — and SFHQ, being generator output, is exactly the data an
+   upsampling-fingerprint detector wants. That is now the cheapest untried lever, and it needs no
+   new data at all.
+2. **An evaluation corpus that can resolve a difference.** Every interval in both tables is ~0.35
+   wide and contains chance, because DF40's fake half has an effective sample size of 2.4. Nothing
+   above can be distinguished from nothing. This is the same wall §5 step 0a describes, reached
+   from a third direction.
+
+**Weights were not shipped, and that is a decision worth stating.** These coefficients are
+licence-clean (CC0 images, CC BY reals) and their point estimate — 0.634 — is better than the
+0.289 the registered `blend_seam` weights score on the same corpus. Shipping them anyway was
+rejected on two grounds: the interval does not establish they beat chance, and they are a different
+detector (synthesis, not seam) that would silently change what `blend_seam_weights` means in
+`assets/manifest.yaml`. If they are ever shipped it must be under a new asset id, with the
+provenance line naming both corpora. Until then the fit stays in the session scratchpad.
+
+### The first leave-one-generator-out result this project has ever had. 2026-09-24.
+
+Spec §8.1 calls LOGO the only number that predicts field performance. It has never run here,
+because `logo_splits` correctly refuses a corpus whose only generator is the one being held out and
+every corpus this project had carried exactly one. `corpora/swaps.py` makes four (see the commit);
+`corpora/swap_corpus.py` builds 8,864 records from 1,483 FairFace couples, and LOGO folds.
+
+`blend_seam` v0.2.0-fairface10k, evaluated on each held-out technique in turn. Reproduce with
+`bench/eval_swaps.py`, which did not exist when this was first written — see the section below it:
+
+```bash
+python3 -m bench.eval_swaps --root ~/Desktop/agents/datasets/fairface_sessions \
+    --offset 10000 --limit 3000 --seed 0 --identity
+```
+
+| held out | AUC | 95% CI (grouped) | resolved? |
+|---|---|---|---|
+| `swap_lowres_paste` | **0.928** | 0.908–0.949 | yes, above |
+| `swap_poisson` | 0.640 | 0.601–0.682 | yes, above |
+| `swap_warp_hull` | 0.633 | 0.591–0.668 | yes, above |
+| `swap_mouth_patch` | **0.527** | 0.493–0.573 | **NO — spans chance** |
+
+**The headline is the worst fold, 0.527, and it is not distinguishable from chance.** Reported as
+the worst rather than the mean for the same reason guard 3 reports the worst compression cell: an
+average hides the technique an attacker will actually use. So the honest LOGO verdict is that slot A
+does not generalise to an unseen technique FAMILY, and the gate's 0.75 floor is not met by a wide
+margin.
+
+**It confirms, by measurement, what §0 has asserted since 2026-09-22.** Slot A finds composite
+boundaries. `mouth_patch` is a reenactment — a small boundary in a different place — and slot A is
+blind to it (0.527). `lowres_paste` is a heavily resampled face with a boundary AND a resolution
+step, and slot A finds it easily (0.928). The two full-face swaps sit between. That ordering is
+exactly what the physics predicts, and until today it was a hypothesis nobody had tested.
+
+**THE CONTAMINATION CHECK, AND WHY IT IS REPORTED EVEN THOUGH IT CAME BACK CLEAN.** The first run
+of this used FairFace sessions 0–2,999, and `blend_seam` was fitted on sessions 0–9,999. Every real
+record, and every photograph its fakes were composited from, was inside the detector's own training
+set. Rebuilt at `offset=10000` on sessions it has never seen, the numbers move by at most 0.023
+(0.923 → 0.928, 0.663 → 0.640, 0.645 → 0.633, 0.537 → 0.527) and no conclusion changes. So the
+contamination did not matter — which is a fact about these features (generic seam statistics do not
+memorise individual faces), not a reason the check was unnecessary. `build_swap_corpus` now takes
+an `offset` and its docstring carries the rule.
+
+**WHAT THIS IS NOT.** These are classical compositing swaps, not generator output, and the real half
+is FairFace — the same dataset slot A was fitted on, different sessions. So what is measured is
+generalisation across TECHNIQUE, which is what LOGO is for, and NOT generalisation across corpus.
+A detector that scores well here has not been shown to beat FSGAN. `corpora/swaps.py` states this
+at the top and it must travel with every number taken from this corpus.
+
+**The guards both fired, and were waived so the run could finish.** Identity: 383 of 124,750
+compared subject pairs cross at 0.307%, above the 0.21% unrelated-face rate, max 0.677 — so a few
+FairFace couples are genuinely the same person or near-twins. Parity: the per-stratum FPR ratio
+exceeds the 2x ceiling. Both are now measured numbers on a corpus that can carry them, which is
+what criteria 2 and 11 were built for and what no corpus here could previously supply.
+
+### The best LOGO fold is a selection effect, and the run was not reproducible. 2026-09-24, later.
+
+Two defects in the section above, found by reading its own report rather than its headline.
+
+**FIRST: the report had no committed script behind it.** `bench/swap_corpus_report.md` was written
+by an ad-hoc script that was never committed, so the first LOGO result this project ever produced
+could not be regenerated from the repository. That is the same defect as an unpinned dependency —
+the artifact is here and the thing that made it is not. `bench/eval_swaps.py` is that script now,
+and it does one thing the ad-hoc version could not: **it enforces the offset rule.**
+`build_swap_corpus`'s docstring says the training window is a property of the WEIGHTS, not of the
+corpus, so the builder cannot check it. The entry point knows which weights are loaded, so it can,
+and it refuses `--offset 9999` against `blend_seam` `0.2.0-fairface10k` by name, version and
+window. Keyed on the version string rather than the detector name: a future `blend_seam` refitted
+elsewhere must not inherit this window. The rule that produced the retracted 0.923 is now a gate
+rather than a paragraph.
+
+**SECOND, and it changes how the LOGO table reads: abstention is correlated with the label, and
+most strongly on the fold with the best number.** Every AUC in that table is computed over the
+records that did NOT abstain — `bench.runner` scores an abstention as NaN and the metrics drop it.
+The report stated one aggregate rate, 59.8%, which describes all five classes as though they were
+alike. They are not. Measured over the same 8,864 records, `blend_seam` at its `medium` quality
+floor:
+
+| class | abstained | rate |
+|---|---|---|
+| genuine | 1,700 / 2,986 | 56.9% |
+| `swap_mouth_patch` | 832 / 1,489 | 55.9% |
+| `swap_poisson` | 832 / 1,467 | 56.7% |
+| `swap_warp_hull` | 859 / 1,463 | 58.7% |
+| **`swap_lowres_paste`** | **1,084 / 1,459** | **74.3%** |
+
+Three of the four techniques abstain at the genuine rate to within two points. `lowres_paste`
+abstains 17.4 points above it — and `lowres_paste` is the fold reported at **0.928**, the number
+that makes the table look like slot A works on something.
+
+**Why, and it is not a coincidence.** `lowres_paste` downsamples the source face to a quarter scale
+before compositing it back. That is the technique aimed squarely at leaving a resolution artefact,
+and it is also the one most likely to push a crop under a sharpness-based quality floor. So the
+floor removes three quarters of that technique's fakes, and the AUC is computed over the quarter
+that survived — the least degraded ones. The selection is label-dependent, which is exactly the
+condition under which a survivors-only metric stops meaning what a reader takes it to mean.
+
+**What it is worth if abstentions are counted rather than dropped.** Scoring every abstention at
+chance — one honest accounting, on the grounds that a detector which refuses to answer has not
+detected anything — the same one-technique-against-all-genuine comparison gives:
+
+| technique | AUC over survivors | AUC with abstentions at chance |
+|---|---|---|
+| `swap_lowres_paste` | 0.913 | **0.701** |
+| `swap_poisson` | 0.649 | 0.587 |
+| `swap_warp_hull` | 0.644 | 0.588 |
+| `swap_mouth_patch` | 0.544 | 0.517 |
+
+(These are technique-against-all-genuine, not the LOGO folds themselves — a fold also drops records
+for identity disjointness — which is why 0.913 here and 0.928 there. The gap between the two
+columns is the point, not the third decimal.)
+
+**What this does and does not retract.** It does NOT touch the headline. The worst fold is
+`mouth_patch` at 0.527, that fold has no abstention skew, and slot A still fails the 0.75 gate by a
+wide margin — if anything the imputed column makes the failure broader. What it retracts is the
+consolation: `lowres_paste` at 0.928 was being read as proof the features work when the physics
+suits them, and most of that number is the quality floor choosing which fakes to grade.
+
+**Fixed so it cannot travel again.** `DetectorResult.abstention_by_class` carries
+`(abstained, total)` per class — `"real"` for genuine records, the generator id for fakes — and the
+report renders it under every LOGO table as genuine-versus-held-out-fakes. An empty breakdown means
+"not measured" and renders nothing, because printing it as 0% would read as "nothing abstained".
+Three mutations of the counting and three of the offset gate were run and each failed for the right
+reason.
+
+### DF40's declared subjects are not distinct people. Measured 2026-09-23, by the new guard.
+
+Criterion 2 was closed this day (`dfd/embed.py`, SFace, Apache-2.0) and pointed at the first real
+corpus available. It failed immediately:
+
+    3,207 records, 125 declared subjects, 3,207 embedded (nothing skipped)
+    419 of 7,750 subject pairs at cosine >= 0.363  =  5.41%
+    maximum similarity 0.9908
+
+Unrelated faces cross that threshold at **0.21%** with this embedder (measured the same day over
+124,251 FairFace pairs). DF40-repackaged crosses at **5.41%, twenty-six times the null**, and its
+worst pair is 0.9908 — the same photograph of the same person under two different "subjects".
+
+`corpora/df40.py` sets `subject_id` to a filename family, which was the honest choice available and
+is not an identity. **So any split of this corpus partitioned on subject_id leaks identity**, and
+that is a THIRD independent reason it cannot measure a detector, alongside the imaging-chain
+shortcut (colour alone separates the halves at 0.843) and the permutation null (every reported
+number is inside it). Three different defects, each sufficient on its own.
+
+Worth stating plainly: this is the criterion working. It was built to catch exactly this, it was
+pointed at real data for the first time, and it caught it on that first run — which is also why a
+guard that is merely *wired* is worth nothing until something has actually run through it.
+
+### The self-blend pair transfers at chance — and the permutation null retracts the result above. 2026-09-23, later.
+
+**Read this before the section below it.** The experiment that section called "the one untested
+cell" has now been run, and running it produced a control that invalidates the section's own
+headline. Both halves are recorded here, in the order they happened.
+
+**The experiment.** Slot C, fitted on the FairFace SELF-BLEND pair: 86,358 FairFace photographs and
+a self-blend of each (`corpora/sbi.py`'s own `self_blend`, its own seeding, remapped box), so real
+and fake share a camera, a codec and a subject and the label cannot be read off the imaging chain.
+Same chain as every other fit here — source resized to 224 before detection, aligned at 224 — so
+the DF40 feature cache is the one the earlier runs reported against. Split by PAIR: a crop and its
+own blend never straddle.
+
+| features | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|
+| slot C (NPR, 27) | 0.612 | 0.524 | 0.505–0.560 |
+| slot A (seam, 30) | 0.877 | 0.459 | 0.337–0.814 |
+| — seam terms only | 0.875 | 0.456 | 0.332–0.814 |
+| — colour terms only | 0.517 | 0.402 | 0.371–0.447 |
+| slot A + slot C (57) | 0.884 | 0.470 | 0.350–0.819 |
+
+Read naively that is the result this project had been waiting for: **the inversion is gone.** Slot
+C's interval excludes chance on the CORRECT side for the first time, and it replicates on the
+independent DF40 val split (0.533, CI 0.517–0.553, 223 groups). The colour shortcut is gone too —
+colour terms scored 0.843 on the SFHQ pair and 0.402 here, because on a same-photograph pair no
+colour term can carry the label. The diagnosis in the section below was right about the cause.
+
+**And it is worth nothing, because of the control.** Shuffle the training labels, refit, report on
+DF40. A model fitted on shuffled labels has learnt nothing by construction. Twelve shuffles per
+pair:
+
+| pair | reported | permutation null (12 shuffles) | two-sided p |
+|---|---|---|---|
+| slot C / SFHQ pair | 0.315 | 0.268–0.764 | 0.33 |
+| slot A / SFHQ pair | 0.618 | 0.449–0.619 | 0.08 |
+| slot C / SBI pair | 0.526 | 0.229–0.780 | 1.00 |
+| slot A / SBI pair | 0.457 | 0.316–0.673 | 0.75 |
+
+**Every number this project has ever reported on DF40 is inside the null a model that learnt
+nothing produces on it.** That includes the 0.316 in the section below, whose grouped interval
+0.184–0.372 excluded chance and which was committed as this project's first resolved cross-corpus
+result. **It is retracted.** A shuffled fit reaches 0.268 on the same corpus; p = 0.33. Slot C is
+not refuted on DF40 — nothing is measurable on DF40.
+
+**Why, and it is a property of the corpus rather than of any fit.** DF40's fake and real halves
+arrive down different imaging chains, and 62% of its fakes are one filename family (effective
+sample size 2.4 — see "Matching the shortcut away does not work"). So almost ANY direction in
+feature space separates the two halves somewhat, in one direction or the other, and a random
+direction lands far from 0.5 about as often as a trained one. The grouped bootstrap does not see
+this: it resamples the EVALUATION corpus and is silent about the variance contributed by the FIT.
+With one family holding 999 of 1,601 fakes, that resampling is dominated by a couple of effective
+units and reports a narrow interval around whatever the drawn direction happened to give.
+
+**This is the row-vs-group error one level up.** Resampling rows instead of sources fabricated
+precision about the corpus; reporting a bootstrap interval with no permutation null fabricates
+precision about the fit. The same fix applies: `bench/metrics.py` now carries `permutation_null`
+and `permutation_p`, with the measured table above in the docstring and nine mutation-tested
+guards. **A cross-corpus AUC that does not escape its permutation null is not evidence, whatever
+its confidence interval says. Report both or report neither.**
+
+**What is still true after the retraction.** The self-blend pair is the right training pair on the
+argument, not on the evidence: it removes the imaging-chain shortcut that demonstrably inverted the
+SFHQ-pair fits, and it drops colour-only transfer from 0.843 to 0.402. Slot A detects its own blends
+at 0.877 in-family, slot C at 0.612 — the seam features see a seam, the upsampling features mostly
+do not, which is what the physics predicts. The learning curve saturates immediately (500 pairs
+0.513, 60,450 pairs 0.524): more FairFace buys nothing, exactly as slot A saturated at 500.
+
+**What this costs the plan.** Step 0a was "the first thing a EULA actually buys". It is now the only
+thing: DF40's ungated repackaging cannot refute a detector either, which was the one use the
+sharpened 0a still allowed it. **Every measurement route on this machine is closed until an
+evaluation corpus arrives whose two halves share an imaging chain and whose sources are not one
+family.** The detector keeps abstaining, which remains the correct output.
+
+Reproduced by `sbi_extract.py`, `sbi_fit.py`, `sbi_controls.py` and `perm_null.py` in the session
+scratchpad; the feature caches are 36M and were not committed.
+
+### Slot C is built, fitted, and refuted. The training PAIR is the defect. 2026-09-23.
+
+**RETRACTED IN PART the same day — read the section above first.** The "refuted" in this heading
+rested on a grouped bootstrap interval that excluded chance. A permutation null run hours later
+reaches 0.268 on this corpus with the training labels SHUFFLED, so 0.316 is inside the null and
+the refutation does not hold: slot C is unmeasured on DF40, not refuted by it. The diagnosis below
+— that the training pair, not the physics, is what the SFHQ-pair fits were learning — survives and
+was independently confirmed (colour-only transfer falls from 0.843 to 0.402 on a same-photograph
+pair). The rest of this section stands as the record of how the retracted number was produced.
+
+`npr` had a feature function and no model since the project started, so it abstained with
+`weights_absent` on every input ever scored. It now has `NPRStatsNet` — 27 statistics of the
+upsampling residual across the three informative stride-2 phases, then `Linear(27, 2)` — and
+`training/fit_npr.py` fits it. Fitted on the same licence-clean pair as slot A (118,358 SFHQ fakes,
+86,358 FairFace reals, every source normalised to 224 before detection):
+
+| | in-family held-out | DF40 transfer | 95% CI (125 source groups) |
+|---|---|---|---|
+| slot A (seam, 30 feats) | 0.942 | 0.634 | 0.371–0.724 |
+| **slot C (NPR, 27 feats)** | 0.931 | **0.316** | **0.184–0.372** |
+| slot A + slot C (57 feats) | **0.996** | 0.283 | 0.139–0.346 |
+
+**Slot C is inverted, and this time the interval says so.** 0.184–0.372 excludes 0.500 — unlike
+every other cross-corpus number this project has produced, this one is *resolved*. The model ranks
+DF40's real frames as more fake than its fakes. The union of both slots is worse still (0.283) while
+scoring **0.996** in-family: a near-perfect corpus-pair classifier that is actively wrong on the
+field. That is what shortcut amplification looks like, and it is the clearest example this repo has.
+
+**The control that says it is not the physics.** The same question that was asked of slot A — are
+the features blind, or was the supervision wrong? — with the same method. Fit the same 27 features
+on DF40's **val** split and report on its **test** split:
+
+| slot C fitted on | reported on | AUC | 95% CI (grouped) |
+|---|---|---|---|
+| FairFace vs SFHQ | DF40 test | 0.316 | 0.184–0.372 |
+| **DF40 val** | **DF40 test** | **0.830** | **0.784–0.920** |
+
+**The NPR features carry more signal than the seam features do** — 0.830 against slot A's 0.800 on
+the identical split, with an interval that excludes chance. They are not blind. What is wrong is
+what they were shown.
+
+**The diagnosis, now established across two slots and four fits.** FairFace is sharp Flickr JPEG;
+SFHQ is smooth generator output. Any model fitted on that pair learns **"smooth means fake"**. On
+DF40 the smooth images are the *real* ones — 512px compressed video frames downscaled to 224 — so
+the rule arrives inverted. Slot A learnt it and landed at 0.634 because its colour terms partly
+offset it; slot C, which reads residual energy almost exclusively, learnt it undiluted and inverted
+outright.
+
+**So the thing to buy was never "fakes".** Recommendation 0b said licence-clean fakes were the first
+purchase. They were bought (22.75 GB), they are demonstrably not the bottleneck for slot A
+(saturates at 500), and for slot C they are actively harmful. What both slots need is a training
+pair **whose real and fake halves share a camera and a codec** — because that is the only pair in
+which the label cannot be read off the imaging chain.
+
+Three candidate pairs, and what is known about each:
+
+| pair | shares imaging chain? | slot A | slot C |
+|---|---|---|---|
+| FairFace real vs SFHQ fake | no | 0.634 (CI spans chance) | **0.316 (inverted, resolved)** |
+| DF40 val (real and fake together) | partly — but its own halves are separable at 0.843 on colour | 0.800 in-corpus | 0.830 in-corpus |
+| FairFace real vs FairFace **self-blend** | **yes — same photograph on both sides** | 0.289 | **never tested** |
+
+**The untested cell is the next experiment**, and it is free: `corpora/sbi.py` already builds
+self-blends, and SBI's blending warps and resizes the donor region, so it does leave a resampling
+signature for slot C to read. Slot A failed on that pair for a reason specific to slot A — a
+self-blend has a composite boundary and three quarters of DF40 does not. Slot C's physics has no
+such mismatch with synthesis.
+
+**Nothing was written to `assets/models/`.** `assets/models/npr.pt` stays absent and slot C keeps
+abstaining, which is the correct output for a detector measured at 0.316. A fitted head whose
+interval excludes chance *on the wrong side* is not a detector with a sign error to flip: choosing
+a sign because it helps on the evaluation corpus is the evaluation corpus fitting the model, and
+this project has already refused that once (§0, "nothing here is salvageable by flipping the sign").
+
+### The one public detector on this machine is at chance. Measured 2026-09-23.
+
+`assets/models/dima806/` has been on disk since 2026-09-20 — a ViT-base deepfake
+classifier, Apache-2.0, commercially usable, 343 MB, registered in the manifest and wired into
+**nothing**. It was the only unexercised asset in the repo that could plausibly have made the system
+work, so it was measured before any more was built on top of the seam detector.
+
+Scored all 3,207 DF40 records through the same aligned crops the benchmark uses:
+
+| | dima806 ViT on DF40 |
+|---|---|
+| AUC | **0.5214** |
+| TPR@FPR=1% | 0.053 |
+| mean P(fake) on **reals** | 0.961 |
+| mean P(fake) on **fakes** | 0.952 |
+
+It is not merely at chance, it is **saturated**: it calls essentially everything fake, with almost
+no separation between the two classes. A model that outputs 0.95 for every input has an AUC near
+0.5 for the same reason a stopped clock has no correlation with the time.
+
+**Not wired in, deliberately.** Adding it would mean adding `transformers` to a dependency set this
+repo pins exactly and gates at both ends of every range, in exchange for a detector measured to
+carry no information. It is recorded in `bench/evidence_card.json` so that the next person who
+notices the weights sitting there finds the measurement instead of repeating it.
+
+That closes the list. Every detector reachable from this machine is now measured:
+
+| detector | weights | measured AUC | decides? |
+|---|---|---|---|
+| `blend_seam` | fitted here, FairFace self-blends | **0.289** (inverted) | no |
+| `dima806_vit` | on disk, Apache-2.0 | **0.521** (chance) | not wired |
+| `npr` | absent | — | no |
+| `effnet_b4` | absent (obtainable weights are NonCommercial) | — | no |
+
+**Nothing on this deployment can tell a deepfake from a real face.** That is the finding, and the
+service built in §0 is built around it rather than in spite of it.
+
+### The service. Built 2026-09-23, and gated so that it cannot lie.
+
+`src/dfd/service/` — watch a folder, score what lands in it, record an immutable audit record, serve
+the results. Installed as a systemd **user** unit (`ops/install.sh`), no root, bound to 127.0.0.1,
+`Restart=always`. Stdlib only: `http.server`, `sqlite3`, one HTML string. Full operator
+documentation in `docs/SERVICE.md`.
+
+The design problem was not the plumbing. It was this: a service that prints a verdict for every file
+it is given, while every detector behind it is at or below chance, is precisely the product this
+project exists to not build. The answer is the **evidence gate**:
+
+`bench/evidence_card.json` records the measured AUC of every detector and the corpus it was measured
+on. At startup the service keeps a calibration curve **only** for detectors at or above a floor
+(0.75). A detector below the floor still runs, and its raw score still reaches the audit record —
+that data is worth accumulating — but with no curve it contributes `llr 0.0` with
+`uncalibrated_for_band` and cannot move a verdict. Today that is every detector, so every verdict is
+`insufficient_evidence`, which is the truth.
+
+Three properties make it a gate rather than a preference:
+
+- **Unmeasured fails closed** (`auc: null` never decides), exactly as an unregistered asset is
+  treated as non-commercial by `assets/manifest.yaml`.
+- **The card cannot lower the floor**, only raise it. A bar set by the thing being gated is not a bar.
+- **A missing or malformed card is an error, not an empty gate.** Both end with nothing deciding;
+  only the error distinguishes a misconfigured deployment from an honest one.
+
+And `tests/service/test_evidence.py::test_no_detector_currently_clears_the_floor` asserts the
+present state. The day something is measured above 0.75 that test goes red, and a person has to come
+here and delete it on purpose. That is the moment this service starts issuing real verdicts — made
+deliberately, by a human, in a commit.
+
+Verified end to end on the installed unit, 2026-09-23: a 1024px DF40 fake dropped in the inbox is
+detected, cropped, scored (`blend_seam` raw 0.803), calibrated to `llr 0.0`
+(`uncalibrated_for_band`), recorded with a digest, and served — verdict `insufficient_evidence`.
+Both numbers are kept on purpose: 0.803 is evidence about the detector, 0.0 is the decision about
+the file.
+
+### The domain-shift explanation is refuted too. Two controls, 2026-09-22.
+
+The section above proposed that the inversion came from the *real* half: FairFace portraits are
+clean Flickr stills, the field's reals are compressed video frames, so "clean" became the model's
+proxy for "real". That was the leading hypothesis and the recommended next step. It was tested the
+same day, and it is wrong.
+
+**Control 1 — is the serving path faithful to the fitter?** A preprocessing mismatch between fitting
+and scoring would look exactly like a mysterious collapse. Scored 500 FairFace sessions held out of
+the fit entirely (indices 10,000-10,499), through `BlendDetector.score` — the same path the
+benchmark uses, not the fitter's internal one. **AUC 0.913** over 386 scored rows. The serving path
+is faithful; the label convention is right (`corpora/sbi.py` labels the blend 1, and
+`predict_proba` is P(fake)). Whatever DF40 exposes, it is not a wiring defect.
+
+**Control 2 — refit on DF40's own real frames.** If the real distribution were the problem, giving
+the model the field's reals should fix it. Built self-blends from DF40's *own* `test/real` half,
+split by **video prefix** so no source video straddles (the `#_#.png` family is video_frame; 79
+videos, ~19 frames each, greedily balanced to 762 frames a side). Fitted: held-out AUC 0.955 —
+in-family, and inflated further because `split_by_subject` splits on session id while frames from
+one video share an identity. Then evaluated on the prefix-disjoint other half plus every fake:
+
+| fitted on | evaluated on | AUC | TPR@FPR=1% | abstained |
+|---|---|---|---|---|
+| FairFace self-blends | DF40 test (all) | 0.289 | 0.000 | 15.4% |
+| **DF40 real self-blends** | **DF40, prefix-disjoint half + all fakes** | **0.344** | 0.007 | 17.8% |
+
+Same domain, same codec, same capture pipeline, same corpus — **still inverted**. Matching the real
+distribution moved the number by 0.055 and did not change its side of 0.5.
+
+**So the defect is the pseudo-fake, not the real.** Self-blending teaches a model to find a
+*composite boundary*. DF40 is 40 techniques of which only 10 are face swaps; the other 30 are
+reenactment, entire-face-synthesis and editing, and an entirely synthesised face **has no boundary
+to find**. The model is being asked a question most of this corpus does not contain, and it answers
+it by ranking whatever has the most high-frequency structure as fake — which, across DF40, is the
+real compressed frame.
+
+This is a **slot** result, not a tuning result, and it is the most useful thing measured so far:
+
+- Slot A (blending seam, spec §6) is the right physics for **face swaps** and close to useless
+  against synthesis and reenactment. SBI's published result is on FF++, which is swaps. Substituting
+  a corpus that is three-quarters not-swaps is not the same experiment.
+- No amount of more real faces fixes this. Control 2 is that experiment, already run.
+- The step that would: measure slot A on a **swap-only** subset — which needs the per-technique
+  labels this repackaging does not carry — and stand up a second slot with different physics
+  (learned appearance, or the upsampling fingerprint in slot C) for everything that is not a swap.
+
+The diagnostic weights from control 2 are fitted on CC BY-NC data and live in the session scratchpad
+only. They are deliberately **not** written to `assets/models/blend_seam.npz`, which the manifest
+registers as commercially usable; a NonCommercial refit landing at that path would silently poison
+the shipped artifact's licence.
+
+### The licence questions the manifest said to VERIFY are now verified
+
+Checked at source 2026-09-22, replacing two "VERIFY before any commercial release" placeholders:
+
+| asset | verified licence | commercial |
+|---|---|---|
+| SBI pretrained (`mapooon/SelfBlendedImages`) | "freely available for research purpose. For commercial use: A license agreement is required" — **and** trained on FF-raw/FF-c23, so FF++ derived data regardless | **no**, twice over |
+| DeepfakeBench weights (`SCLBD/DeepfakeBench`) | CC BY-NC-4.0; its own table marks FF++ "Rights Cleared: NO" | **no** |
+| FairFace | CC BY 4.0, attribution required | **yes** |
+
+So the two tracks must never mix, and the manifest's `commercial_use` flag is what keeps them
+apart: **research baselines** (SBI, DeepfakeBench — an immediate cross-dataset comparison under the
+live research-only ruling) and **the shippable path** (self-blends over FairFace, fitted here,
+`license: owned`). A benchmark number from the first can never become a weight file in the second.
+
+**Also worth knowing, not yet taken:** SFHQ (`SelfishGene/SFHQ-dataset`) is ~425,000 synthetic
+faces under **MIT**, with no depicted real person at all — which sidesteps the biometric-consent
+caveat below entirely. Part 3 (118,358 images, pure StyleGAN2 sampling) is the cleanest: parts 1, 2
+and 4 derive from other datasets or from Stable Diffusion, whose own terms would need reading. Not
+downloaded. It is the right control set for asking whether a seam detector fitted on real faces
+also fires on synthetic ones.
+
+**The caveat that licence fields do not answer.** CC BY 4.0 settles copyright and nothing else.
+FairFace is photographs of real people who licensed an *image*, not people who consented to
+biometric processing of their *face*. For a product in the identity-verification space that is a
+data-protection question — GDPR Art. 9 and India's DPDP Act both treat biometric data as sensitive
+— and it sits beside, not inside, the licence. Recorded in the manifest entry; it is the same
+class of open question as the owner attestations, arrived at from a different direction.
+
+**Next, in order:**
+
+1. **Separate "too little information" from "low-frequency signature" in `dfd.quality`.** This now
+   blocks everything downstream. The distribution is recorded above; the finding that matters is
+   that 11 of 12 swapped crops band `reject` on blur, so a quality floor above `reject` would
+   abstain on the fraud this project exists to catch. Detector floors and per-band calibration both
+   read the band. Highest leverage task on this list, and it is a design question, not a constant.
+2. **Rule on what the captures are now FOR.** With FairFace supplying negatives, the 26 positive
+   images in the 7 swapped sessions are this project's only real fraud and should be spent as a
+   held-out evaluation set, never as train. The EULA route (§0a step 1) now buys *evaluation*
+   breadth and the several generators LOGO needs — not training data, which is solved.
+2. **Find an academic signatory** — unchanged from §0a, and more load-bearing than it was.
+3. **Criterion 2 — an embedder.** Unchanged, and now cheap: 58 images is a trivial embedding job,
+   and it would settle the near-duplicate question deduplication cannot reach.
+4. **Do not run the fitter for a number yet.** It remains the owner's reserved decision (§0a item 4),
+   and the measurement above is why: with 19 genuine crops, whatever AUC it prints will be an
+   artefact of the split, not a detector claim.
+
+---
+
+## 0a. Previous resume block (2026-09-21, after PR #2 merged and the three questions were answered)
 
 **Both PRs are merged and the workspaces are gone.** `main` is at `c058934`. PR #2 (docs only —
 the final review's rulings appended to the committed ledger) was squash-merged, its branch deleted
@@ -223,7 +1413,7 @@ has been fitted yet. A third detector in the registry does not mean the pipeline
 
 ---
 
-## 0a. Previous resume block (2026-09-21, after PR #1 merged)
+## 0b. Previous resume block (2026-09-21, after PR #1 merged)
 
 **PR #1 IS MERGED.** `main` is at merge commit `f6ddeaf`; the composition-root plan is complete and
 in. 565 tests green on merged `main`, coverage 95.12%, ruff and `mypy --strict` clean, both CI legs
@@ -267,7 +1457,7 @@ first time, and the decode-bomb limits are finally exercised through a real call
 
 ---
 
-## 0b. Previous resume block (2026-09-21, before the merge)
+## 0c. Previous resume block (2026-09-21, before the merge)
 
 **Update, later the same day (composition-root plan, Task 6 of 6): the "Nothing is uncommitted or
 unpushed" line below is no longer true.** The composition-root plan (§2, §3, §5) is complete —
@@ -441,16 +1631,40 @@ produce any other verdict. `input_sha256` matches `sha256sum /tmp/dfd-demo.png` 
 
 ## 3. What is NOT true — read this before claiming anything
 
-Four acceptance criteria are **unmet**, now disclosed in the plan's Known-gaps block:
+**Updated 2026-09-23.** Three of the four below are now closed; the block is kept with each
+item struck in place rather than deleted, because what was wrong and how it was closed is the
+useful part. Criterion 4 remains open and cannot be closed by code.
 
-- **Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
-  `None`. This is the largest gap; do not close P0 without it.
+~~Four acceptance criteria are **unmet**~~, now disclosed in the plan's Known-gaps block:
+
+- ~~**Criterion 2 (identity leakage).** No ArcFace embedder exists. `identity_report` is hardcoded
+  `None`. This is the largest gap; do not close P0 without it.~~ **CLOSED 2026-09-23.**
+  `dfd/embed.py` wraps OpenCV SFace (Apache-2.0 — not ArcFace, whose weights are research-only and
+  would make every split certified with them research-only too). The threshold is measured on this
+  project's own faces rather than taken from a paper, and the guard gained a tolerated crossing
+  RATE because unrelated faces cross at 0.21% and a max-pair rule refuses every large split. The
+  check runs at corpus level as well as per fold — every corpus here has one generator, so a
+  fold-only implementation would have been structurally unable to fire. Pointed at DF40 it failed
+  on the first run: see "DF40's declared subjects are not distinct people" in §0.
 - **Criterion 4 (head-to-head vs RD).** The loaders exist and **nothing consumes them**. No adapter
-  joins them to `run_benchmark`; no RD table is rendered.
-- **Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
-  weights, so there is nothing to attack yet.
-- **Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
-  never reaches `RunRecord`.
+  joins them to `run_benchmark`; no RD table is rendered. **And one cannot usefully be written** —
+  measured 2026-09-22 (§0): 14 of the 24 cached results' source images no longer exist on this
+  machine and 8 more are demo assets, leaving n=2 real capture frames. This criterion is blocked on
+  vanished data, not on the adapter.
+- ~~**Criterion 8 (adversarial).** `adversarial_tpr` has no caller — P0 detectors abstain without
+  weights, so there is nothing to attack yet.~~ **CLOSED 2026-09-23.** It has a caller, and
+  `RunRecord.adversarial_status` says why a number is absent when it is: `not_requested`,
+  `no_target` (every detector here is handcrafted features into a linear model, with no
+  differentiable path from pixels), `weights_absent`, or `not_measurable`. A detector opts in with
+  `adversarial_target()`. A `None` adversarial TPR is no longer readable as "the attack succeeded".
+- ~~**Criterion 11 (demographic parity).** The guard is built and **never invoked**; `ParityReport`
+  never reaches `RunRecord`.~~ **CLOSED 2026-09-23.** Invoked per detector, read at the same 1%
+  operating point the rest of the benchmark reports at, with the threshold taken from the GENUINE
+  distribution rather than the mixture. Strata below 150 genuine samples are EXCLUDED and counted:
+  by the rule of three, zero false positives in 6 samples bounds the true FPR at 50%, so comparing
+  such a stratum fires the guard on arithmetic rather than on bias. DF40 carries no strata at all
+  and reports `no_strata`; FairFace sessions carry age, gender and race, so the corpus that can
+  exercise this exists.
 
 Five more limitations, each recorded with its severity:
 
@@ -617,11 +1831,83 @@ spends the only labelled fraud this project has.
 3. **An embedder for criterion 2.** Note `check_identity_disjoint` now *refuses* ids with no
    embedding rather than skipping them — a partial-embedding pipeline must omit unembeddable ids
    explicitly, which is the point.
-4. **The RD adapter for criterion 4** — the 24 cached results are free and already labelled.
+4. ~~**The RD adapter for criterion 4** — the 24 cached results are free and already labelled.~~
+   **Struck 2026-09-22.** They are free and labelled; they are not joinable. Only 2 of the 24 are
+   capture frames — see §0, which replaces this step with a ruling the owner has to make.
 
 ("A composition root" was step 3 here; it is done — see §3 above — and struck from this list
 2026-09-21. The benchmark runner still does not call it, which is why criteria 4 and 11 are still
 open and still numbered above as the next two steps.)
+
+**Reordered 2026-09-22, after the DF40 measurement.** The list above was written when nothing had
+been measured. It now has a step 0 in front of it, because AUC 0.289 changes which problem is
+binding:
+
+0. ~~**Fix the training distribution before fitting anything else** — refit on reals that match the
+   field.~~ **Run and struck the same day.** That was the leading hypothesis for two hours; control 2
+   in §0 tested it and it is wrong. Refitting on DF40's own real frames gives 0.344, still inverted.
+   Do not spend time here.
+
+0a. **Get a swap-only evaluation subset.** Slot A detects composite boundaries; three quarters of
+   DF40 has no boundary to detect, so the corpus is currently measuring slot A against techniques it
+   was never a candidate for. This needs the per-technique labels the ungated repackaging does not
+   carry — the full DF40 (its own Google form, `docs/EULA-ACCESS.md`) or FF++. **This is the first
+   thing a EULA actually buys**, and it changes what every later number means.
+
+   **Sharpened 2026-09-23.** It is not only the per-technique labels. This repackaging cannot
+   support *any* in-corpus number: matching native resolution and container format raises the
+   separation (0.800 → 0.904) rather than removing it, and 62% of its fakes are one filename
+   family, an effective sample size of 2.4. ~~Use this corpus to REFUTE a detector, never to select
+   or tune one.~~ See "Matching the shortcut away does not work" in §0.
+
+   **Sharpened again 2026-09-23, after the permutation control.** Not even to refute one. A model
+   fitted on SHUFFLED labels scores 0.268–0.764 on this corpus, so any single number it produces —
+   including an inverted one with a bootstrap interval excluding chance — is inside the no-signal
+   null. **This promotes 0a from the first thing a EULA buys to the ONLY thing: there is now no
+   measurement route on this machine at all.** What is needed of the replacement corpus is now
+   specific — its real and fake halves must share an imaging chain, and its sources must not be one
+   filename family. See "The self-blend pair transfers at chance" in §0.
+
+0b. ~~**Supervised training on licence-clean fakes.**~~ **BOUGHT AND RUN, 2026-09-23** — SFHQ part
+   3 is downloaded, `corpora/sfhq.py` reads it, and the pair is measured (see "SFHQ landed" in §0).
+   Result: it transfers at chance used naively, and at a point estimate of 0.644 once the source
+   scale is matched — with a grouped interval of 0.313–0.762 that contains chance. **The binding
+   constraint has moved to evaluation:** there is no corpus on this machine that can tell whether
+   that lead is real, which promotes 0a from "changes what every later number means" to the only
+   thing between a lead and a detector. The original note follows.
+
+   **Reordered 2026-09-23.** Refitting the SAME features on DF40's own fakes reaches 0.800 where self-blending
+   reached 0.289, so the physics was never the binding constraint — the supervision was. Fake data
+   to train on is the first thing to buy, ahead of new physics. SFHQ (~425k synthetic faces, MIT
+   upstream) needs one Kaggle account; everything else found is NonCommercial.
+
+   Read that 0.800 with its ablation, though: colour means alone score 0.843 on the same split, so
+   most of it is a corpus shortcut rather than forensics. Whatever is trained must be measured
+   ACROSS corpora, which is what the evidence gate already enforces.
+
+0c. ~~**PROMOTED — a second slot, with different physics, is the cheapest untried lever.**~~
+   **RUN AND REFUTED THE SAME DAY.** Slot C is built (`NPRStatsNet`, `training/fit_npr.py`) and
+   fitted. On the licence-clean pair it scores **0.316 on DF40, CI 0.184–0.372 — inverted, and
+   resolved**, the first cross-corpus interval this project has produced that excludes chance. The
+   control says the features are fine (fitted on DF40 val they reach 0.830, beating slot A's 0.800):
+   what is wrong is the training PAIR. See "Slot C is built, fitted, and refuted" in §0. ~~**The next
+   experiment is the one untested cell — slot C on FairFace self-blends**, the only pair whose real
+   and fake halves share a camera and a codec. It needs no new data: `corpora/sbi.py` already builds
+   it.~~ **RUN 2026-09-23, and it closed the measurement route instead.** The self-blend pair does
+   remove the shortcut (colour-only transfer 0.843 -> 0.402), but a permutation control shows every
+   DF40 number this project has reported — the 0.316 above included — is inside the null a model
+   fitted on SHUFFLED labels produces. DF40 cannot refute a detector either. See "The self-blend
+   pair transfers at chance" in §0. The original note follows.
+
+   **A second slot, with different physics.** The full fit (§0, "204,716 samples, and 500 would have done") shows the 30-dimension
+   seam vector saturating at 500 examples a side: more licence-clean fakes buy nothing for it. Slot
+   C reads a DIFFERENT physical property (upsampling fingerprint), it is declared and weightless,
+   and SFHQ — generator output, 118,358 images already on disk — is precisely the data it wants.
+   It needs no EULA, no download and no decision. The original note follows.
+
+   **Then a second slot, with different physics.** Slot C (NPR, the upsampling fingerprint) is
+   declared and has no weights. Until a second slot exists, a good slot-A number still leaves most
+   of DF40 undetected — and the fusion layer has nothing to fuse.
 
 ---
 

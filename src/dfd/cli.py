@@ -22,14 +22,23 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from .audit import AuditRecord, record_digest
+from .calibration import load_calibrators
 from .detectors.registry import default_registry
 from .errors import DfdError
 from .faces import DEFAULT_MODEL
 from .ingest.video import DEFAULT_MAX_FRAMES
 from .pipeline import decide
 from .types import Context
+
+#: Where `training/fit_vcip.py` and `training/fit_calibration.py` write their
+#: curves. A relative path, resolved against the working directory, matching
+#: how `DEFAULT_MODEL` and the weight paths are handled: this tool is run from
+#: a checkout, and an absolute path baked in at import time would point at
+#: whichever checkout happened to install it.
+DEFAULT_CALIBRATION = Path("assets/models/calibration.json")
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +113,15 @@ def _build_parser() -> argparse.ArgumentParser:
     score.add_argument("-v", "--verbose", action="count", default=0,
                        help="log to stderr at INFO; repeat (-vv) for DEBUG. "
                             "stdout carries the record either way")
+    score.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
+                       help="per-band calibration curves (training/"
+                            "fit_vcip.py or training/fit_calibration.py "
+                            "write these). WITHOUT THEM EVERY DETECTOR "
+                            "ABSTAINS with `uncalibrated_for_band` and the "
+                            "verdict is always insufficient_evidence, "
+                            "however good its weights are. An absent file "
+                            "is not an error — it is the state of a fresh "
+                            "checkout, and abstaining is then correct")
     score.add_argument("--pretty", action="store_true",
                        help="indent the JSON for reading; the digest is always "
                             "taken over the canonical form")
@@ -152,11 +170,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     _configure_logging(args.verbose)
     registry = default_registry()
+    # An absent file yields no calibrators, and the detectors then abstain
+    # with `uncalibrated_for_band` — which is the honest output, not a
+    # failure. Refusing to run would make a fresh checkout look broken.
+    calibrators = None
+    calib_path = Path(args.calibration)
+    if calib_path.is_file():
+        calibrators = load_calibrators(calib_path)
+        logger.debug("loaded calibration for %s from %s",
+                     sorted(calibrators), calib_path)
+    else:
+        logger.debug("no calibration at %s; detectors will abstain with "
+                     "uncalibrated_for_band", calib_path)
     logger.debug("scoring %s with detectors %s", args.path, registry.names())
     try:
         record = decide(
             args.path,
             registry=registry,
+            calibrators=calibrators,
             context=Context(subject_id=args.subject_id),
             face_model=args.face_model,
             max_frames=args.max_frames,
