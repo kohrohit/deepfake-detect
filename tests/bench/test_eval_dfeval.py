@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from bench.eval_dfeval import (
     ORACLE_HI,
@@ -60,6 +61,41 @@ def test_logo_is_refused_and_the_refusal_is_the_recorded_answer(dfeval_root,
     verdict = logo_verdict(records)
     assert "cannot fold" in verdict.lower()
     assert "generator" in verdict.lower()
+
+
+def test_logo_verdict_records_an_unfoldable_corpus_and_propagates_a_broken_one(
+        monkeypatch):
+    # `UnsplittableCorpusError` SUBCLASSES ValueError (bench/protocol.py),
+    # and a plain ValueError out of `bench.protocol._validate` means
+    # something else entirely: a straddling source, a label outside {0, 1},
+    # an unattributed fake, a real carrying a generator -- a corpus that is
+    # broken, not one that merely cannot fold. That subclass relationship is
+    # the trap, and it is why the catch in `logo_verdict` is as specific as
+    # it looks: widening it to `except ValueError` would answer "this corpus
+    # cannot fold" for a corpus nobody should be reporting on at all, and
+    # every other test in this file would still pass.
+    #
+    # Both directions are asserted, so a catch that is too wide and a catch
+    # that is too narrow each fail here. Checking only the propagation would
+    # pass against a catch that was deleted; checking only the refusal would
+    # pass against `except Exception`.
+    from bench import eval_dfeval
+    from bench.protocol import UnsplittableCorpusError
+
+    records = [{"sample_id": "dfeval/x"}]
+
+    def _unsplittable(_records, *_args, **_kwargs):
+        raise UnsplittableCorpusError("no second generator to hold out")
+
+    monkeypatch.setattr(eval_dfeval, "logo_splits", _unsplittable)
+    assert "cannot fold" in eval_dfeval.logo_verdict(records).lower()
+
+    def _malformed(_records, *_args, **_kwargs):
+        raise ValueError("malformed")
+
+    monkeypatch.setattr(eval_dfeval, "logo_splits", _malformed)
+    with pytest.raises(ValueError, match="malformed"):
+        eval_dfeval.logo_verdict(records)
 
 
 def test_face_subset_selects_only_faced_records():
