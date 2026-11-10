@@ -1,11 +1,16 @@
-import numpy as np
 import logging
 
+import numpy as np
 import pytest
+
 from bench.guards import GuardViolation
 from bench.metrics import auc, bootstrap_ci_by_group
 from bench.runner import (
-    RunConfig, _observation, dataset_hash, run_benchmark, worst_logo_auc,
+    RunConfig,
+    _observation,
+    dataset_hash,
+    run_benchmark,
+    worst_logo_auc,
 )
 from dfd.detectors.base import Registry, SyntheticDetector
 
@@ -808,3 +813,18 @@ def test_abstention_by_class_counts_every_record_so_rates_are_computable():
 
     assert sum(total for _, total in by_class.values()) == len(records)
     assert set(by_class) == {"real", "deepfacelive", "faceswap"}
+
+
+def test_observation_uses_a_records_own_roi_and_landmarks_when_present():
+    img = np.full((100, 100, 3), 120, np.uint8)
+    rec = {"image": img, "source_id": "s", "roi": (10, 10, 40, 40),
+           "landmarks": np.array([[20.0, 25.0], [45.0, 25.0]])}
+    obs = _observation(rec)
+    assert obs.roi == (10, 10, 40, 40)
+
+
+def test_observation_falls_back_to_the_whole_frame_for_crop_corpora():
+    # Unchanged behaviour for every existing corpus, whose records ARE crops.
+    img = np.full((64, 64, 3), 120, np.uint8)
+    obs = _observation({"image": img, "source_id": "s"})
+    assert obs.roi == (0, 0, 64, 64)

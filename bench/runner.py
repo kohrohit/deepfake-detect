@@ -215,11 +215,24 @@ def dataset_hash(records: list[dict]) -> str:
 
 
 def _observation(record: dict) -> Observation:
+    """Build the Observation a detector sees.
+
+    A record MAY carry its own `roi` and `landmarks`, and when it does they
+    are used. Corpora that localise faces at load time (`corpora.dfeval`)
+    know where the face is and at what scale; the whole-image fallback below
+    exists for corpora whose records are already face crops, where the crop
+    IS the ROI. Synthesising landmarks for an image that has real ones
+    fabricates the inter-ocular distance `measure_quality` bands on, and the
+    band decides which detectors are allowed to score at all.
+    """
     img = record["image"]
     h, w = img.shape[:2]
-    lm = np.array([[w * 0.35, h * 0.4], [w * 0.65, h * 0.4]])
-    q = measure_quality(img, (0, 0, w, h), lm)
-    return Observation(t=0.0, payload=img, roi=(0, 0, w, h), quality=q,
+    roi = record.get("roi") or (0, 0, w, h)
+    lm = record.get("landmarks")
+    if lm is None:
+        lm = np.array([[w * 0.35, h * 0.4], [w * 0.65, h * 0.4]])
+    q = measure_quality(img, roi, np.asarray(lm))
+    return Observation(t=0.0, payload=img, roi=roi, quality=q,
                        source_id=record["source_id"])
 
 
