@@ -451,7 +451,7 @@ Expected: 8 passed.
 
 - [ ] **Step 5: Run the gates**
 
-Run: `ruff check . && mypy --strict src/ && python3 -m pytest -q`
+Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean. `mypy --strict` will complain about `self.transformer.resblocks` assignment on a
 bare `nn.Module`; if the `type: ignore[assignment]` above is not the right code, use whatever mypy
 names — do not widen to a bare `type: ignore`.
@@ -1261,7 +1261,7 @@ Expected: all pass.
 
 - [ ] **Step 7: Run the gates**
 
-Run: `ruff check . && mypy --strict src/ && python3 -m pytest -q`
+Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean, test count up by ~14.
 
 - [ ] **Step 8: Commit**
@@ -1833,9 +1833,11 @@ def test_kish_ess_of_equal_families_is_the_family_count():
 
 
 def test_kish_ess_collapses_when_one_family_dominates():
-    # DF40's measured shape: 1601 fakes, 45 families, 999 in the largest.
-    # The answer there was 2.4, and a corpus worth 2.4 fakes cannot carry an
-    # interval however many rows it has.
+    # DF40's measured SHAPE, not its exact counts: 1601 fakes fell into 45
+    # filename families with 999 in the largest, for a Kish ESS of 2.4. The
+    # array below is that shape at a smaller total and lands at 2.45 -- the
+    # point being that a corpus worth ~2.4 fakes cannot carry an interval
+    # however many rows it has.
     counts = [999] + [13] * 44
     assert kish_ess(counts) < 3.0
 
@@ -2487,7 +2489,7 @@ nobody deploys it behind a 2-second timeout by accident.
 
 - [ ] **Step 4: Run the tests and gates**
 
-Run: `python3 -m pytest -q && ruff check . && mypy --strict src/`
+Run: `python3 -m pytest -q && ruff check src bench corpora training && mypy --config-file mypy.ini`
 
 - [ ] **Step 5: Commit**
 

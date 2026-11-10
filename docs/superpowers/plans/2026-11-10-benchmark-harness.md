@@ -42,8 +42,20 @@ runtime dependency.**
   subset, with `abstention_by_class` beside it.
 - **Guards are waived explicitly, in a named report block**, never quietly satisfied — the
   pattern `bench/eval_df40.py` already establishes.
-- **Repo gates, every commit:** `ruff check .`, `mypy --strict src/`, `python3 -m pytest -q`,
-  coverage ≥ 85%, asset gate. Baseline: 928 tests, 92.8% coverage.
+- **Repo gates, every commit:** `ruff check src bench corpora training`, `mypy --config-file
+  mypy.ini`, `pytest -q --cov=src/dfd --cov-fail-under=85`, asset gate. Baseline: 928 tests,
+  92.8% coverage.
+
+  **The lint command is scoped, deliberately, and `ruff check .` is NOT the gate.** CI runs
+  exactly the four paths above and `tests/test_ci_gates.py::test_ruff_actually_passes` pins that
+  command; `ci.yml`'s own comment explains that linting `tests/` would fail CI on something the
+  test suite says nothing about. Measured 2026-11-10 at this plan's base commit: `ruff check .`
+  reports **74 violations, every one of them pre-existing in `tests/`**. Do not attempt to fix
+  them as part of this plan.
+
+  **New test files this plan adds are the exception** and must be individually clean
+  (`ruff check <the new test files>`), because they carry no legacy debt and there is no reason
+  to add any.
 - **Tasks 1–6 need no corpus access.** Only Task 7 does. Everything is built and tested against
   synthetic fixtures first, so the HuggingFace gate blocks one task rather than the plan.
 
