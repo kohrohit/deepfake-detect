@@ -7,7 +7,7 @@ operationally tolerable FPR is the number that decides whether this ships.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -387,3 +387,33 @@ def permutation_p(observed: float, null: np.ndarray, centre: float = 0.5) -> flo
         raise ValueError("null must hold at least one draw")
     extreme = int(np.sum(np.abs(d - centre) >= abs(observed - centre)))
     return (extreme + 1) / (d.size + 1)
+
+
+def kish_ess(counts: Sequence[int] | np.ndarray) -> float:
+    """Kish's effective sample size over group sizes: (sum n)^2 / sum n^2.
+
+    Equals the group count when groups are equal and collapses toward 1 when
+    one group dominates. Measured on DF40: 1601 fakes in 45 filename families
+    with 999 in the largest gives 2.4, which is why no interval over that
+    corpus meant what it appeared to. Report it beside every n, or the reader
+    is invited to read rows as independent observations.
+
+    This is a DIFFERENT quantity from `dfd.fusion.effective_sample_size`,
+    which estimates ESS from lag-1 autocorrelation of a frame series. That
+    one asks "how independent are these consecutive frames"; this one asks
+    "how concentrated is this corpus into a few families". Both are called
+    ESS in the literature and they are not interchangeable.
+
+    Args:
+        counts: Group sizes (positive integers). Can be a list or numpy array.
+
+    Returns:
+        Kish's ESS: (sum n)^2 / sum n^2. A float in [1, len(counts)].
+
+    Raises:
+        ValueError: on an empty or all-zero input.
+    """
+    n = np.asarray(counts, dtype=float)
+    if n.size == 0 or not n.sum():
+        raise ValueError("kish_ess needs at least one non-empty group")
+    return float(n.sum() ** 2 / np.square(n).sum())

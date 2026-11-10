@@ -485,3 +485,35 @@ def test_permutation_p_refuses_an_empty_null():
 
     with pytest.raises(ValueError, match="at least one draw"):
         permutation_p(0.7, np.array([]))
+
+
+def test_kish_ess_of_equal_groups_is_the_group_count():
+    from bench.metrics import kish_ess
+
+    assert kish_ess([10, 10, 10, 10]) == pytest.approx(4.0)
+
+
+def test_kish_ess_collapses_when_one_group_dominates():
+    # DF40's measured shape: 1601 fakes in 45 filename families, 999 in the
+    # largest. The answer was 2.4, and a corpus worth 2.4 fakes cannot carry
+    # an interval however many rows it has.
+    from bench.metrics import kish_ess
+
+    assert kish_ess([999] + [13] * 44) < 3.0
+
+
+def test_kish_ess_of_one_group_is_one():
+    from bench.metrics import kish_ess
+
+    assert kish_ess([500]) == pytest.approx(1.0)
+
+
+def test_kish_ess_refuses_an_empty_or_all_zero_input():
+    # Returning 0.0 would read as a measured answer rather than as nothing
+    # to measure, and would then be divided by somewhere downstream.
+    from bench.metrics import kish_ess
+
+    with pytest.raises(ValueError, match="at least one"):
+        kish_ess([])
+    with pytest.raises(ValueError, match="at least one"):
+        kish_ess([0, 0])
