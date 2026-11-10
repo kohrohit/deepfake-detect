@@ -61,8 +61,20 @@ logger = logging.getLogger(__name__)
 #: fakes were composited from — out of this detector's own training set, and
 #: reported a worst-generator AUC of 0.923 on 2026-09-24. That is
 #: memorisation. Rebuilt at offset 10000 the same run gives 0.527.
+#:
+#: `0.1.0-probe-fairface2000`: `training/fit_gend.py` over the first 2,000
+#: photographs of the same directory, same selection rule. The contamination
+#: that gave `blend_seam` its fabricated 0.923 applies identically here and
+#: is WORSE: slot D's fakes are composited from those same photographs, and
+#: its self-blends are those photographs. The window is 2,000 rather than the
+#: 60,000 the plan proposed because 60,000 photographs is ~300,000 encoder
+#: forward passes, measured at ~0.6 images/second on this hardware — about
+#: 139 hours. 2,000 also sits inside `blend_seam`'s 10,000, so the existing
+#: "evaluate at offset >= 10000" discipline already covers both detectors
+#: and no second rule is needed.
 TRAINING_WINDOWS: dict[str, int] = {
     "0.2.0-fairface10k": 10000,
+    "0.1.0-probe-fairface2000": 2000,
 }
 
 #: The heading the scope block renders under, named so a test can assert the

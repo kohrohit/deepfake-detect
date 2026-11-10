@@ -144,6 +144,16 @@ assets:
     evidence_url: "https://github.com/SCLBD/DeepfakeBench"
     date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
+  gend_clip_weights:
+    source: "Fitted in this repo by training/fit_gend.py: a Linear(768, 2) over frozen OpenAI CLIP ViT-L/14 embeddings of self-blended and composited FairFace crops. No generator weight file, no licensed deepfake dataset, and nothing derived from FaceForensics++ contributes to them."
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship. The encoder they read is separately MIT (clip_vit_l14_visual)."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these coefficients: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/gend_clip.pt"
   fairface_corpus:
     source: "https://github.com/joojs/fairface — 97,698 real faces, pre-cropped and aligned to 224x224, with age/gender/race labels. Mirrored as HuggingFaceM4/FairFace (ungated). Sampled from Yahoo's YFCC-100M Flickr set."
     # The only face supply this project has found that is BOTH commercially
