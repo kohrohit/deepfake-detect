@@ -40,6 +40,14 @@ that CSV. Nothing upstream of the CSV ever enters this repository.
   a `ScoreFile`.
 - **A duplicate `sample_id`, or an id outside the known corpus, is refused outright** — not
   silently overwritten or dropped — because either would change a denominator invisibly.
+- **A correctly-produced score file can still be refused for unknown ids, and the usual cause is
+  this harness, not the wrapper.** The known-id set is built from the records
+  `corpora/dfeval.py` actually returned, and that loader drops duplicate, unreadable and
+  unlabelled rows before the set exists — duplicates are *expected* on in-the-wild media, where
+  one image circulates across many domains (design spec §4.1) — while `--limit` drops more
+  still. A wrapper following step 5 below emits one row per `item_id` in `metadata.csv`, which
+  is a superset of what the harness loaded. When that refusal fires, re-run the baseline over
+  the ids the harness loaded (or drop `--limit`); do not edit the score file to make it pass.
 
 ## The licence posture
 

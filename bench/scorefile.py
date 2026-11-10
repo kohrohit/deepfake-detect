@@ -18,6 +18,15 @@ rather than tidy:
   weight file that never enters the tree cannot be the file that blocks a sale,
   so this protocol measures baselines by their output, never by vendoring them.
 
+The unknown-id refusal is about the FILE, but its usual cause is upstream of
+the file. `known_ids` is built from the records a loader actually returned,
+and `corpora.dfeval` drops duplicate, unreadable and unlabelled rows (and
+`--limit` drops more) — so a wrapper that correctly emitted one row per
+manifest `item_id` will be refused here for scoring ids this run no longer
+holds. That is still a refusal rather than a silent accept, because silently
+accepting would hide a genuinely mismatched corpus; the message names the
+dedup so the reader does not go looking for the bug in their baseline.
+
 Coverage is reported, never thresholded. There is deliberately no number below
 which a baseline is dropped from a report — dropping one is a judgement the
 reader makes with `ScoreFile.coverage` in hand, not one this module makes for
@@ -135,9 +144,18 @@ def load_score_file(
         sample_id, raw_score = row
         if sample_id not in known:
             raise ValueError(
-                f"{p}: sample_id {sample_id!r} is not in the known corpus; "
-                "a baseline scoring a sample it was not given is a "
-                "configuration error, not low coverage"
+                f"{p}: sample_id {sample_id!r} is not in the known corpus "
+                f"of {len(known)} ids; a baseline scoring a sample it was "
+                "not given is a configuration error, not low coverage. The "
+                "likeliest cause is not the baseline: the corpus loaded "
+                "here is SMALLER than the manifest the baseline was run "
+                "against. `corpora.dfeval` drops duplicate, unreadable and "
+                "unlabelled rows before this set is built (duplicates are "
+                "EXPECTED on in-the-wild media, where one image circulates "
+                "across many domains), and `--limit` drops more, while a "
+                "baseline wrapper emits one row per manifest `item_id`. "
+                "Re-run the baseline over the ids this run actually loaded, "
+                "or drop `--limit`, rather than editing the score file."
             )
         if sample_id in scores:
             raise ValueError(
