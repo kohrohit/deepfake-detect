@@ -13,7 +13,9 @@ _root = Path(__file__).parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+from dfd.detectors.base import Registry, SyntheticDetector  # noqa: E402
 from dfd.faces import FaceBox  # noqa: E402
+from dfd.types import RawScore  # noqa: E402
 
 # --- corpora.dfeval fixtures -------------------------------------------
 #
@@ -149,3 +151,74 @@ def dfeval_root_mixed(tmp_path: Path) -> Path:
     ]
     _write_dfeval_corpus(root, rows)
     return root
+
+
+# --- bench.eval_dfeval fixtures ----------------------------------------
+#
+# Both registries hold a detector literally named `npr`, because
+# `bench.eval_dfeval` identifies slot C by name: the oracle gate exists to
+# check OUR slot C against the number the corpus's own paper published for
+# NPR, and a registry without one leaves the gate with nothing to measure.
+# Neither stand-in loads a weight file, which is the point -- `npr.pt` is
+# gitignored and absent from every fresh checkout.
+
+#: What `_FlatNPR` returns for every observation. A CONSTANT, so its AUC is
+#: exactly 0.5 under `bench.metrics.auc`'s tie-averaging -- inside the
+#: oracle band without depending on how a fixture corpus happens to be
+#: ordered or on what its pixels contain.
+_FLAT_NPR_SCORE = 0.5
+
+
+class _FlatNPR:
+    """Slot C stand-in that scores everything alike: AUC 0.5, in band."""
+
+    name = "npr"
+    slot = "C"
+    version = "stub-flat-1"
+    modalities = frozenset()
+    min_quality_band = "reject"
+
+    def score(self, obs):
+        return RawScore(detector=self.name, version=self.version,
+                        score=_FLAT_NPR_SCORE, abstained=False, reason="ok")
+
+
+class _InvertedNPR:
+    """Slot C stand-in wired backwards: high on reals, low on fakes.
+
+    It reads the label off the fixture's own `source_id` rather than off
+    the pixels. That is cheating, deliberately and in the WRONG direction:
+    it reproduces an AUC of 0.0 the way inverted labels, misaligned ids or
+    a flipped score sign would, which is what `ORACLE_LO` exists to catch,
+    and it does so without depending on record order.
+    """
+
+    name = "npr"
+    slot = "C"
+    version = "stub-inverted-1"
+    modalities = frozenset()
+    min_quality_band = "reject"
+
+    def score(self, obs):
+        fake = all("fake" in o.source_id for o in obs)
+        return RawScore(detector=self.name, version=self.version,
+                        score=0.0 if fake else 1.0, abstained=False,
+                        reason="ok")
+
+
+@pytest.fixture
+def stub_registry() -> Registry:
+    """A `npr` whose AUC lands inside the oracle band, plus one other slot."""
+    registry = Registry()
+    registry.register(SyntheticDetector(name="synthetic"))
+    registry.register(_FlatNPR())
+    return registry
+
+
+@pytest.fixture
+def inverted_registry() -> Registry:
+    """The same, with an `npr` landing below `ORACLE_LO`."""
+    registry = Registry()
+    registry.register(SyntheticDetector(name="synthetic"))
+    registry.register(_InvertedNPR())
+    return registry
