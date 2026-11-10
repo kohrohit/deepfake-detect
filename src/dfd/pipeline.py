@@ -137,7 +137,17 @@ def normalize(sample: Sample, *, detect: FaceDetectFn = _detect_with_reason,
             out.append(obs)
             continue
         box = select_largest_face(boxes)
-        assert box is not None  # `boxes` is non-empty: checked just above
+        if box is None:  # pragma: no cover -- unreachable, see below
+            # `boxes` is non-empty (checked immediately above), so
+            # `select_largest_face` cannot return None here. This was a bare
+            # `assert`, which `python -O` strips -- and this is the SERVING
+            # path, where the next line would then raise `AttributeError` on
+            # a None instead of saying what was actually violated. The check
+            # is kept, the behaviour is unchanged (an AssertionError, never
+            # raised in practice), and it survives optimisation.
+            msg = ("select_largest_face returned None for a non-empty box "
+                   f"list of {len(boxes)}")
+            raise AssertionError(msg)
         roi = _clamp_roi(obs.payload.shape, box)
         if roi is None:
             logger.warning("face box %s does not intersect the frame; not measured",
