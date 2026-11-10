@@ -1,0 +1,13 @@
+{
+  "batch_size": 1,
+  "encoder": "assets/models/clip_vit_l14_visual.pt",
+  "implied_ln_tuning_step_ms": 828.9412959370566,
+  "implied_ln_tuning_step_note": "forward x 3, the usual rule of thumb for forward+backward. NOT measured. Multiply by the training corpus size for one epoch.",
+  "mean_ms": 276.3137653123522,
+  "n": 32,
+  "p50_ms": 276.3559134982643,
+  "p95_ms": 277.0138423460594,
+  "quantized": false,
+  "threads": 4,
+  "warmup_ms": 280.6927729980089
+}
