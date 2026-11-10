@@ -132,7 +132,7 @@ git commit -m "docs: the spec's scope list still named the corpus its own §6 fo
 
 ---
 
-### Task 1: The CLIP ViT-L/14 vision tower, in this repo
+### Task 1: The CLIP ViT-L/14 vision tower, in this repo — **DONE 2026-11-10** (`ae3a518`)
 
 **Ruling, recorded here because it will be questioned:** the tower is reimplemented rather than
 imported. `open_clip_torch` and `transformers` would each add a dependency tree (huggingface_hub,
@@ -171,7 +171,7 @@ substituting `nn.GELU` produces plausible-looking embeddings that are wrong.
     in, `(1, 3, size, size)` normalised float32 out. Bicubic resize, CLIP's mean/std.
   - `PREPROCESS_VERSION: str = "clip-224-bicubic-v1"` — travels into the feature cache key.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """The CLIP ViT-L/14 vision tower. Tests run on `tiny()`; the 1.2 GB file is never needed here."""
@@ -270,12 +270,12 @@ def test_preprocess_version_is_declared():
     assert PREPROCESS_VERSION
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_clip_vit.py -q`
 Expected: collection error, `ModuleNotFoundError: No module named 'dfd.detectors.clip_vit'`.
 
-- [ ] **Step 3: Write the tower**
+- [x] **Step 3: Write the tower**
 
 ```python
 """OpenAI CLIP's ViT vision tower, reimplemented so this repo owns the architecture.
@@ -444,24 +444,48 @@ def preprocess(crop: npt.NDArray[np.uint8], size: int = 224) -> torch.Tensor:
     return torch.from_numpy(x).permute(2, 0, 1)[None].contiguous()
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_clip_vit.py -q`
 Expected: 8 passed.
 
-- [ ] **Step 5: Run the gates**
+- [x] **Step 5: Run the gates**
 
 Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean. `mypy --strict` will complain about `self.transformer.resblocks` assignment on a
 bare `nn.Module`; if the `type: ignore[assignment]` above is not the right code, use whatever mypy
 names — do not widen to a bare `type: ignore`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dfd/detectors/clip_vit.py tests/test_clip_vit.py
 git commit -m "feat: CLIP's vision tower, owned here so it can load securely"
 ```
+
+**One deviation from the code above, applied 2026-11-10.** Step 5 predicted mypy would object to
+`self.transformer.resblocks` and told the executor to use whatever error code mypy names. It names
+a different problem than the plan expected: the `# type: ignore[assignment]` is reported *unused*,
+and the error lands on the **call** instead — `"Tensor" not callable`, because
+`nn.Module.__getattr__` reads an attribute assigned onto a bare `nn.Module` back as
+`Tensor | Module`. Silencing that at the call site would have put an ignore on the hot path of
+every forward pass. Instead a four-line `_Transformer(nn.Module)` holder declares
+`resblocks: nn.Sequential`, which produces **the identical `transformer.resblocks.*` state_dict
+key path** — the thing Task 2's converter depends on, and what
+`test_state_dict_keys_mirror_openai_clip_visual_names` pins. Three further `no-any-return` errors
+(the MLP call, the `@ proj` read-out, the block-stack call) are fixed with annotated locals, which
+is the idiom `dfd/detectors/npr.py:302` already uses. No ignore comment survives in the file.
+
+**And a trap for the next task.** `mypy --config-file mypy.ini` run by hand reported *Success*
+while `tests/test_ci_gates.py::test_mypy_strict_actually_passes` failed on the same tree — the
+hand run was serving a stale incremental cache. The test shells out fresh and is the authority.
+Run `rm -rf .mypy_cache` before believing a hand-run clean.
+
+**Measured after Step 6:** 1,001 tests pass (993 before this task, +8), coverage 93.03% against the
+85% gate, `ruff check src bench corpora training` clean, `mypy --config-file mypy.ini` clean from a
+cold cache. The asset gate fails locally on `npr_capture_head` — that is its designed fail-closed
+behaviour on a box that has the gitignored weight files, it is identical with this task's files
+stashed, and CI discovers zero assets and passes.
 
 ---
 
