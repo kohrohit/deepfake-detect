@@ -17,3 +17,7 @@ assets/models/blend_seam.npz
 bench/blend_seam_report.json
 bench/df40_report.json
 bench/swap_corpus_report.json
+
+# Private keys never belong in the tree (kohli-key.pem arrived untracked,
+# one `git add -A` away from being published).
+*.pem
