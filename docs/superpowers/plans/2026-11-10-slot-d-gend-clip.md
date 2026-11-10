@@ -1384,7 +1384,7 @@ with `weights_absent` on this machine because the head does not exist yet.
 
 ---
 
-### Task 4: The feature cache, which is what makes the measurement affordable
+### Task 4: The feature cache, which is what makes the measurement affordable — **DONE 2026-11-11** (`2cc88c8`)
 
 One ViT-L/14 forward pass is ~81 GFLOPs. Every number spec §7 demands — a permutation null (12
 refits), a grouped bootstrap (1000 resamples), a per-fold-refit LOGO (6 folds) — would re-run the
@@ -1407,7 +1407,7 @@ matrix that is already in memory, and the whole validation suite costs one pass 
       — `(N, 768)`, cached rows served from disk, the rest computed and stored.
     - `stats: dict[str, int]` — `{"hits": .., "misses": ..}`, reported by every caller.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -1468,12 +1468,12 @@ def test_batching_does_not_change_the_vectors(tmp_path):
     assert np.allclose(one, many, atol=1e-5)
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_clip_features.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.clip_features'`.
 
-- [ ] **Step 3: Write the cache**
+- [x] **Step 3: Write the cache**
 
 Write `training/clip_features.py` implementing exactly the interface above. Required properties,
 each of which a test above pins:
@@ -1491,17 +1491,52 @@ cache directory belongs **outside** the repo — `~/Desktop/agents/datasets/clip
 other corpus here — because a few hundred thousand `.npy` files inside a git worktree is a mistake
 nobody undoes.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_clip_features.py -q`
 Expected: 5 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add training/clip_features.py tests/test_clip_features.py
 git commit -m "feat: embed once, measure many times"
 ```
+
+**The module as the plan specified it did not do the thing its own docstring claims.** Step 3
+requires the docstring to say that content addressing is why 979 byte-identical copies cost one
+forward pass. With `embed_all` written as a flat list of pending indices, that is only true
+ACROSS calls: inside one call all 979 are misses on disk, so all 979 are embedded, and the cache
+helps on the second run only. `pending` is now a `dict[key, list[int]]`, one forward pass per
+DISTINCT image, copied to every position that asked for it.
+
+**And duplicates were not even returning equal rows.** Two byte-identical images embedded in the
+same batch disagreed by ~6e-08 depending on where in the batch each sat — a batched matmul
+reassociates differently per row position. Harmless as a number, but it meant the on-disk entry
+for a repeated image was whichever copy happened to be written last, so a first pass and a second
+pass over the same corpus returned slightly different matrices. Deduplicating removes the
+ambiguity: one vector per distinct image, written once, identical everywhere it appears.
+
+**Two tests added beyond the plan's five** (7 total), covering the two ways this module can
+silently corrupt a measurement rather than fail:
+
+- `test_a_half_cached_list_keeps_its_order` — misses are computed in batches and written back by
+  index. A version that appended results instead would return the computed rows followed by the
+  cached ones. Every caller zips this matrix against a label vector, and a matrix permuted against
+  its labels fits beautifully and means nothing.
+- `test_duplicate_images_each_get_their_own_row` — one cache ENTRY for 979 copies is the point;
+  one ROW would be a bug, because the caller's labels have an entry per observation.
+
+`embed_all` also now refuses to return a matrix shorter than its input rather than filtering the
+unfilled rows away, for the same reason.
+
+**One clarification, recorded because the number will be read:** `stats["misses"]` counts INPUTS
+not served from disk, not forward passes. A call holding 979 copies reports 979 misses and runs
+the encoder once. The plan's tests assert `stats` by exact dict equality, so a third counter could
+not be added without rewriting them; the docstring says it instead.
+
+**Measured after Step 5:** 1,028 tests pass (1,021 before this task, +7), coverage 93.15%, ruff
+clean, `mypy --config-file mypy.ini` clean from a cold cache.
 
 ---
 
