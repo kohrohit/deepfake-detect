@@ -16,7 +16,9 @@ from ..audit import AuditRecord
 from ..calibration import Calibrator, load_calibrators
 from ..detectors.blend import DEFAULT_BLEND_WEIGHTS
 from ..detectors.registry import (
+    DEFAULT_CLIP_WEIGHTS,
     DEFAULT_EFFNET_WEIGHTS,
+    DEFAULT_GEND_WEIGHTS,
     DEFAULT_NPR_WEIGHTS,
     default_registry,
 )
@@ -48,6 +50,8 @@ class ServiceConfig:
     blend_weights: Path = Path(DEFAULT_BLEND_WEIGHTS)
     npr_weights: Path = Path(DEFAULT_NPR_WEIGHTS)
     effnet_weights: Path = Path(DEFAULT_EFFNET_WEIGHTS)
+    gend_weights: Path = Path(DEFAULT_GEND_WEIGHTS)
+    clip_weights: Path = Path(DEFAULT_CLIP_WEIGHTS)
     face_model: Path = Path(DEFAULT_MODEL)
     policy: Policy = DEFAULT_POLICY
     limits: Limits = DEFAULT_LIMITS
@@ -166,7 +170,9 @@ def build_service(config: ServiceConfig) -> Service:
 
     registry = default_registry(npr_weights=config.npr_weights,
                                 effnet_weights=config.effnet_weights,
-                                blend_weights=config.blend_weights)
+                                blend_weights=config.blend_weights,
+                                gend_weights=config.gend_weights,
+                                clip_weights=config.clip_weights)
     for name in registry.names():
         version = registry.get(name).version
         logger.info("detector %s version %s", name, version)
