@@ -38,6 +38,26 @@ assets:
     checked_by: "kohrohit@gmail.com"
     files:
       - "assets/models/face_recognition_sface_2021dec.onnx"
+  clip_vit_l14_visual:
+    # The CONVERTED vision tower (training/convert_clip.py), plus the archive
+    # it was converted from. One id covers both: they are the same weights in
+    # two containers, and splitting them would invite two different licence
+    # verdicts on one set of numbers.
+    source: "OpenAI CLIP ViT-L/14 — https://github.com/openai/CLIP, weights at https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt (sha256 is the URL segment, verified by ops/fetch-assets.sh)"
+    license: "MIT"
+    # Read at source 2026-11-10: github.com/openai/CLIP/blob/main/LICENSE is
+    # the MIT text, "Copyright (c) 2021 OpenAI", fetched and read rather than
+    # inferred from a badge. Attribution is the only real obligation and it
+    # travels with the product (see the spec's §9.1 conditions). NOT the GenD
+    # checkpoint, which is FF++-trained and is never fetched by anything in
+    # this repo.
+    commercial_use: true
+    evidence_url: "https://github.com/openai/CLIP/blob/main/LICENSE"
+    date_checked: "2026-11-10"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/ViT-L-14.pt"
+      - "assets/models/clip_vit_l14_visual.pt"
   dima806_vit_weights:
     source: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
     license: "Apache-2.0"
