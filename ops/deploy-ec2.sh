@@ -136,6 +136,17 @@ REMOTE_EOF
 echo "==> installing the service"
 "${SSH[@]}" "$TARGET" "cd \$HOME/$REMOTE_DIR && PYTHON=\$HOME/$REMOTE_DIR/.venv/bin/python ./ops/install.sh"
 
+echo "==> restarting the service onto the synced code"
+# `ops/install.sh` ends in `systemctl --user enable --now`, which STARTS a
+# stopped unit and does nothing at all to a running one. So without this,
+# a second deploy syncs new code to disk and leaves the old process serving
+# it -- the deploy "succeeds", the tree is current, and the running service
+# is whatever it was before. Measured 2026-11-10: a deploy onto a service
+# already up for 11.7h left the uptime at 11.7h. This script's own header
+# claims re-running it after a code change IS the deploy; this is the line
+# that makes that true.
+"${SSH[@]}" "$TARGET" 'systemctl --user restart dfd.service && sleep 2 && systemctl --user is-active dfd.service'
+
 echo "==> enabling linger (survive logout and reboot)"
 # install.sh only PRINTS this advice, which is right for a laptop with a login
 # session and wrong for a server: a systemd USER unit with no lingering is
