@@ -134,6 +134,59 @@ def dfeval_root_with_contradiction(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def dfeval_root_one_domain(tmp_path: Path) -> Path:
+    """Both labels, but every record from the SAME web domain.
+
+    The grouped bootstrap then resamples one group forever and returns a
+    zero-width interval without saying so; `bench.eval_dfeval` refuses it.
+    """
+    root = tmp_path / "dfeval_one_domain"
+    rng = np.random.default_rng(11)
+    rows = [{"item_id": f"i{i}", "filename": f"{i}.jpg",
+             "label": "real" if i < 2 else "fake", "domain": "x.com",
+             "image": rng.integers(0, 150, (120, 100, 3), dtype=np.uint8)}
+            for i in range(4)]
+    _write_dfeval_corpus(root, rows)
+    return root
+
+
+@pytest.fixture
+def dfeval_root_domain_per_row(tmp_path: Path) -> Path:
+    """Both labels, and a DISTINCT domain on every single record.
+
+    One group per row makes the grouped bootstrap a row-level bootstrap,
+    which was measured 26x too narrow on DF40; `bench.eval_dfeval` refuses
+    it rather than report the interval that comes out of it.
+    """
+    root = tmp_path / "dfeval_domain_per_row"
+    rng = np.random.default_rng(12)
+    rows = [{"item_id": f"i{i}", "filename": f"{i}.jpg",
+             "label": "real" if i < 2 else "fake", "domain": f"d{i}.com",
+             "image": rng.integers(0, 150, (120, 100, 3), dtype=np.uint8)}
+            for i in range(4)]
+    _write_dfeval_corpus(root, rows)
+    return root
+
+
+@pytest.fixture
+def dfeval_root_unlabelled(tmp_path: Path) -> Path:
+    """Both labels, plus a blank cell and a third category.
+
+    The real dataset is gated and its label vocabulary is unverified, so
+    this is the loader path guaranteed to meet surprise data.
+    """
+    root = tmp_path / "dfeval_unlabelled"
+    rng = np.random.default_rng(13)
+    tokens = ["real", "real", "fake", "fake", "", "uncertain"]
+    rows = [{"item_id": f"i{i}", "filename": f"{i}.jpg", "label": token,
+             "domain": f"d{i % 3}.com",
+             "image": rng.integers(0, 150, (120, 100, 3), dtype=np.uint8)}
+            for i, token in enumerate(tokens)]
+    _write_dfeval_corpus(root, rows)
+    return root
+
+
+@pytest.fixture
 def dfeval_root_mixed(tmp_path: Path) -> Path:
     """Both labels, and some images bright enough that `stub_detect_sometimes`
     finds no face in them -- the in-the-wild case this corpus exists for."""

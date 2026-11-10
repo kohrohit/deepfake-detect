@@ -21,6 +21,7 @@ from bench.eval_dfeval import (
     SCOPE_HEADING,
     WAIVER_HEADING,
     abstention_by_class,
+    check_domain_grouping,
     check_oracle,
     face_subset,
     logo_verdict,
@@ -96,6 +97,56 @@ def test_logo_verdict_records_an_unfoldable_corpus_and_propagates_a_broken_one(
     monkeypatch.setattr(eval_dfeval, "logo_splits", _malformed)
     with pytest.raises(ValueError, match="malformed"):
         eval_dfeval.logo_verdict(records)
+
+
+def test_a_single_domain_is_refused_rather_than_bootstrapped(
+        tmp_path, dfeval_root_one_domain, stub_detect, stub_registry):
+    # One unique group gives `bootstrap_ci_by_group` a zero-width interval
+    # (measured: 0.478, 0.478) and no warning of any kind. The plan's own
+    # self-review said to escalate rather than quietly do it.
+    from bench.eval_dfeval import main
+
+    rc = main(["--root", str(dfeval_root_one_domain),
+               "--out-json", str(tmp_path / "r.json"),
+               "--out-md", str(tmp_path / "r.md"), "--allow-oracle-failure"],
+              detect=stub_detect, registry=stub_registry)
+    assert rc != 0
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_one_domain_per_row_is_refused_rather_than_bootstrapped(
+        tmp_path, dfeval_root_domain_per_row, stub_detect, stub_registry):
+    # One group per row IS a row-level bootstrap wearing a grouped name,
+    # and a row-level bootstrap was measured 26x too narrow on DF40. The
+    # interval it produces looks perfectly ordinary, which is the problem.
+    from bench.eval_dfeval import main
+
+    rc = main(["--root", str(dfeval_root_domain_per_row),
+               "--out-json", str(tmp_path / "r.json"),
+               "--out-md", str(tmp_path / "r.md"), "--allow-oracle-failure"],
+              detect=stub_detect, registry=stub_registry)
+    assert rc != 0
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_the_domain_refusal_names_the_count_and_the_resampling_family():
+    # The count is what tells the two failing shapes apart, so it has to be
+    # in the message: one domain and one-domain-per-row need different fixes.
+    import numpy as _np
+
+    one = check_domain_grouping(_np.array(["x.com"] * 4), 4)
+    assert one is not None
+    assert "1 unique domain" in one
+    assert "resampling family" in one.lower()
+    assert "zero-width" in one.lower()
+
+    per_row = check_domain_grouping(_np.array([f"d{i}" for i in range(4)]), 4)
+    assert per_row is not None
+    assert "4 unique domain" in per_row
+    assert "resampling family" in per_row.lower()
+    assert "row-level" in per_row.lower()
+
+    assert check_domain_grouping(_np.array(["a", "a", "b", "c"]), 4) is None
 
 
 def test_face_subset_selects_only_faced_records():

@@ -54,7 +54,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
 from corpora.dfeval import DFEVAL_GENERATOR, load_dfeval_images
@@ -104,6 +103,22 @@ ORACLE_DETECTOR = "npr"
 #: implementation differences named above, and the run proceeds.
 ORACLE_LO = 0.40
 ORACLE_HI = 0.75
+
+#: Every interval in this report is a bootstrap over DOMAINS -- the `domain`
+#: field is this corpus's resampling family, not a descriptive label -- and
+#: two shapes of that field make `bench.metrics.bootstrap_ci_by_group`
+#: degenerate SILENTLY. Both were measured rather than reasoned about:
+#:
+#:   one unique domain    every resample draws the same single group, so the
+#:                        statistic never moves and the interval comes back
+#:                        zero-width (measured: 0.478, 0.478) with no warning.
+#:   one domain per row   the "grouped" bootstrap IS a row-level bootstrap,
+#:                        which was measured 26x too narrow on DF40.
+#:
+#: Neither raises, so neither can be caught downstream by anything. The plan's
+#: own self-review named this and said to escalate rather than quietly do it,
+#: so `main` refuses both shapes before computing any interval at all.
+MIN_DOMAINS = 2
 
 #: Headings the two prose blocks render under. Named so a test can assert
 #: each block is present without pinning its wording.
@@ -305,6 +320,40 @@ def check_oracle(npr_auc: float) -> tuple[bool, str]:
         f"subset, inside {band}. The remaining difference is attributable "
         f"to the face-ROI scoring and to this project's NPR being an "
         f"unverified reimplementation; the run proceeds.")
+
+
+def check_domain_grouping(domains: np.ndarray, n_records: int) -> str | None:
+    """None if the domain field can carry a grouped bootstrap, else why not.
+
+    Args:
+        domains: one domain per record, in record order.
+        n_records: how many records were loaded, so the one-group-per-row
+            shape can be recognised rather than inferred.
+
+    Returns:
+        None when the grouping is usable, otherwise the refusal message.
+        It names the count it saw, because the two failing shapes need
+        different fixes and the count is what tells them apart.
+    """
+    n_domains = int(np.unique(domains).size)
+    if n_domains >= MIN_DOMAINS and n_domains != n_records:
+        return None
+    degenerate = (
+        "a ZERO-WIDTH interval -- every resample draws the same single "
+        "group, so the statistic never moves (measured: 0.478, 0.478)"
+        if n_domains < MIN_DOMAINS else
+        "a ROW-level interval, which is not a grouped bootstrap at all: "
+        "resampling rows rather than groups was measured 26x too narrow "
+        "on DF40")
+    return (
+        f"refusing to report: {n_domains} unique domain(s) over "
+        f"{n_records} records. The `domain` field is this corpus's "
+        f"RESAMPLING FAMILY -- every confidence interval here is a bootstrap "
+        f"over the originating web domains, never over rows -- and with "
+        f"{n_domains} of them `bench.metrics.bootstrap_ci_by_group` would "
+        f"silently return {degenerate}. Fix the manifest's domain column, or "
+        f"the loader that reads it, rather than reading the interval that "
+        f"comes out of it.")
 
 
 def logo_verdict(records: Sequence[dict[str, Any]]) -> str:
@@ -636,6 +685,14 @@ def main(argv: Sequence[str] | None = None, *,
     domains = np.asarray([str(r["domain"]) for r in records])
     face = face_subset(records)
 
+    # Before ANY interval is computed, including the controls' own. A
+    # degenerate grouping does not raise anywhere downstream -- it returns a
+    # number -- so this is the only place it can be stopped.
+    refusal = check_domain_grouping(domains, len(records))
+    if refusal is not None:
+        logger.error("%s", refusal)
+        return 1
+
     scored = score_detectors(records, registry)
 
     oracle = _oracle_block(scored, labels, face,
@@ -656,10 +713,14 @@ def main(argv: Sequence[str] | None = None, *,
         logger.warning("--allow-oracle-failure: continuing with a harness "
                        "that has NOT been shown to measure anything here")
 
-    bgr = [cv2.cvtColor(r["image"], cv2.COLOR_RGB2BGR) for r in records]
+    # The records' OWN frames, passed through by reference. Converting them
+    # to BGR first built a second complete copy of the decoded corpus --
+    # every image held twice, in full, to produce six Lab numbers each --
+    # so `colour_features` takes RGB and converts one image at a time.
     controls: dict[str, Any] = {
-        "colour": _control_or_refusal(colour_features(bgr), labels, domains,
-                                      seed=args.seed),
+        "colour": _control_or_refusal(
+            colour_features([r["image"] for r in records]), labels, domains,
+            seed=args.seed),
     }
     # `record["path"]`, never a path re-derived from `sample_id`: the
     # JPEG-table control reads a file header, so the file a record came
