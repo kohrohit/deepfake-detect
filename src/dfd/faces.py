@@ -10,6 +10,7 @@ not caught — silently treating corruption as absence would hide deployment fai
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, overload
@@ -140,6 +141,24 @@ def clamp_roi(shape: tuple[int, ...],
     if x1 - x0 < 2 or y1 - y0 < 2:
         return None
     return (x0, y0, x1 - x0, y1 - y0)
+
+
+def select_largest_face(boxes: Sequence[FaceBox]) -> FaceBox | None:
+    """The face the serving path scores: largest by area, or None.
+
+    ONE implementation, because this project has twice shipped a second one
+    that disagreed. `dfd.pipeline` scores the largest box; a fitter or a
+    corpus loader that picked the most CONFIDENT box instead would fit on
+    one face and score another, and on any frame with two faces the two
+    rules differ. Measured when that last happened (2026-09-24): the
+    assembled system scored 0.821 at session level against 0.954 for the
+    same head measured out-of-fold, and the assembled run was not even held
+    out, so it should have been optimistic rather than worse.
+
+    Callers: `dfd.pipeline.normalize`, `training.fit_vcip.select_face`,
+    `corpora.dfeval`. Add to this list rather than writing a fourth copy.
+    """
+    return max(boxes, key=lambda b: b.w * b.h) if boxes else None
 
 
 def align(frame: npt.NDArray[np.uint8], box: FaceBox, size: int = 224) -> npt.NDArray[np.uint8]:

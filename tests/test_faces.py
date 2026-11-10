@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
-from dfd.faces import FaceBox, align, detect_faces, WEIGHTS_ABSENT
+
+from dfd.faces import WEIGHTS_ABSENT, FaceBox, align, detect_faces, select_largest_face
 
 
 def _frame(h=480, w=640) -> np.ndarray:
@@ -65,6 +66,35 @@ def test_landmarks_are_read_only_on_construction():
     # Attempting to mutate should raise ValueError because __post_init__ froze it
     with pytest.raises(ValueError):
         box.landmarks[0, 0] = 999.0
+
+
+def test_select_largest_face_returns_none_for_no_faces():
+    assert select_largest_face([]) is None
+
+
+def test_select_largest_face_returns_the_one_box_given():
+    box = FaceBox(x=10, y=10, w=20, h=20,
+                  landmarks=np.array([[15.0, 18.0], [25.0, 18.0]]), score=0.5)
+    assert select_largest_face([box]) is box
+
+
+def test_select_largest_face_picks_area_over_confidence():
+    """The exact confusion behind the 2026-09-24 defect, pinned at the source.
+
+    `dfd.pipeline` scores the largest box, not the most confident one. A
+    fitter or a corpus loader that picked by `score` instead would fit on
+    one face and score another whenever a frame holds two faces and the two
+    rules disagree -- which is precisely what happened in
+    `training/fit_vcip.py` before this rule was centralised here.
+    """
+    small_but_confident = FaceBox(
+        x=300, y=300, w=50, h=50,
+        landmarks=np.array([[310.0, 315.0], [340.0, 315.0]]), score=0.99)
+    big_but_less_confident = FaceBox(
+        x=10, y=10, w=200, h=200,
+        landmarks=np.array([[60.0, 70.0], [160.0, 70.0]]), score=0.70)
+    chosen = select_largest_face([small_but_confident, big_but_less_confident])
+    assert chosen is big_but_less_confident
 
 
 def test_real_manifest_parses_and_is_commercially_clean():

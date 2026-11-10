@@ -81,7 +81,7 @@ from sklearn.model_selection import GroupKFold
 from corpora.face_pool import DetectFn
 from dfd.calibration import Calibrator, save_calibrators
 from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
-from dfd.faces import FaceBox, clamp_roi, detect_faces
+from dfd.faces import FaceBox, clamp_roi, detect_faces, select_largest_face
 from dfd.quality import measure_quality
 
 from .fit_npr import save_npr_model
@@ -157,8 +157,13 @@ def select_face(boxes: Sequence[FaceBox]) -> FaceBox | None:
 
     The serving path is the one that cannot change, so this follows it.
     `tests/test_fit_vcip.py` asserts the two agree over random box sets.
+
+    The rule itself now lives in `dfd.faces.select_largest_face`, which
+    `dfd.pipeline` and `corpora.dfeval` call too — one implementation after
+    this project twice shipped a second one that disagreed. This function
+    keeps its name and this docstring, which is the measurement record.
     """
-    return max(boxes, key=lambda b: b.w * b.h) if boxes else None
+    return select_largest_face(boxes)
 
 
 def features_for(path: Path, *, detect: DetectFn, net: NPRStatsNet,

@@ -25,7 +25,7 @@ from .audit import AuditRecord, build_audit_record
 from .calibration import Calibrator
 from .detectors.base import Registry, abstain
 from .errors import InvalidInput
-from .faces import DEFAULT_MODEL, FaceBox, clamp_roi, detect_faces
+from .faces import DEFAULT_MODEL, FaceBox, clamp_roi, detect_faces, select_largest_face
 from .fusion import fuse
 from .ingest.image import load_image
 from .ingest.video import DEFAULT_MAX_FRAMES, load_video
@@ -136,7 +136,8 @@ def normalize(sample: Sample, *, detect: FaceDetectFn = _detect_with_reason,
             reasons.append(NO_FACE if reason == OK else reason)
             out.append(obs)
             continue
-        box = max(boxes, key=lambda b: b.w * b.h)
+        box = select_largest_face(boxes)
+        assert box is not None  # `boxes` is non-empty: checked just above
         roi = _clamp_roi(obs.payload.shape, box)
         if roi is None:
             logger.warning("face box %s does not intersect the frame; not measured",

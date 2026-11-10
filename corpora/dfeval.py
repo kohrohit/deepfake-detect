@@ -45,7 +45,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from dfd.faces import FaceBox, clamp_roi, detect_faces
+from dfd.faces import clamp_roi, detect_faces, select_largest_face
 
 from .face_pool import DUPLICATE, UNREADABLE, DetectFn
 
@@ -168,22 +168,6 @@ def _sample(rows: Sequence[DFEvalRow], k: int, seed: int) -> list[DFEvalRow]:
     return [rows[int(i)] for i in sorted(idx)]
 
 
-def _largest_face(boxes: Sequence[FaceBox]) -> FaceBox | None:
-    """The face `training.fit_vcip.select_face` would pick.
-
-    Duplicated here rather than imported: `training` already depends on
-    `corpora` (`training/fit_vcip.py` imports `corpora.face_pool`), so
-    importing `training.fit_vcip` from here would invert that dependency
-    and drag torch and scikit-learn into every corpus load for one line of
-    arithmetic. The RULE is what must match, not the import path -- largest
-    by area, not most confident -- because a face rule that disagrees
-    between the fitter and the evaluator is the defect that made every slot
-    C number in this repo stale and forced a re-measurement
-    (`training/fit_vcip.py:select_face`).
-    """
-    return max(boxes, key=lambda b: b.w * b.h) if boxes else None
-
-
 def load_dfeval_images(
     root: str | Path,
     *,
@@ -277,7 +261,7 @@ def load_dfeval_images(
                 "pixels cannot carry opposite labels")
         seen[digest] = (row.label, row.item_id)
 
-        box = _largest_face(detect(frame))
+        box = select_largest_face(detect(frame))
         roi = clamp_roi(frame.shape, box) if box is not None else None
         has_face = roi is not None
         landmarks = box.landmarks if has_face and box is not None else None
