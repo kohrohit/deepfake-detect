@@ -587,7 +587,9 @@ judgement the reader makes with the figure in hand, not one the harness makes fo
 - [ ] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/bench/test_scorefile.py -q`
-Expected: 10 passed.
+Expected: 9 passed — the count of `def test_` functions in Step 1. (This line read "10" until
+2026-11-10; it was miscounted, and the implementer who hit it correctly copied the nine given
+tests verbatim rather than inventing a tenth to satisfy a number.)
 
 - [ ] **Step 5: Commit**
 
