@@ -132,6 +132,36 @@ def test_run_control_refuses_an_unsplittable_group_structure():
         run_control(features, labels, groups, seed=0)
 
 
+def test_a_file_pil_cannot_open_is_not_measured_rather_than_fatal(tmp_path):
+    # cv2 and PIL do not read the same set of files, and every path handed
+    # to this function came from a record cv2 ALREADY decoded. One such file
+    # used to abort the entire run -- detectors, both controls, the report --
+    # with an UnidentifiedImageError raised from inside an argument
+    # expression. The row is simply not measured, which is what NaN means.
+    import shutil
+
+    import cv2
+
+    from bench.dfeval_controls import jpeg_table_features
+
+    rng = np.random.default_rng(6)
+    good = tmp_path / "good.jpg"
+    cv2.imwrite(str(good), rng.integers(0, 255, (32, 32, 3), dtype=np.uint8))
+
+    # A mislabelled download: the manifest calls it .jpg, the bytes are a
+    # format PIL has no plugin for. cv2 sniffs the content and reads it.
+    pfm = tmp_path / "x.pfm"
+    cv2.imwrite(str(pfm), rng.integers(0, 255, (32, 32, 3), dtype=np.uint8))
+    mislabelled = tmp_path / "mislabelled.jpg"
+    shutil.move(str(pfm), str(mislabelled))
+    assert cv2.imread(str(mislabelled)) is not None
+
+    x = jpeg_table_features([good, mislabelled])
+    assert x.shape[0] == 2
+    assert not np.isnan(x[0]).any()
+    assert np.isnan(x[1]).all()
+
+
 def test_jpeg_table_features_report_nothing_for_a_non_jpeg(tmp_path):
     # A PNG has no quantisation table. Returning zeros would be a feature
     # value; the control must be able to say the statistic does not exist

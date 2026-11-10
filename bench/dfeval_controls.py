@@ -64,6 +64,7 @@ thing to do with a measurement that was never taken.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,8 @@ from PIL import Image
 from sklearn.linear_model import LogisticRegression
 
 from .metrics import auc, bootstrap_ci_by_group, permutation_null, permutation_p
+
+logger = logging.getLogger(__name__)
 
 #: Luma quantisation tables are the 8x8 DCT block, zig-zag flattened by PIL
 #: into 64 entries. Used only as the width of an all-NaN row when NOT ONE
@@ -116,13 +119,30 @@ def _luma_table(path: Path) -> tuple[int, ...] | None:
     case some writer ever numbers them otherwise. None, not an empty tuple,
     for a file with no quantisation tables at all — a PNG, or anything else
     PIL did not have to parse a DQT segment to open.
+
+    **None also for a file PIL cannot open at all.** `cv2` and PIL do not
+    read the same set of files, and every path reaching this function came
+    from a record `cv2.imread` already decoded successfully — so a file the
+    two disagree about is not hypothetical, it is the ordinary in-the-wild
+    case of a mislabelled or damaged download. `UnidentifiedImageError` (an
+    `OSError` subclass) out of ONE path used to abort the whole run with a
+    traceback from inside an argument expression, taking the detector
+    numbers and the other control down with it. The NaN row this None
+    produces already means exactly the right thing: not measured.
     """
-    with Image.open(path) as image:
-        tables = getattr(image, "quantization", None)
-        if not tables:
-            return None
-        key = min(tables)
-        return tuple(int(v) for v in tables[key])
+    try:
+        with Image.open(path) as image:
+            tables = getattr(image, "quantization", None)
+            if not tables:
+                return None
+            key = min(tables)
+            return tuple(int(v) for v in tables[key])
+    except OSError as exc:
+        # Not a warning-free swallow: the row is counted as unmeasured by
+        # `run_control`'s shrunk n_fit/n_test, and the reason is logged
+        # with the path so it can be chased without re-running the corpus.
+        logger.warning("no quantisation table read from %s: %s", path, exc)
+        return None
 
 
 def jpeg_table_features(paths: Sequence[Path]) -> np.ndarray:
@@ -133,7 +153,8 @@ def jpeg_table_features(paths: Sequence[Path]) -> np.ndarray:
     corpus's own pipeline did not actually write. A path with no table (a
     PNG) gets a row of NaN, excluded and counted by the caller rather than
     zero-filled: zero is itself a legal quantisation entry and would read as
-    a measurement that was never taken.
+    a measurement that was never taken. A path PIL cannot open at all gets
+    the same NaN row rather than raising — see `_luma_table`.
 
     `K` is the shortest table actually found, truncating longer ones, the
     same defence `bench.vcip_controls.encoder_shortcut` uses against a
