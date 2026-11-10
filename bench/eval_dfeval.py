@@ -57,7 +57,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from corpora.dfeval import DFEVAL_GENERATOR, _manifest_rows, load_dfeval_images
+from corpora.dfeval import DFEVAL_GENERATOR, load_dfeval_images
 from corpora.face_pool import DetectFn
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
@@ -109,12 +109,6 @@ ORACLE_HI = 0.75
 #: each block is present without pinning its wording.
 WAIVER_HEADING = "## Guards waived for this corpus"
 SCOPE_HEADING = "## What this corpus can and cannot show"
-
-#: `corpora.dfeval` mints `sample_id` as this prefix plus the manifest's
-#: `item_id`. Stripping it is how a record is matched back to the file it
-#: was decoded from, which `jpeg_table_features` needs and the record does
-#: not carry.
-_SAMPLE_PREFIX = "dfeval/"
 
 _WAIVER = f"""{WAIVER_HEADING}
 
@@ -356,30 +350,6 @@ def _kish_by_domain(records: Sequence[dict[str, Any]], label: int) -> float:
     if not counts:
         return float("nan")
     return kish_ess(list(counts.values()))
-
-
-def _record_paths(root: Path,
-                  records: Sequence[dict[str, Any]]) -> list[Path] | None:
-    """The file each record was decoded from, or None if any is unknown.
-
-    Records do not carry their path — `corpora.dfeval` hands back decoded
-    frames — and `jpeg_table_features` reads a file header, so the manifest
-    has to be consulted again. It is consulted through that module's own
-    `_manifest_rows`, never by re-reading `metadata.csv` here: the on-disk
-    layout is provisional, the gated download will change it, and that
-    function is deliberately the only place in this repo that knows it.
-    """
-    by_item = {row.item_id: row.path for row in _manifest_rows(root)}
-    paths: list[Path] = []
-    for r in records:
-        item_id = str(r["sample_id"]).removeprefix(_SAMPLE_PREFIX)
-        path = by_item.get(item_id)
-        if path is None:
-            logger.warning("no manifest path for %s; the JPEG-table control "
-                           "cannot run", r["sample_id"])
-            return None
-        paths.append(path)
-    return paths
 
 
 def _control_or_refusal(features: np.ndarray, labels: np.ndarray,
@@ -691,12 +661,14 @@ def main(argv: Sequence[str] | None = None, *,
         "colour": _control_or_refusal(colour_features(bgr), labels, domains,
                                       seed=args.seed),
     }
-    paths = _record_paths(args.root, records)
-    controls["jpeg_table"] = (
-        _control_or_refusal(jpeg_table_features(paths), labels, domains,
-                            seed=args.seed)
-        if paths is not None else
-        {"refused": "no manifest path could be resolved for some record"})
+    # `record["path"]`, never a path re-derived from `sample_id`: the
+    # JPEG-table control reads a file header, so the file a record came
+    # from is part of what the record IS, and a join reconstructed from an
+    # id format would fail silently into an honest-looking refusal when the
+    # gated download's layout differs from the provisional one.
+    paths = [Path(r["path"]) for r in records]
+    controls["jpeg_table"] = _control_or_refusal(
+        jpeg_table_features(paths), labels, domains, seed=args.seed)
     payload["controls"] = controls
 
     detectors: dict[str, Any] = {}

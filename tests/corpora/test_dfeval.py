@@ -119,3 +119,23 @@ def test_limit_is_applied_deterministically(dfeval_root, stub_detect):
 def test_a_missing_root_names_the_gate_rather_than_raising_a_traceback(tmp_path):
     with pytest.raises(FileNotFoundError, match="huggingface.co/datasets"):
         load_dfeval_images(tmp_path / "absent")
+
+
+def test_every_record_carries_the_file_it_was_decoded_from(dfeval_root,
+                                                           stub_detect):
+    # `bench.dfeval_controls.jpeg_table_features` reads a quantisation
+    # table out of the file HEADER, so the path is part of what a record
+    # is here. A consumer re-deriving it from `sample_id` would couple
+    # itself to that string format and, when the gated download's real id
+    # scheme differs, would fail into a legitimate-looking "no JPEG table
+    # on this corpus" refusal rather than an error.
+    import csv
+
+    records, _ = load_dfeval_images(dfeval_root, detect=stub_detect)
+    with (dfeval_root / "metadata.csv").open(newline="") as fh:
+        filenames = {row["item_id"]: row["filename"]
+                     for row in csv.DictReader(fh)}
+    assert records
+    for r in records:
+        assert r["path"].is_file()
+        assert r["path"] == dfeval_root / filenames[r["sample_id"].split("/")[1]]

@@ -200,9 +200,14 @@ def load_dfeval_images(
         detect: face detector. Injected so tests need no weight file.
 
     Returns:
-        A (records, skipped) pair. `skipped` maps a reason constant
-        (`UNREADABLE`, `DUPLICATE`, `UNLABELLED`) to a count, and is empty
-        when nothing was dropped.
+        A (records, skipped) pair. Each record carries `sample_id`,
+        `source_id`, `subject_id`, `generator`, `label`, `compression`,
+        `face_detector`, `align`, `image`, `path`, `domain`, `has_face`,
+        `roi` and `landmarks`. `image` is the whole decoded frame and
+        `path` the file it was decoded from; `roi` and `landmarks` are set
+        only when a face was found and are None otherwise. `skipped` maps a
+        reason constant (`UNREADABLE`, `DUPLICATE`, `UNLABELLED`) to a
+        count, and is empty when nothing was dropped.
 
     Raises:
         FileNotFoundError: if `root` is not a directory (naming the
@@ -282,6 +287,17 @@ def load_dfeval_images(
             "face_detector": FACE_DETECTOR,
             "align": ALIGN,
             "image": frame,
+            # The file the frame above was decoded from. Carried rather
+            # than re-derived downstream: `bench.dfeval_controls.
+            # jpeg_table_features` reads a quantisation table out of the
+            # file HEADER, so for this corpus the path is part of what a
+            # record is. A consumer rebuilding it by stripping the
+            # `dfeval/` prefix off `sample_id` would couple itself to that
+            # string format and would fail SILENTLY -- into a legitimate
+            # "no table here" refusal -- the moment the gated download's
+            # real id scheme or layout differs from the provisional one
+            # `_manifest_rows` assumes.
+            "path": row.path,
             "domain": row.domain,
             "has_face": has_face,
             "roi": roi,
