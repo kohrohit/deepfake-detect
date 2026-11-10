@@ -489,7 +489,7 @@ stashed, and CI discovers zero assets and passes.
 
 ---
 
-### Task 2: Convert and pin the encoder, and register it
+### Task 2: Convert and pin the encoder, and register it — **DONE 2026-11-10** (`1efbfbf`)
 
 OpenAI distributes ViT-L/14 as a TorchScript archive at a URL whose penultimate path segment **is**
 the file's SHA-256 — their own `clip/clip.py` verifies exactly that, so the hash is published
@@ -514,7 +514,7 @@ Converted output: `assets/models/clip_vit_l14_visual.pt`, a plain `state_dict` o
     `CLIPVisualTower.vit_l14().state_dict()`.
   - `def main(argv: Sequence[str] | None = None) -> int` — `--archive`, `--out`, `--verify`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """The converter's job is to be total. These tests run on `tiny()`."""
@@ -577,12 +577,12 @@ def test_a_shape_mismatch_is_refused(monkeypatch):
         visual_state_dict(full)
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_convert_clip.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.convert_clip'`.
 
-- [ ] **Step 3: Write the converter**
+- [x] **Step 3: Write the converter**
 
 ```python
 """OpenAI's distributed CLIP archive -> a plain state_dict this repo can load securely.
@@ -735,12 +735,12 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_convert_clip.py -q`
 Expected: 5 passed.
 
-- [ ] **Step 5: Pin the archive in `ops/fetch-assets.sh`**
+- [x] **Step 5: Pin the archive in `ops/fetch-assets.sh`**
 
 Add to the `ASSETS` array, keeping the `id|path|sha256|url` shape. The digest is the URL's
 penultimate segment, which is how OpenAI's own client verifies it:
@@ -759,7 +759,7 @@ And below the array, a comment the next reader needs:
 # archive may be deleted afterwards; the converted file may not.
 ```
 
-- [ ] **Step 6: Verify the pin against the real file**
+- [x] **Step 6: Verify the pin against the real file**
 
 Run:
 ```bash
@@ -771,7 +771,7 @@ and only if that happens, is HuggingFace `openai/clip-vit-large-patch14`'s `pyto
 (a plain state_dict, so `torch.load(weights_only=True)` reads it and `--verify` is unavailable),
 pinned to a hash measured locally and recorded as measured-here rather than published.
 
-- [ ] **Step 7: Convert and verify**
+- [x] **Step 7: Convert and verify**
 
 Run:
 ```bash
@@ -784,7 +784,7 @@ this plan's Task 1 actually holds, measured, so a different number means a diffe
 architecture and not a rounding difference.
 **If verification fails, Task 1 is wrong and must be fixed before anything else proceeds.**
 
-- [ ] **Step 8: Register both files in `assets/manifest.yaml`**
+- [x] **Step 8: Register both files in `assets/manifest.yaml`**
 
 ```yaml
   clip_vit_l14_visual:
@@ -808,18 +808,60 @@ architecture and not a rounding difference.
       - "assets/models/clip_vit_l14_visual.pt"
 ```
 
-- [ ] **Step 9: Run the asset gate and the full suite**
+- [x] **Step 9: Run the asset gate and the full suite**
 
 Run: `python3 -m pytest -q && python3 -c "from dfd.asset_scan import *; print(discover_assets('.'))"`
 Expected: the two new paths appear and the gate is green. (Use whatever invocation
 `tests/test_asset_scan.py` uses for the release check.)
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add training/convert_clip.py tests/test_convert_clip.py ops/fetch-assets.sh assets/manifest.yaml
 git commit -m "feat: the encoder is pinned to OpenAI's own digest, and verified against their module"
 ```
+
+**TASK 1 IS VERIFIED.** `--verify` reports **max abs difference 2.116e-06** between
+`CLIPVisualTower.vit_l14()` and OpenAI's own module on the same two inputs, against a 1e-4
+tolerance, cosine similarity 1.0 on both. QuickGELU, the pre-norm residual order and the
+`ln_post / proj` read-out are right. The written file holds **303,966,208 parameters in 296
+tensors** — the exact figure Step 7 predicted, so the architecture is the one the plan costed and
+not merely one that runs. `ops/fetch-assets.sh` reports `OK clip_vit_l14_archive` and
+`sha256sum` returns `b8cca3fd...a03836`, identical to the URL's penultimate segment. The MIT
+licence was fetched and read at `raw.githubusercontent.com/openai/CLIP/main/LICENSE` before
+`commercial_use: true` was written, not inferred.
+
+**One deviation, and it was necessary.** Step 3's `_reference_embedding` — `torch.jit.load(...,
+map_location="cpu")` then `encode_image` — **cannot work on this box, or on the deployment**.
+OpenAI traced the archive on a GPU in float16, so `torch.device("cuda:0")` and `dtype=5` (half)
+are frozen into the graph as *constants*, which `map_location` does not touch. The first run
+raised `RuntimeError: Found no NVIDIA driver` from inside the TorchScript interpreter; patching
+past that alone then raised `Input type (torch.FloatTensor) and weight type (torch.HalfTensor)`
+from the first convolution. Routing around it via `model.visual` does not help — that graph
+carries its own `cuda:0` constant for the class-token broadcast.
+
+The fix is the one OpenAI's own `clip/clip.py` applies on a CPU load, and is now
+`load_reference`: trace a one-line holder to obtain a CPU device constant and a float32 dtype
+constant, then `copyAttributes` them over every `prim::Constant` whose value starts with `cuda`
+and every `aten::to` whose dtype argument is 5. It rewrites the graph and never the weights.
+`main` now reads the 890 MB archive **once** and uses the same object for both the state_dict and
+the oracle, rather than loading it twice.
+
+**Two tests were added beyond the plan's five** (`test_convert_clip.py`, 7 total). The float patch
+is asserted on the **graph constant**, not on an output dtype: a toy trace carries a `Half(...)`
+annotation on its output value that the interpreter honours regardless of the constant, so a dtype
+assertion passes on the real archive and fails on a toy. The device patch cannot be exercised at
+all without a CUDA box — a `cuda` constant is untraceable here — so its test asserts only that the
+walk is safe on a graph with nothing to patch, and says so in its own comment. `--verify` against
+the real file is the only thing that proves either rewrite, and it has now run.
+
+**Also changed, unlisted:** `ops/fetch-assets.sh`'s closing line said "both are permissive and
+commercially cleared" when two assets were pinned. Three are now. It says "all".
+
+**Measured after Step 10:** 1,008 tests pass (1,001 before this task, +7), coverage 93.03%, ruff
+clean, `mypy --config-file mypy.ini` clean from a cold cache. The asset gate discovers both new
+paths, registers and clears both, and still fails locally on `npr_capture_head` alone — unchanged,
+pre-existing, and by that entry's own design.
 
 ---
 
