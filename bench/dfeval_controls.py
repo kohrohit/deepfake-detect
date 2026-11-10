@@ -87,15 +87,22 @@ def colour_features(images: Sequence[np.ndarray]) -> np.ndarray:
     """Per-channel Lab mean and standard deviation: `(N, 6)`.
 
     No face detection, no learned feature — the six numbers DF40 fell to at
-    AUC 0.843. `images` are BGR arrays, the convention `cv2.imread` returns
-    and the one this repo reads frames in everywhere else.
+    AUC 0.843.
+
+    **`images` are RGB arrays**, the convention the corpus loaders in
+    `corpora/` hand out (`corpora.dfeval` stores `cv2.cvtColor(..., BGR2RGB)`
+    as a record's `image`), and the conversion happens HERE, one image at a
+    time. A caller converting a whole corpus to BGR first in order to satisfy
+    a BGR contract would hold the entire decoded corpus twice, in full, to
+    produce six numbers per image — which is what this function's previous
+    contract cost its only caller.
 
     Column order: L mean, a mean, b mean, L std, a std, b std.
     """
     rows: list[npt.NDArray[np.float64]] = []
     for image in images:
         lab = cv2.cvtColor(np.ascontiguousarray(image),
-                           cv2.COLOR_BGR2LAB).astype(np.float64)
+                           cv2.COLOR_RGB2LAB).astype(np.float64)
         flat = lab.reshape(-1, 3)
         rows.append(np.concatenate([flat.mean(axis=0), flat.std(axis=0)]))
     return np.asarray(rows, dtype=np.float64)

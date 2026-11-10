@@ -21,6 +21,20 @@ def test_the_colour_control_finds_a_planted_colour_shortcut():
     assert out["p"] < 0.1          # and it escapes its own null
 
 
+def test_colour_features_read_their_input_as_RGB():
+    # The contract its only caller depends on. `bench.eval_dfeval` passes
+    # each record's own frame straight through -- the corpora store RGB --
+    # rather than building a second, complete, BGR copy of the decoded
+    # corpus to produce six numbers per image. A BGR reading of the same
+    # bytes would call this pure red pure blue, and b* would come back
+    # BELOW the 128 midpoint instead of far above it.
+    red = np.zeros((8, 8, 3), np.uint8)
+    red[..., 0] = 255
+    l_mean, a_mean, b_mean = colour_features([red])[0][:3]
+    assert b_mean > 128      # yellow-positive: red, not blue
+    assert a_mean > 128      # magenta-positive
+
+
 def test_the_colour_control_stays_blind_to_a_corpus_without_one():
     rng = np.random.default_rng(0)
     images = _planted(rng, 60, 0, 255) + _planted(rng, 60, 0, 255)
