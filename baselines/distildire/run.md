@@ -95,6 +95,14 @@ repository. It must, at minimum:
    `baselines/ufd/run.md` step 5: `sample_id = f"dfeval/{item_id}"` from `corpora/dfeval.py`,
    using that corpus's own `metadata.csv` manifest as the path → `item_id` lookup, carried into
    the baseline's environment rather than reinvented from the filename.
+
+   **`corpora/dfeval._manifest_rows` is the authority on all of this, not this file.** The
+   `metadata.csv` name, the `item_id` column and the `f"dfeval/{item_id}"` id format are repeated
+   here only so a wrapper author can read one page; that function holds the real definition and is
+   the only place in the repo that knows the corpus layout. **That layout is provisional** — it was
+   written blind, against a gated download nobody here has yet seen — and Task 7 reconciles it
+   against the real archive. **When Task 7 changes `_manifest_rows`, this file must be revised with
+   it**, or a wrapper built from these instructions will emit ids the harness refuses as unknown.
 5. Write `sample_id,score` rows, one per scored image. The sigmoid output is a valid monotone
    score (so is the pre-sigmoid logit, `self.output['logit']` — `bench.metrics.auc` is
    rank-based and accepts either).

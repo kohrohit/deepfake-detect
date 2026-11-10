@@ -102,6 +102,14 @@ inside this repository.** It must, at minimum:
    that same manifest (or an equivalent path → `item_id` lookup) into the baseline's environment
    so the wrapper can emit the correct `sample_id` per image rather than inventing one from the
    filename.
+
+   **`corpora/dfeval._manifest_rows` is the authority on all of this, not this file.** The
+   `metadata.csv` name, the `item_id` column and the `f"dfeval/{item_id}"` id format are repeated
+   here only so a wrapper author can read one page; that function holds the real definition and is
+   the only place in the repo that knows the corpus layout. **That layout is provisional** — it was
+   written blind, against a gated download nobody here has yet seen — and Task 7 reconciles it
+   against the real archive. **When Task 7 changes `_manifest_rows`, this file must be revised with
+   it**, or a wrapper built from these instructions will emit ids the harness refuses as unknown.
 6. Write `sample_id,score` rows, one per scored image, `score` = the sigmoid output above (or
    the pre-sigmoid logit — `bench.metrics.auc` is rank-based, either is accepted).
 

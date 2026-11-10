@@ -100,6 +100,21 @@ _LABEL_NAMES = {0: "real", 1: "fake"}
 
 _MANIFEST_NAME = "metadata.csv"
 
+#: The manifest columns this loader reads. Checked once, by name, against
+#: `csv.DictReader.fieldnames` -- a renamed or absent column otherwise
+#: surfaced as a bare `KeyError: 'domain'` from inside a comprehension,
+#: which reads as a bug in this loader rather than as what it is: the gated
+#: download's real layout differing from the provisional one assumed here.
+_MANIFEST_COLUMNS = ("item_id", "filename", "label", "domain")
+
+#: Said by both refusals that are really about the layout -- a missing
+#: manifest and a renamed column -- so the two cannot drift apart.
+_LAYOUT_MESSAGE = (
+    "see corpora.dfeval's module docstring for the (provisional) layout this "
+    "loader expects, and `_manifest_rows` for the only function that knows "
+    "it; Task 7 reconciles that layout against the real download"
+)
+
 _GATE_MESSAGE = (
     "Deepfake-Eval-2024 is gated on HuggingFace: request access at "
     "https://huggingface.co/datasets/nuriachandra/Deepfake-Eval-2024, "
@@ -139,16 +154,27 @@ def _manifest_rows(root: Path) -> list[DFEvalRow]:
 
     Raises:
         FileNotFoundError: if `root` has no `metadata.csv`.
+        ValueError: if the manifest is missing any of `_MANIFEST_COLUMNS`.
+            Checked once, up front, against the header rather than left to
+            raise `KeyError` on the first row: a renamed column is the most
+            likely way the real download differs from this guess, and a bare
+            `KeyError` names neither the file nor the layout it violated.
     """
     manifest = root / _MANIFEST_NAME
     if not manifest.is_file():
         raise FileNotFoundError(
-            f"{root} has no {_MANIFEST_NAME}; see corpora.dfeval's module "
-            "docstring for the (provisional) layout this loader expects")
+            f"{root} has no {_MANIFEST_NAME}; {_LAYOUT_MESSAGE}")
 
     rows: list[DFEvalRow] = []
     with manifest.open(newline="", encoding="utf-8") as fh:
-        for record in csv.DictReader(fh):
+        reader = csv.DictReader(fh)
+        present = set(reader.fieldnames or ())
+        missing = [c for c in _MANIFEST_COLUMNS if c not in present]
+        if missing:
+            raise ValueError(
+                f"{manifest} is missing the column(s) {missing}; it has "
+                f"{sorted(present)}. {_LAYOUT_MESSAGE}")
+        for record in reader:
             token = (record.get("label") or "").strip().lower()
             label = _LABEL_TOKENS.get(token, _UNLABELLED_SENTINEL)
             rows.append(DFEvalRow(
@@ -213,7 +239,9 @@ def load_dfeval_images(
         FileNotFoundError: if `root` is not a directory (naming the
             HuggingFace gate this corpus sits behind) or its manifest lists
             no rows.
-        ValueError: if one content hash is claimed by both labels --
+        ValueError: if the manifest is missing a column `_manifest_rows`
+            reads (naming the columns seen and the provisional layout), or
+            if one content hash is claimed by both labels --
             `CONTRADICTORY_DUPLICATE` names the hash and both item ids. This
             refuses the WHOLE corpus rather than dropping one side, because
             there is no basis here to pick a winner between two contradicting

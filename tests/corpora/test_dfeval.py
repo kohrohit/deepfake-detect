@@ -121,6 +121,19 @@ def test_a_missing_root_names_the_gate_rather_than_raising_a_traceback(tmp_path)
         load_dfeval_images(tmp_path / "absent")
 
 
+def test_a_renamed_manifest_column_names_the_layout_not_a_KeyError(
+        dfeval_root, stub_detect):
+    # The single most likely way the gated download differs from the layout
+    # `_manifest_rows` guessed at. A bare `KeyError: 'domain'` out of a
+    # comprehension reads as a bug in this loader; the refusal has to say
+    # which column is missing, which ones the file has, and that Task 7 is
+    # where the layout gets reconciled.
+    manifest = dfeval_root / "metadata.csv"
+    manifest.write_text(manifest.read_text().replace("domain", "site", 1))
+    with pytest.raises(ValueError, match="missing the column"):
+        load_dfeval_images(dfeval_root, detect=stub_detect)
+
+
 def test_every_record_carries_the_file_it_was_decoded_from(dfeval_root,
                                                            stub_detect):
     # `bench.dfeval_controls.jpeg_table_features` reads a quantisation
