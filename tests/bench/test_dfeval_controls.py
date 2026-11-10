@@ -64,7 +64,32 @@ def test_a_control_on_noise_does_not_escape_its_null():
     groups = np.array([f"g{i // 10}" for i in range(200)])
     out = run_control(features, labels, groups, seed=0)
     assert out["p"] > 0.1
-    assert out["null_lo"] <= out["auc"] <= out["null_hi"] or out["p"] > 0.1
+    # The observed statistic sits INSIDE the null's own range -- the thing
+    # `p > 0.1` is a summary of. Previously `... or out["p"] > 0.1`, which
+    # the line above had already asserted, so this clause could never fail.
+    assert out["null_lo"] <= out["auc"] <= out["null_hi"]
+
+
+def test_an_all_nan_feature_row_is_dropped_and_shrinks_n_fit_and_n_test():
+    # `jpeg_table_features` returns an all-NaN row for a PNG, and an
+    # in-the-wild corpus is mixed JPEG/PNG, so this fires on the first real
+    # run -- and it governs the arithmetic of the only control that can
+    # disqualify the corpus. The unmeasured rows must leave the fit AND the
+    # test half, and the reported n must say so rather than quoting the
+    # row count it was handed.
+    rng = np.random.default_rng(7)
+    labels = np.array([0, 1] * 100)
+    groups = np.array([f"g{i // 10}" for i in range(200)])
+
+    clean = rng.normal(size=(200, 6))
+    whole = run_control(clean, labels, groups, seed=0)
+    assert whole["n_fit"] + whole["n_test"] == 200
+
+    holed = clean.copy()
+    holed[::10] = np.nan          # one unmeasurable row in every group
+    out = run_control(holed, labels, groups, seed=0)
+    assert out["n_fit"] + out["n_test"] == 180
+    assert out["n_fit"] > 0 and out["n_test"] > 0
 
 
 def test_the_null_is_refused_on_a_one_class_corpus():

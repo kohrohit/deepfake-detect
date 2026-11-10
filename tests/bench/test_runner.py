@@ -816,11 +816,20 @@ def test_abstention_by_class_counts_every_record_so_rates_are_computable():
 
 
 def test_observation_uses_a_records_own_roi_and_landmarks_when_present():
+    # Both halves, because they fail separately. An implementation that
+    # honoured the ROI and still synthesised landmarks passes an roi-only
+    # assertion -- and synthesising them is the exact thing `_observation`'s
+    # docstring says corrupts the quality band, which decides which
+    # detectors are allowed to score at all. The fallback would place the
+    # eyes at 35% and 65% of a 100px frame, an inter-ocular distance of 30;
+    # these landmarks are 25 apart, so the two cannot be confused.
     img = np.full((100, 100, 3), 120, np.uint8)
     rec = {"image": img, "source_id": "s", "roi": (10, 10, 40, 40),
            "landmarks": np.array([[20.0, 25.0], [45.0, 25.0]])}
     obs = _observation(rec)
     assert obs.roi == (10, 10, 40, 40)
+    assert obs.quality is not None
+    assert obs.quality.inter_ocular_px == pytest.approx(25.0)
 
 
 def test_observation_falls_back_to_the_whole_frame_for_crop_corpora():

@@ -7,6 +7,7 @@ from corpora.dfeval import (
     CONTRADICTORY_DUPLICATE,  # noqa: F401 -- part of the module's public interface
     DFEVAL_GENERATOR,
     DUPLICATE,
+    UNLABELLED,
     load_dfeval_images,
 )
 
@@ -58,6 +59,20 @@ def test_identical_pixels_are_deduplicated_and_counted(dfeval_root_with_dupe,
     assert skipped[DUPLICATE] == 1
     arrays = [r["image"].tobytes() for r in records]
     assert len(set(arrays)) == len(arrays)
+
+
+def test_an_unrecognised_label_token_is_counted_not_guessed(
+        dfeval_root_unlabelled, stub_detect):
+    # This branch exists FOR the unknown real release: the dataset is gated,
+    # its label vocabulary is unverified, and a blank cell or a third
+    # category is what surprise data actually looks like. Coercing either
+    # into "real" or "fake" would put a row that is evidence about neither
+    # class into one of them; the skip tally is the honest answer.
+    records, skipped = load_dfeval_images(dfeval_root_unlabelled,
+                                          detect=stub_detect)
+    assert skipped[UNLABELLED] == 2          # the blank and the third token
+    assert len(records) == 4
+    assert {r["label"] for r in records} == {0, 1}
 
 
 def test_a_duplicate_spanning_both_labels_is_refused_not_dropped(

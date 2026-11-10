@@ -241,6 +241,30 @@ def test_the_report_carries_the_waiver_and_scope_blocks(tmp_path, dfeval_root,
     assert "cannot fold" in md.lower()
 
 
+def test_a_passing_oracle_reports_without_the_escape_hatch(
+        tmp_path, dfeval_root, stub_detect, stub_registry):
+    # Every other `main` test here that expects success passes
+    # `--allow-oracle-failure`, which means a `check_oracle` that returned
+    # False for everything would keep this whole file green. This one run
+    # withholds the flag: the oracle must actually PASS, and the withheld-
+    # numbers sentence that a failure prints must be absent.
+    from bench.eval_dfeval import main
+
+    rc = main(["--root", str(dfeval_root),
+               "--out-json", str(tmp_path / "r.json"),
+               "--out-md", str(tmp_path / "r.md")],
+              detect=stub_detect, registry=stub_registry)
+    assert rc == 0
+    md = (tmp_path / "r.md").read_text()
+    assert "Every other number is withheld" not in md
+    assert "Oracle: PASSED" in md
+
+    report = json.loads((tmp_path / "r.json").read_text())
+    assert report["oracle"]["passed"] is True
+    assert report["oracle"]["failure_allowed"] is False
+    assert report["detectors"] and report["controls"]
+
+
 def test_a_failing_oracle_stops_every_other_number(tmp_path, dfeval_root,
                                                    stub_detect, inverted_registry):
     # The gate's whole purpose: a harness that cannot reproduce a published
