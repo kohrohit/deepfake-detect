@@ -865,7 +865,7 @@ pre-existing, and by that entry's own design.
 
 ---
 
-### Task 3: Slot D, and the registry it joins
+### Task 3: Slot D, and the registry it joins — **DONE 2026-11-10** (`c5287f6`)
 
 **Files:**
 - Create: `src/dfd/detectors/gend.py`
@@ -891,7 +891,7 @@ pre-existing, and by that entry's own design.
     detector cannot drift apart.
   - `NO_ROI: str = "roi_absent"`, `ENCODER_ABSENT: str = "encoder_absent"`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Slot D. Every test uses a tiny tower; none needs the 1.2 GB encoder."""
@@ -1046,13 +1046,13 @@ def test_gend_clip_abstains_when_its_weights_are_absent(tmp_path) -> None:
     assert raw.abstained
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_gend.py tests/test_registry.py -q`
 Expected: `ModuleNotFoundError: No module named 'dfd.detectors.gend'`, and the two registry tests
 fail on the three-detector assertions.
 
-- [ ] **Step 3: Write the detector**
+- [x] **Step 3: Write the detector**
 
 ```python
 """Slot D — learned appearance read from a general-purpose encoder (spec §5.1).
@@ -1291,7 +1291,7 @@ class GendClipDetector:
                        "max_score": float(probs.max())})
 ```
 
-- [ ] **Step 4: Wire it into `src/dfd/detectors/registry.py`**
+- [x] **Step 4: Wire it into `src/dfd/detectors/registry.py`**
 
 ```python
 DEFAULT_GEND_WEIGHTS = Path("assets/models/gend_clip.pt")
@@ -1311,7 +1311,7 @@ Add the two keyword arguments to `default_registry` and, after the three existin
 
 Update the docstring: "Three distinct physics" becomes four, and name slot D's.
 
-- [ ] **Step 5: Add the paths to `ServiceConfig` in `src/dfd/service/app.py`**
+- [x] **Step 5: Add the paths to `ServiceConfig` in `src/dfd/service/app.py`**
 
 ```python
     gend_weights: Path = Path(DEFAULT_GEND_WEIGHTS)
@@ -1320,23 +1320,67 @@ Update the docstring: "Three distinct physics" becomes four, and name slot D's.
 
 and pass them through wherever `default_registry` is called there.
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `python3 -m pytest tests/test_gend.py tests/test_registry.py tests/service -q`
 Expected: all pass.
 
-- [ ] **Step 7: Run the gates**
+- [x] **Step 7: Run the gates**
 
 Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean, test count up by ~14.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/dfd/detectors/gend.py src/dfd/detectors/registry.py src/dfd/service/app.py \
         tests/test_gend.py tests/test_registry.py
 git commit -m "feat: slot D exists, abstains honestly, and says which of its two files is missing"
 ```
+
+**Three things the plan's file list missed, all of them gates doing their job.** Step 1 named
+`tests/test_registry.py` as the only test to update. Three others assert the registry's
+composition and all three went red on a four-detector registry:
+
+1. `tests/service/test_app.py::test_the_registry_carries_the_three_declared_slots` — renamed to
+   `..._four_...` and updated.
+2. `tests/test_cli.py::test_the_record_carries_one_evidence_row_per_default_detector` — the CLI
+   emits one evidence row per registered detector, so four rows now.
+3. `tests/service/test_evidence.py::test_the_committed_card_covers_every_detector_in_the_registry`
+   — **the important one**. It refuses a detector that is in the registry and absent from
+   `bench/evidence_card.json`, which is exactly slot D's position. A `gend_clip` entry was added
+   in the shape `effnet_b4` and `npr` already use for an unmeasured detector: every numeric field
+   `null`, and a note recording that the encoder is present and verified, that the head is not
+   fitted, that the detector therefore abstains with `weights_absent`, and that **Task 7** is what
+   fills this in. `test_no_detector_currently_clears_the_floor` still passes, which is the
+   assertion that slot D has not quietly started deciding anything.
+
+**Two deviations in the code.**
+
+*The test fixture could not reach the code it was testing.* Step 1's `_obs` built a flat grey
+patch and derived its quality with `measure_quality`, which returns `blur_var=0.0` and band
+`reject` on a constant image. Against slot D's `min_quality_band="low"` that abstains with
+`below_quality_floor` before any crop, so two tests — the ROI refusal and the only scoring test —
+asserted nothing about slot D. The fixture now STATES its `Quality`, which is the idiom
+`tests/test_npr.py` already uses for exactly this reason. The detector's floor was not weakened to
+make a test pass; it is still the provisional `"low"` that Task 8 must measure.
+
+*The detector could not be constructed against a tiny tower.* Step 3 hardcoded
+`model_factory=CLIPVisualTower.vit_l14` and `GendHead`, while Step 1's fixtures write a `tiny()`
+encoder and an 8-dim head — so the one test that loads both files failed on 296 shape mismatches.
+`encoder_factory` and `head_factory` are now dataclass fields defaulting to the shipped pair,
+which is what `NPRDetector.model_factory` already does and what `loading.load_model`'s secure path
+wants anyway. Phase 2's tuned encoder gets a seam to enter through at no extra cost.
+
+Also: `embed` reads `tower.image_size` through `getattr(..., 224)` rather than attribute access,
+since its parameter is typed `nn.Module`; and two `no-any-return` errors needed annotated locals,
+the same idiom as Tasks 1 and 2.
+
+**Measured after Step 8:** 1,021 tests pass (1,008 before this task, +13 — twelve in
+`test_gend.py` and one new registry test), coverage 93.15%, ruff clean, mypy clean from a cold
+cache. `default_registry().names()` is now
+`["blend_seam", "effnet_b4", "gend_clip", "npr"]` across slots A, C, D, E, and slot D abstains
+with `weights_absent` on this machine because the head does not exist yet.
 
 ---
 
