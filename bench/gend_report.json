@@ -1,0 +1,84 @@
+{
+  "cache_hits": 9907,
+  "cache_misses": 0,
+  "control_colour": {
+    "auc": 0.5301742261648733,
+    "ci95": [
+      0.5228822170138913,
+      0.5380368397808833
+    ],
+    "constant": false,
+    "note": "fitted and scored IN SAMPLE, which is the strongest form of this control: if even an in-sample shortcut model cannot reach the detector, the detector is not reading the shortcut."
+  },
+  "control_jpeg": {
+    "auc": 0.5,
+    "constant": true,
+    "note": "the feature is identical on every record, so there is nothing for a control to separate. Not a measured 0.5 -- a structural one."
+  },
+  "families": {
+    "real": 3989,
+    "sbi": 1997,
+    "swap_lowres_paste": 970,
+    "swap_mouth_patch": 994,
+    "swap_poisson": 984,
+    "swap_warp_hull": 973
+  },
+  "inside_null": false,
+  "kish_ess_fake": 4.4717871584654105,
+  "kish_ess_group": 996.4431009451872,
+  "limit": 2000,
+  "logo": {
+    "sbi": {
+      "auc": 0.7380272409392921,
+      "ci_hi": 0.7507418345422159,
+      "ci_lo": 0.7255273084442865,
+      "n": 2988,
+      "n_fake": 997
+    },
+    "swap_lowres_paste": {
+      "auc": 0.9986353881723956,
+      "ci_hi": 0.9995636597716875,
+      "ci_lo": 0.9973722905231828,
+      "n": 2475,
+      "n_fake": 484
+    },
+    "swap_mouth_patch": {
+      "auc": 0.9839398259911537,
+      "ci_hi": 0.9907168371997331,
+      "ci_lo": 0.9770616338930974,
+      "n": 2487,
+      "n_fake": 496
+    },
+    "swap_poisson": {
+      "auc": 0.9953783880824197,
+      "ci_hi": 0.997996630687301,
+      "ci_lo": 0.9922648522668015,
+      "n": 2482,
+      "n_fake": 491
+    },
+    "swap_warp_hull": {
+      "auc": 0.9981694484685216,
+      "ci_hi": 0.9994807791916995,
+      "ci_lo": 0.9962019733397989,
+      "n": 2475,
+      "n_fake": 484
+    }
+  },
+  "measured_on": "2026-11-10",
+  "n_fake": 5918,
+  "n_photographs": 2000,
+  "n_records": 9907,
+  "n_shuffles": 48,
+  "n_subjects": 1001,
+  "null_hi": 0.5613550848426747,
+  "null_lo": 0.44921353714584233,
+  "offset": 10000,
+  "permutation_p": 0.02040816326530612,
+  "root": "/home/ubuntu/datasets/fairface_sessions",
+  "seed": 0,
+  "skipped": {
+    "no_face": 69
+  },
+  "verdict": "**Outside the null, below the floor.** The worst fold 0.738 is outside the null 0.449\u20130.561 (p = 0.02), so there is signal \u2014 but it is under the 0.75 evidence floor, so slot D does not open the gate.",
+  "worst_fold": "sbi"
+}
