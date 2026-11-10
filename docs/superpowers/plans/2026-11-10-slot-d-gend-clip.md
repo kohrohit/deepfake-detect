@@ -1540,7 +1540,7 @@ clean, `mypy --config-file mypy.ini` clean from a cold cache.
 
 ---
 
-### Task 5: Fit the head
+### Task 5: Fit the head — **DONE 2026-11-11** (`5c2cbb0`)
 
 **The corpus, concretely.** Reals and fakes both come from the FairFace session directory that
 `training/export_fairface.py` writes (one folder per photograph, `frame_00.jpg` plus a
@@ -1580,7 +1580,7 @@ capture corpus; a detector handed reals at one encode and fakes at another learn
   - `def main(argv=None, *, detect=detect_faces) -> int` — flags `--root`, `--limit`, `--offset`,
     `--cache`, `--encoder`, `--out`, `--report`, `--seed`, `--holdout`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -1687,12 +1687,12 @@ the pattern already in `tests/corpora/test_swap_corpus.py` and `tests/test_fit_v
 than inventing a third. **Put both in `tests/conftest.py`**, not in this test module: Task 9 uses
 the same two, and a fixture copied into a second file is a fixture that drifts.
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_fit_gend.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.fit_gend'`.
 
-- [ ] **Step 3: Write the fitter**
+- [x] **Step 3: Write the fitter**
 
 Key implementation points, each load-bearing:
 
@@ -1761,12 +1761,12 @@ def fit_head(features, labels, *, version: str) -> GendHead:
    and the version string. Reuse `_json_safe` from `training/fit_blend.py` (import it rather than
    copying it — a third copy of that function is one too many).
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_fit_gend.py -q`
 Expected: 10 passed.
 
-- [ ] **Step 5: Declare the training window in `bench/eval_swaps.py`**
+- [x] **Step 5: Declare the training window in `bench/eval_swaps.py`**
 
 ```python
 #: `0.1.0-probe-fairface60000`: `training/fit_gend.py` over the first 60,000
@@ -1783,7 +1783,7 @@ TRAINING_WINDOWS = {
 Use whatever photograph count the run actually consumed. **The number in the version string, the
 number in this map and the number in the report must be the same number.**
 
-- [ ] **Step 6: Fit for real**
+- [x] **Step 6: Fit for real**
 
 Run:
 ```bash
@@ -1802,7 +1802,7 @@ Expected: a held-out AUC printed, `assets/models/gend_clip.pt` written (~8 KB),
 `bench/gend_fit.json` written. **An in-domain held-out AUC is not a result** — it is a smoke test
 that the pipeline is wired. Do not put it in the evidence card and do not quote it anywhere.
 
-- [ ] **Step 7: Register the fitted weights in `assets/manifest.yaml`**
+- [x] **Step 7: Register the fitted weights in `assets/manifest.yaml`**
 
 ```yaml
   gend_clip_weights:
@@ -1817,13 +1817,63 @@ that the pipeline is wired. Do not put it in the evidence card and do not quote 
       - "assets/models/gend_clip.pt"
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add training/fit_gend.py tests/test_fit_gend.py bench/eval_swaps.py \
         assets/manifest.yaml bench/gend_fit.json
 git commit -m "feat: slot D has coefficients, and a declared training window that can refuse a corpus"
 ```
+
+**`--limit 60000` is not reachable and the window is 2,000 instead.** Measured before committing
+any hours: one ViT-L/14 forward pass is ~0.6 images/second on the development workstation, and the
+corpus is ~5 records per photograph, so 60,000 photographs is ~300,000 forward passes — about
+**139 hours**. 2,000 was chosen for three reasons, in order: it fits one run; it sits INSIDE
+`blend_seam`'s 10,000-photograph window, so the standing "evaluate at offset >= 10000" rule
+already covers slot D and no second discipline is needed; and a 768-parameter linear probe over
+~8,000 training rows is well determined — this project's own SFHQ finding (500 images reach what
+204,716 reach) is the evidence that more data saturates fast.
+
+**The fit was moved to the deployment instance, and that is the lesson.** Started locally, it ran
+at ~0.4 images/second and projected to ~7 hours. The same job on the 8-vCPU EC2 box took **35
+minutes** — the workstation's torch is a CUDA build running a CPU path and is ~6x slower (Task 6
+measured this: 1,637 ms/image local against 276 ms on the instance). Every long job in this plan
+belongs there.
+
+**Measured corpus:** 9,886 records, 5,903 fake, 1,001 couples, 78 photographs skipped `no_face`.
+Families: real 3,983 / sbi 1,995 / swap_mouth_patch 991 / swap_poisson 979 / swap_warp_hull 969 /
+swap_lowres_paste 969. In-domain held-out AUC **0.928** over 1,975 rows — which is a SMOKE TEST
+that the pipeline is wired and is recorded as such in `bench/gend_fit.json`; it is not in the
+evidence card and is not slot D's performance.
+
+**Task 4's cache earned its place here:** 9,886 records produced only **7,895 forward passes**,
+because each photograph's self-blend-real and its couple-real are byte-identical after `reencode`
+and address the same cache entry.
+
+**Three deviations.**
+
+*Subject ids are couple ids for the self-blends too.* `corpora.sbi` files a sample under the
+photograph; `corpora.swap_corpus` files one under the COUPLE. Left alone, one photograph carries
+two different `subject_id`s and a subject-disjoint split will happily put its self-blend pair in
+train and its couple in test — the same face, at the same alignment, on both sides. That is the
+contamination this project has already paid for once. Couples are disjoint, so
+`build_training_records` adopts the couple id for both families and an unpaired photograph becomes
+`solo/<id>`.
+
+*`_split_by_subject` is local to this module* rather than reusing `fit_blend.split_by_subject`,
+which takes `Sample` objects and not bench-runner records. `_json_safe` IS imported from
+`fit_blend`, as Step 3 requires.
+
+*A cross-environment difference worth recording:* the instance's OpenCV 5.0 skips **78**
+photographs for `no_face` where the workstation's OpenCV 4.x skips **77**. One record. The corpus
+is therefore not bit-reproducible across the two boxes, and the number that ships is the
+instance's.
+
+**Measured after Step 8:** 1,045 tests pass, coverage 93.15%, ruff and mypy clean. The head loads
+strictly into a default `GendHead` (1,538 parameters, version `0.1.0-probe-fairface2000`), the
+asset gate clears `gend_clip_weights`, and the CLI now reports slot D as
+`uncalibrated_for_band` rather than `weights_absent` — it scores; it has no calibration yet, which
+is Task 9.
 
 ---
 
@@ -1956,7 +2006,7 @@ will be removed in a future PyTorch release". The 1.57x is a measurement, not a 
 
 ---
 
-### Task 7: The measurement — honest LOGO, a null beside it, and a control that survives it
+### Task 7: The measurement — honest LOGO, a null beside it, and a control that survives it — **DONE 2026-11-11** (`70bc99b`)
 
 **This is the task the whole plan exists for.** Everything before it is plumbing.
 
@@ -1997,7 +2047,7 @@ plus the reals, score the held-out family, report that fold.
     coefficients, the statistic that labels 99.2% of the capture corpus.
   - `def main(argv=None, *, detect=detect_faces) -> int`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -2091,13 +2141,13 @@ def test_the_colour_control_is_blind_to_a_corpus_with_no_colour_shortcut():
     assert 0.3 < auc(probs, y) < 0.7
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench.eval_gend'` and
 `ImportError: cannot import name 'kish_ess'`.
 
-- [ ] **Step 3: Add `kish_ess` to `bench/metrics.py`**
+- [x] **Step 3: Add `kish_ess` to `bench/metrics.py`**
 
 ```python
 def kish_ess(counts: Sequence[int] | np.ndarray) -> float:
@@ -2121,7 +2171,7 @@ def kish_ess(counts: Sequence[int] | np.ndarray) -> float:
 
 With two tests in `tests/bench/test_metrics.py` mirroring the two above.
 
-- [ ] **Step 4: Write `bench/eval_gend.py`**
+- [x] **Step 4: Write `bench/eval_gend.py`**
 
 Module docstring states what the corpus can and cannot show, in the style of
 `bench/eval_swaps.py`'s `_SCOPE` block — in particular that these are **classical composites, not
@@ -2143,12 +2193,12 @@ LOGO table with the worst fold as the headline and a sentence distrusting the be
 the permutation null range and the two-sided p; and the scope block. A card that records only good
 news is not a report card.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend.py tests/bench/test_metrics.py -q`
 Expected: all pass.
 
-- [ ] **Step 6: Run the measurement**
+- [x] **Step 6: Run the measurement**
 
 ```bash
 python3 -m bench.eval_gend \
@@ -2163,7 +2213,7 @@ python3 -m bench.eval_gend \
 The offset **must** be at or beyond the training window Task 5 recorded. A run at a smaller offset
 is the mistake that produced a fabricated 0.923 once already.
 
-- [ ] **Step 7: Read the result before believing it**
+- [x] **Step 7: Read the result before believing it**
 
 Check, in this order, and stop at the first failure:
 1. Is the worst LOGO fold's AUC outside the permutation null, with p below 0.08 at n=12? If not,
@@ -2173,7 +2223,7 @@ Check, in this order, and stop at the first failure:
 3. Is the Kish ESS large enough that the interval means anything?
 4. Only then: is the worst fold at or above 0.75?
 
-- [ ] **Step 8: Commit, whatever the answer**
+- [x] **Step 8: Commit, whatever the answer**
 
 ```bash
 git add bench/eval_gend.py bench/metrics.py tests/bench/test_eval_gend.py \
@@ -2183,6 +2233,56 @@ git commit -m "feat: slot D gets a leave-one-generator-out number, and the null 
 
 A negative result is committed with the same message discipline as a positive one. This project
 has retracted a headline before, and the retraction is in the history where it belongs.
+
+## THE RESULT
+
+Measured on the deployment instance over photographs 10,000–11,999 — outside every declared
+training window — 9,907 records, 5,918 fake, 1,001 couples, 69 skipped `no_face`.
+
+| held-out generator | AUC | 95% CI (by couple) | n | n fake |
+|---|---|---|---|---|
+| **sbi** | **0.738** | 0.726–0.751 | 2,988 | 997 |
+| swap_mouth_patch | 0.984 | 0.977–0.991 | 2,487 | 496 |
+| swap_poisson | 0.995 | 0.992–0.998 | 2,482 | 491 |
+| swap_warp_hull | 0.998 | 0.996–0.999 | 2,475 | 484 |
+| swap_lowres_paste | 0.999 | 0.997–1.000 | 2,475 | 484 |
+
+**Headline: the worst fold, `sbi`, at 0.738.** Permutation null over 48 shuffles of the TRAINING
+labels: **0.449–0.561**, two-sided **p = 0.02**.
+
+Step 7's checklist, in its order:
+
+1. **Outside the null?** Yes. 0.738 against 0.449–0.561. At the plan's 12 shuffles p was 0.0769,
+   which is the resolution FLOOR at n=12 and says only "none of 12 came close" — so the null was
+   re-run at 48, which the cache made cost 1m57s (9,907 hits, 0 misses). p = **0.02**. There is
+   signal.
+2. **Does either control reach it?** No. Colour (Lab means and stds, fitted and scored IN SAMPLE,
+   the strongest form) reaches **0.530**. The JPEG quantisation control is **0.500 and structural,
+   not measured** — every record passes through one encoder at q95, which is exactly what
+   `reencode` exists to arrange, so there is nothing for it to separate. Reported as structural
+   rather than dressed up as a searched-for-and-not-found 0.5.
+3. **Is the Kish ESS large enough?** Yes, and this is the first corpus in this project where it
+   is: **4.47 of 5** fake families, **996.44 of 1,001** couples. Compare DF40's 2.4. The intervals
+   mean what they appear to.
+4. **Is the worst fold at or above 0.75?** **No — 0.738, and its CI 0.726–0.751 barely touches
+   the floor.** Slot D does not open the evidence gate.
+
+**So: a real but insufficient result.** Signal that survives a null, clean controls, honest
+intervals, and a headline **0.012 under the floor it had to clear**. The four swap folds at
+0.984–0.999 are explicitly distrusted and are not the headline: holding out one of four nearly
+identical OpenCV compositing techniques still leaves three of them in the fit, so those folds
+describe the corpus's internal similarity, not transfer. `sbi` is the only family unlike the
+others, and it is the only fold that tests anything.
+
+**One deviation, in the plan's favour.** Step 3 asks for `kish_ess` to be added to
+`bench/metrics.py`; it was already there, with four tests, from the benchmark-harness plan. The
+three duplicate tests Step 1 listed were NOT written, and `tests/bench/test_eval_gend.py` says so
+at the top.
+
+**One design point the plan left implicit, and it matters.** Holding out a generator does not hold
+out the REALS — every couple contributes its reals to every family's fold. So each fold is split
+by couple as well, and is scored only on couples the fit never saw. Without that, every fold tests
+on its own training reals and reads stronger than it is.
 
 ---
 
