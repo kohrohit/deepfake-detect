@@ -46,8 +46,9 @@ it — the detector must be ours.
 1. **Slot D — `gend_clip`**: a CLIP ViT-L/14 encoder with LayerNorm-only tuning,
    an L2-normalised class token, and a linear head. Implements the existing
    `Detector` protocol; registered in `default_registry`.
-2. **A paired real/fake corpus** built from `vkyc-server/captures`, where every
-   fake is generated from a specific real frame and re-encoded identically.
+2. **A paired real/fake corpus** built from FairFace crops, where every fake is
+   generated from a specific real crop and re-encoded identically. The v-CIP
+   captures are evaluation only (§6.4).
 3. **Two or more generators**, so leave-one-generator-out can fold.
 4. **A measurement** of slot D on that corpus, with a permutation null beside
    every interval, written into `bench/evidence_card.json`.
