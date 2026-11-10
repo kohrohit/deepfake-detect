@@ -1827,7 +1827,7 @@ git commit -m "feat: slot D has coefficients, and a declared training window tha
 
 ---
 
-### Task 6: Measure the forward pass on the deployment's own hardware
+### Task 6: Measure the forward pass on the deployment's own hardware — **DONE 2026-11-11** (`47a4f41`)
 
 Spec §8: "CLIP ViT-L/14 forward cost on that box is **unmeasured and must be benchmarked before
 any latency claim**." This task produces that number, and it also decides Phase 2: LayerNorm
@@ -1845,7 +1845,7 @@ nobody has done yet.
   returning `{"n", "batch_size", "mean_ms", "p50_ms", "p95_ms", "warmup_ms", "threads"}` — all
   per-image milliseconds except `n`, `batch_size` and `threads`; `def main(argv=None) -> int`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 from dfd.detectors.clip_vit import CLIPVisualTower
@@ -1871,12 +1871,12 @@ def test_the_first_pass_is_reported_separately_not_averaged_in():
     assert out["p50_ms"] <= out["p95_ms"]
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `python3 -m pytest tests/bench/test_clip_latency.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench.clip_latency'`.
 
-- [ ] **Step 3: Write it**
+- [x] **Step 3: Write it**
 
 `measure` runs one discarded warm-up batch, then `n` timed forwards under `torch.no_grad()`,
 reporting mean/p50/p95 per image and `torch.get_num_threads()`. `main` adds `--encoder`,
@@ -1885,7 +1885,7 @@ reporting mean/p50/p95 per image and `torch.get_num_threads()`. `main` adds `--e
 is ~86M parameters and ~17.6 GFLOPs at 224px, ViT-L/14 is ~304M and ~81 GFLOPs — about 3.5x the
 parameters and 4.5x the compute.
 
-- [ ] **Step 4: Run the tests, then measure on the EC2 instance**
+- [x] **Step 4: Run the tests, then measure on the EC2 instance**
 
 ```bash
 python3 -m pytest tests/bench/test_clip_latency.py -q
@@ -1896,7 +1896,7 @@ python3 -m bench.clip_latency --encoder assets/models/clip_vit_l14_visual.pt \
     --n 32 --batch-size 1 --quantize --out bench/clip_latency_int8.json
 ```
 
-- [ ] **Step 5: Do the Phase 2 arithmetic and write it down**
+- [x] **Step 5: Do the Phase 2 arithmetic and write it down**
 
 In `bench/clip_latency.json`'s accompanying note, record:
 
@@ -1911,12 +1911,48 @@ Then state the ruling plainly: whether Phase 2 (Task 13) is an overnight CPU job
 corpus, or is blocked on the GPU decision that is item 7 of `docs/HANDOFF.md`'s owner-action list.
 **Do not guess this in advance** — the whole point of the task is that the number decides.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add bench/clip_latency.py tests/bench/test_clip_latency.py bench/clip_latency*.json
 git commit -m "feat: the encoder's CPU cost is measured, and it decides whether Phase 2 can run here"
 ```
+
+**Measured on the deployment instance itself**, not extrapolated: 8 vCPU, 15 GB, no GPU, torch
+2.15.0+cpu, Python 3.14.4, `torch.get_num_threads() == 4`, `n=32`, batch 1.
+
+```
+forward, fp32, batch 1:            276 ms/image   (p50 276, p95 277, cold start 281)
+forward, dynamic INT8, batch 1:    177 ms/image   (p50 177, p95 177, cold start 181)
+implied LN-tuning step (~3x fwd):  829 ms/image   NOT MEASURED - rule of thumb
+one epoch over 9,886 images:       2.3 hours
+```
+
+INT8 is **1.57x**, within a hair of the 1.52x the spec recorded for ViT-Base — the speedup
+survives the 3.5x parameter jump. The full write-up, including what the number does NOT say, is
+`bench/clip_latency.md`.
+
+**The ruling the plan said not to guess: Phase 2 IS runnable here, and is NOT blocked on the GPU
+decision** — at the corpus size slot D is actually fitted on. One epoch over 9,886 records is 2.3
+hours, so a 5-epoch run is an overnight job. The condition is the whole finding: at the plan's
+original 60,000-photograph window (~300,000 records) one epoch is **69 hours** and Phase 2 would
+have been blocked on hardware this project does not have. It is affordable only because the
+window is small.
+
+**A finding that changes how everything after this runs.** The same harness on the development
+workstation (12 vCPU, torch 2.4.1+cu121) reports **1,637 ms/image** — roughly **6x slower than
+the 8-vCPU deployment**, because the local build is a CUDA build running a CPU path. Every long
+job in this plan therefore belongs on the instance, not here. Task 5's fit was started locally,
+measured at ~0.4 images/second, and moved; see that task's note.
+
+**Two deviations.** `torch.ao.quantization.quantize_dynamic`, not the `torch.quantization` alias
+the plan wrote — the alias is deprecated and the deployment runs a newer torch than this
+workstation. And `bench/clip_latency.md` was added beside the JSON, because Step 5 asks for an
+arithmetic note and a `.json` is the wrong container for a ruling.
+
+**Worth knowing before trusting INT8 later:** torch now warns that
+`torch.quantize_per_tensor` and the other quantized tensor creation functions "are deprecated and
+will be removed in a future PyTorch release". The 1.57x is a measurement, not a plan.
 
 ---
 
