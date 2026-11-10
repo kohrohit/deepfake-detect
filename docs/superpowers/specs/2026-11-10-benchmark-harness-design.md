@@ -148,8 +148,11 @@ Four components, each with one job and a seam the others do not reach through.
 
 Reads the gated download into `bench.runner` records, with:
 
-- `generator: None` on every fake. The corpus has no technique labels and inventing one would
-  fabricate a LOGO fold (§5).
+- **One generator id on every fake**, `dfeval_unknown_mixture`, exactly as `corpora.df40`
+  does. `generator: None` is not available: `bench.protocol._validate` raises a plain
+  `ValueError` for an unattributed fake, which must propagate as a malformed corpus rather
+  than degrade. A single honest id whose name says the techniques are unknown is what makes
+  `logo_splits` refuse gracefully (§5), and inventing *several* ids would fabricate folds.
 - `domain` — the originating web domain, which is the resampling family.
 - `compression: "unknown"`. The precedent is `corpora.df40` and `corpora.sfhq`: an invented
   `c23` passes `check_compression_coverage` by lying to it.
