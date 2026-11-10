@@ -79,6 +79,45 @@ def test_jpeg_table_features_separate_two_encode_qualities(tmp_path):
     assert not np.allclose(x[:10].mean(axis=0), x[10:].mean(axis=0))
 
 
+def test_run_control_splits_class_pure_groups_without_raising():
+    # On the real corpus (Deepfake-Eval-2024, grouped by originating web
+    # domain) a domain that only hosts fakes or only contributes reals is
+    # not an edge case -- it is what 88 in-the-wild domains look like. A
+    # blind group split can strand a whole class on one side; this one must
+    # not, whenever an assignment avoiding that exists.
+    rng = np.random.default_rng(4)
+    rows_per_group = 10
+    features = []
+    labels = []
+    groups = []
+    for i in range(4):
+        for _ in range(rows_per_group):
+            features.append(rng.normal(size=6))
+            labels.append(0)
+            groups.append(f"real{i}")
+    for i in range(4):
+        for _ in range(rows_per_group):
+            features.append(rng.normal(size=6))
+            labels.append(1)
+            groups.append(f"fake{i}")
+    out = run_control(np.asarray(features), np.asarray(labels),
+                      np.asarray(groups), seed=0)
+    assert out["n_fit"] > 0
+    assert out["n_test"] > 0
+
+
+def test_run_control_refuses_an_unsplittable_group_structure():
+    # One real domain, one fake domain: no assignment of two class-pure
+    # groups can give both sides both classes, so the control must refuse
+    # with its own message rather than let sklearn fail on a one-class fit.
+    rng = np.random.default_rng(5)
+    features = np.concatenate([rng.normal(size=(5, 6)), rng.normal(size=(5, 6))])
+    labels = np.array([0] * 5 + [1] * 5)
+    groups = np.array(["real0"] * 5 + ["fake0"] * 5)
+    with pytest.raises(ValueError, match="both labels"):
+        run_control(features, labels, groups, seed=0)
+
+
 def test_jpeg_table_features_report_nothing_for_a_non_jpeg(tmp_path):
     # A PNG has no quantisation table. Returning zeros would be a feature
     # value; the control must be able to say the statistic does not exist

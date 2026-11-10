@@ -37,6 +37,20 @@ fitted and reported on the same rows has already seen its own exam: it
 would make every control fire on every corpus, which is indistinguishable
 from a control that never fires at all and therefore worthless as a gate.
 
+**Why the split also has to be class-aware.** On this module's actual
+corpus — Deepfake-Eval-2024, grouped by the 88 originating web domains —
+a domain that only hosts deepfake content, or a stock-photo domain that
+only contributes reals, is not an edge case; it is what an in-the-wild
+corpus collected from 88 domains looks like. A split that shuffles groups
+blind to their label composition will, on real data, eventually land every
+real-only domain on one side and leave the other side with no reals at
+all — and the failure then surfaces as `LogisticRegression`'s own exception
+from inside a control whose entire job is to produce a legible verdict
+about the corpus, not to hand that verdict back as somebody else's
+stack trace. `_group_disjoint_split` places groups greedily so each side
+accumulates both classes, and refuses with its OWN "both labels" message,
+naming what it saw, when no assignment of the given groups can do that.
+
 **Why a non-JPEG gets NaN, not zero.**
 `jpeg_table_features` reads the quantisation table from the file HEADER —
 PIL's `quantization` attribute, populated by its own JPEG-marker parser on
@@ -128,26 +142,85 @@ def jpeg_table_features(paths: Sequence[Path]) -> np.ndarray:
     return np.asarray(rows, dtype=np.float64)
 
 
-def _group_disjoint_split(groups: npt.NDArray[np.str_], *, seed: int,
+def _group_disjoint_split(groups: npt.NDArray[np.str_],
+                          labels: npt.NDArray[np.int_], *, seed: int,
                           ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
-    """A fit/test partition of ROWS that never splits a group across them.
+    """A fit/test partition of ROWS that never splits a group across them,
+    and that guarantees both labels on BOTH sides.
 
-    Groups, not rows, are shuffled and halved, because the question is
+    Groups, not rows, are shuffled and assigned, because the question is
     whether the shortcut generalises ACROSS groups — splitting rows within
     a group would let the fit half and the test half share whatever is
-    constant within a group (a session, a source image), which is exactly
-    the kind of leakage a shortcut control has to be immune to.
+    constant within a group (a session, a source image, a web domain),
+    which is exactly the kind of leakage a shortcut control has to be
+    immune to.
+
+    The assignment is class-aware rather than blind, because a blind split
+    can place every group of a class on one side. Groups are visited in a
+    seeded shuffle order; a group whose rows carry only ONE class goes to
+    whichever side currently holds FEWER rows of that class (greedily
+    balancing each class across sides, independently); a group whose rows
+    carry both classes falls back to whichever side currently holds fewer
+    groups (plain size balance, since it cannot unbalance either class by
+    much either way). This does not search for an optimal split — it does
+    not need to — it only needs to not produce a one-class side when some
+    assignment of these groups could avoid it.
+
+    Raises:
+        ValueError: if fewer than two groups are given, or if NO assignment
+            of them can give both sides both classes (every group pure in
+            the same class with too few groups to go around, e.g. one real
+            domain and one fake domain and nothing else). The message names
+            the side that came up short and the group counts per class, so
+            the caller does not have to re-derive what was seen.
     """
     uniq = np.unique(groups)
     if uniq.size < 2:
         msg = f"run_control needs at least two groups to split, got {uniq.size}"
         raise ValueError(msg)
+
+    classes = sorted(int(c) for c in np.unique(labels))
     order = np.random.default_rng(seed).permutation(uniq.size)
     shuffled = uniq[order]
-    cut = max(1, shuffled.size // 2)
-    fit_groups = set(shuffled[:cut].tolist())
-    fit_mask = np.array([g in fit_groups for g in groups])
-    return fit_mask, ~fit_mask
+
+    class_rows_on_side: dict[int, dict[str, int]] = {
+        c: {"fit": 0, "test": 0} for c in classes}
+    groups_on_side: dict[str, int] = {"fit": 0, "test": 0}
+    side_of: dict[Any, str] = {}
+
+    for group in shuffled:
+        rows = labels[groups == group]
+        present = sorted(int(c) for c in np.unique(rows))
+        if len(present) == 1:
+            c = present[0]
+            tally = class_rows_on_side[c]
+            side = "fit" if tally["fit"] <= tally["test"] else "test"
+        else:
+            side = "fit" if groups_on_side["fit"] <= groups_on_side["test"] else "test"
+        side_of[group] = side
+        groups_on_side[side] += 1
+        for c in present:
+            class_rows_on_side[c][side] += int((rows == c).sum())
+
+    fit_mask = np.array([side_of[g] == "fit" for g in groups])
+    test_mask = ~fit_mask
+
+    fit_classes = {int(c) for c in np.unique(labels[fit_mask])}
+    test_classes = {int(c) for c in np.unique(labels[test_mask])}
+    all_classes = set(classes)
+    if fit_classes != all_classes or test_classes != all_classes:
+        groups_per_class = {
+            c: int(sum(1 for grp in uniq if c in np.unique(labels[groups == grp])))
+            for c in classes}
+        short = [side for side, seen in
+                (("fit", fit_classes), ("test", test_classes)) if seen != all_classes]
+        msg = (f"run_control needs both labels on both sides of the "
+               f"group-disjoint split, but no assignment of {uniq.size} "
+               f"groups achieves that: side(s) {short} came up missing a "
+               f"class; groups per class: {groups_per_class}")
+        raise ValueError(msg)
+
+    return fit_mask, test_mask
 
 
 def run_control(features: np.ndarray, labels: np.ndarray, groups: np.ndarray,
@@ -174,7 +247,10 @@ def run_control(features: np.ndarray, labels: np.ndarray, groups: np.ndarray,
         ValueError: if `labels` carries only one class, before or after
             dropping all-NaN rows — shuffling a one-class vector permutes to
             itself, so the "null" would be `n_null` copies of the observed
-            statistic and every corpus would appear to fire.
+            statistic and every corpus would appear to fire. Also raised,
+            with the same "both labels" wording, if `_group_disjoint_split`
+            cannot place both classes on both sides of ANY assignment of the
+            given groups (see that function).
     """
     x = np.asarray(features, dtype=np.float64)
     y = np.asarray(labels)
@@ -194,7 +270,7 @@ def run_control(features: np.ndarray, labels: np.ndarray, groups: np.ndarray,
                f"got classes {np.unique(y).tolist()}")
         raise ValueError(msg)
 
-    fit_mask, test_mask = _group_disjoint_split(g, seed=seed)
+    fit_mask, test_mask = _group_disjoint_split(g, y, seed=seed)
     x_fit, y_fit = x[fit_mask], y[fit_mask]
     x_test, y_test = x[test_mask], y[test_mask]
 
