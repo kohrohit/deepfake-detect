@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from bench.eval_dfeval import (
+    CONTROL_ALARM_AUC,
     ORACLE_HI,
     ORACLE_LO,
     SCOPE_HEADING,
@@ -23,6 +24,7 @@ from bench.eval_dfeval import (
     abstention_by_class,
     check_domain_grouping,
     check_oracle,
+    control_alarm,
     face_subset,
     logo_verdict,
 )
@@ -147,6 +149,64 @@ def test_the_domain_refusal_names_the_count_and_the_resampling_family():
     assert "row-level" in per_row.lower()
 
     assert check_domain_grouping(_np.array(["a", "a", "b", "c"]), 4) is None
+
+
+def _loud_control(_features, _labels, _groups, **_kwargs):
+    """A control that separated the corpus's halves at 0.97."""
+    return {"auc": 0.97, "ci_lo": 0.94, "ci_hi": 0.99, "null_lo": 0.41,
+            "null_hi": 0.59, "p": 0.0, "n_fit": 3, "n_test": 3}
+
+
+def test_control_alarm_fires_at_the_spec_threshold_and_not_below():
+    # The threshold is spec §5.3's, not this file's: "if either control
+    # approaches the commercial models' 0.90". A refused control has no AUC
+    # and cannot fire -- it is reported as refused in its own right.
+    quiet = control_alarm({"colour": {"auc": CONTROL_ALARM_AUC - 0.01},
+                           "jpeg_table": {"refused": "no table anywhere"}})
+    assert quiet["fired"] == {}
+    assert quiet["sentence"] == ""
+
+    loud = control_alarm({"colour": {"auc": CONTROL_ALARM_AUC},
+                          "jpeg_table": {"refused": "no table anywhere"}})
+    assert set(loud["fired"]) == {"colour"}
+    assert "neither support nor refute" in loud["sentence"]
+
+
+def test_a_fired_control_is_the_first_thing_the_report_says(
+        monkeypatch, tmp_path, dfeval_root, stub_detect, stub_registry):
+    # Spec §5.3 wants this said BEFORE anything else, oracle included, and
+    # §10 wants the same finding in the record. A static paragraph plus a
+    # table left the reader to compare the numbers themselves.
+    from bench import eval_dfeval
+
+    monkeypatch.setattr(eval_dfeval, "run_control", _loud_control)
+    rc = eval_dfeval.main(
+        ["--root", str(dfeval_root), "--out-json", str(tmp_path / "r.json"),
+         "--out-md", str(tmp_path / "r.md")],
+        detect=stub_detect, registry=stub_registry)
+    assert rc == 0
+
+    md = (tmp_path / "r.md").read_text()
+    assert "shortcut control fired" in md.lower()
+    assert "neither support nor refute" in md
+    assert md.index("neither support nor refute") < md.index("**Oracle:")
+
+    report = json.loads((tmp_path / "r.json").read_text())
+    assert report["control_alarm"]["threshold"] == CONTROL_ALARM_AUC
+    assert set(report["control_alarm"]["fired"]) == {"colour", "jpeg_table"}
+    assert "neither support nor refute" in report["control_alarm"]["sentence"]
+
+
+def test_a_quiet_control_promotes_no_sentence(tmp_path, dfeval_root,
+                                              stub_detect, stub_registry):
+    from bench.eval_dfeval import main
+
+    main(["--root", str(dfeval_root), "--out-json", str(tmp_path / "r.json"),
+          "--out-md", str(tmp_path / "r.md"), "--allow-oracle-failure"],
+         detect=stub_detect, registry=stub_registry)
+    report = json.loads((tmp_path / "r.json").read_text())
+    assert report["control_alarm"]["fired"] == {}
+    assert "shortcut control fired" not in (tmp_path / "r.md").read_text().lower()
 
 
 def test_face_subset_selects_only_faced_records():

@@ -120,6 +120,26 @@ ORACLE_HI = 0.75
 #: so `main` refuses both shapes before computing any interval at all.
 MIN_DOMAINS = 2
 
+#: The AUC at which a shortcut control stops being a line in a table and
+#: becomes the first thing this report says. Spec §5.3 names exactly one
+#: number for this and it is not chosen here: "if either control approaches
+#: the commercial models' 0.90, every number on this corpus is suspect and
+#: the report says so before it says anything else". 0.90 is §3's reported
+#: commercial aggregate on this very corpus, so a control at or above it has
+#: separated these halves as well as the best system anybody has published
+#: here -- using six Lab numbers, or a JPEG header, and no face at all.
+#:
+#: Deliberately not tuned. A threshold set lower would be this file deciding
+#: when to alarm rather than the spec; one set higher would let the spec's
+#: own condition pass unremarked, which is the failure mode that ships.
+CONTROL_ALARM_AUC = 0.90
+
+#: Spec §10: what the record must say when a control fires. Carried as a
+#: constant so the report and `bench/evidence_card.json` cannot say
+#: different things about the same run.
+CONTROL_ALARM_VERDICT = (
+    "this corpus can neither support nor refute a detector")
+
 #: Headings the two prose blocks render under. Named so a test can assert
 #: each block is present without pinning its wording.
 WAIVER_HEADING = "## Guards waived for this corpus"
@@ -383,7 +403,10 @@ def logo_verdict(records: Sequence[dict[str, Any]]) -> str:
         f"**This corpus now folds into {len(splits)} leave-one-generator-out "
         "split(s), and this report does not compute them.** That is a change "
         "in the corpus, not a scope limit: re-run it through "
-        "`bench.runner.run_benchmark`, which owns the LOGO path, rather than "
+        "`bench.runner.run_benchmark`, which owns the LOGO path, **and give "
+        "it a domain grouping** -- that function groups by `source_id`, "
+        "which is one group per row on this corpus, and a row-level "
+        "bootstrap was measured 26x too narrow on DF40 -- rather than "
         "quoting the face-subset numbers below as generalisation results.")
 
 
@@ -418,8 +441,45 @@ def _control_or_refusal(features: np.ndarray, labels: np.ndarray,
         return {"refused": str(exc)}
 
 
+def control_alarm(controls: dict[str, Any]) -> dict[str, Any]:
+    """Which shortcut controls reached `CONTROL_ALARM_AUC`, and the sentence.
+
+    A reader should not have to compare the control table's AUC column
+    against a threshold held in their head: spec §5.3 requires the report
+    to say a control fired BEFORE it says anything else, and §10 requires
+    the same finding in the record. Both read this.
+
+    Args:
+        controls: the `name -> result` mapping built in `main`. A refused
+            control has no AUC and cannot fire; it is reported as refused
+            in its own right.
+
+    Returns:
+        `{threshold, fired, sentence}`. `fired` maps each firing control's
+        name to its AUC and is empty when none did; `sentence` is empty in
+        that case, so nothing is promoted above the oracle line.
+    """
+    fired = {name: float(c["auc"]) for name, c in controls.items()
+             if "refused" not in c and float(c["auc"]) >= CONTROL_ALARM_AUC}
+    if not fired:
+        return {"threshold": CONTROL_ALARM_AUC, "fired": {}, "sentence": ""}
+    named = ", ".join(f"`{name}` at AUC {value:.3f}"
+                      for name, value in sorted(fired.items()))
+    sentence = (
+        f"**A shortcut control fired, and this report says so before it says "
+        f"anything else.** {named} — at or above the {CONTROL_ALARM_AUC:.2f} "
+        f"that commercial models reach on this corpus, reached here by six "
+        f"Lab colour numbers or a JPEG header, with no face read at all. "
+        f"The halves of this corpus differ in a way ANY model would find, so "
+        f"{CONTROL_ALARM_VERDICT}: every detector and baseline number below "
+        f"was computed on a corpus that cannot distinguish a detector from a "
+        f"model that looked at paint.")
+    return {"threshold": CONTROL_ALARM_AUC, "fired": fired,
+            "sentence": sentence}
+
+
 def _auc_block(scores: np.ndarray, labels: np.ndarray, groups: np.ndarray,
-               *, seed: int, prefix: str = "") -> dict[str, Any]:
+               *, seed: int) -> dict[str, Any]:
     """AUC over the rows given, with a domain-grouped interval beside it.
 
     Never keyed `auc`: the caller is reporting a FACE SUBSET, and a field
@@ -435,16 +495,14 @@ def _auc_block(scores: np.ndarray, labels: np.ndarray, groups: np.ndarray,
     ci_lo, ci_hi = (bootstrap_ci_by_group(scores, labels, groups, auc,
                                           seed=seed) if usable else (nan, nan))
     return {
-        f"{prefix}auc_face_subset": auc(scores, labels) if usable else nan,
-        f"{prefix}auc_ci_lo": ci_lo,
-        f"{prefix}auc_ci_hi": ci_hi,
-        f"{prefix}tpr_at_1pct": (tpr_at_fpr(scores, labels, 0.01)
-                                 if usable else nan),
-        f"{prefix}tpr_at_0p1pct": (tpr_at_fpr(scores, labels, 0.001)
-                                   if usable else nan),
-        f"{prefix}n_scored_face_subset": int(scores.size),
-        f"{prefix}kish_ess_face_subset": (kish_ess(list(counts.values()))
-                                          if counts else nan),
+        "auc_face_subset": auc(scores, labels) if usable else nan,
+        "auc_ci_lo": ci_lo,
+        "auc_ci_hi": ci_hi,
+        "tpr_at_1pct": tpr_at_fpr(scores, labels, 0.01) if usable else nan,
+        "tpr_at_0p1pct": tpr_at_fpr(scores, labels, 0.001) if usable else nan,
+        "n_scored_face_subset": int(scores.size),
+        "kish_ess_face_subset": (kish_ess(list(counts.values()))
+                                 if counts else nan),
     }
 
 
@@ -512,9 +570,15 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     """
     oracle = payload["oracle"]
     corpus = payload["corpus"]
-    lines = [
-        "# Deepfake-Eval-2024 — benchmark report",
-        "",
+    lines = ["# Deepfake-Eval-2024 — benchmark report", ""]
+    # Spec §5.3: before the report says anything else, oracle included. A
+    # fired control makes the oracle's verdict moot -- a harness measuring
+    # correctly on a corpus whose halves are trivially separable is still
+    # measuring nothing about a detector.
+    alarm = str(payload.get("control_alarm", {}).get("sentence", ""))
+    if alarm:
+        lines += [alarm, ""]
+    lines += [
         f"**Oracle: {'PASSED' if oracle['passed'] else 'FAILED'}.** "
         f"{oracle['message']}",
         "",
@@ -572,7 +636,13 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         for name, c in payload["controls"].items():
             if "refused" in c:
                 lines += ["", f"`{name}` was refused: {c['refused']}"]
-        lines.append("")
+        fired = payload.get("control_alarm", {}).get("fired", {})
+        lines += ["", (f"No control reached "
+                       f"{CONTROL_ALARM_AUC:.2f} (spec §5.3)."
+                       if not fired else
+                       f"{len(fired)} control(s) reached "
+                       f"{CONTROL_ALARM_AUC:.2f}; {CONTROL_ALARM_VERDICT}. "
+                       f"See the first line of this report."), ""]
 
     if "detectors" in payload:
         lines += ["## Detectors", "",
@@ -602,15 +672,22 @@ def _render_markdown(payload: dict[str, Any]) -> str:
                   "weights enter this tree; coverage is reported, never "
                   "thresholded.",
                   "",
-                  "| baseline | coverage | covered | AUC (face subset) | "
-                  "95% CI | n scored |",
-                  "|---|---|---|---|---|---|"]
+                  "`coverage` is over the WHOLE corpus — every record the "
+                  "loader returned, faced or not — while the AUC beside it "
+                  "is over the face subset ALONE. `n face subset` is the "
+                  "size of that subset and `n scored` how much of it this "
+                  "baseline actually covered, so the two denominators cannot "
+                  "be mistaken for each other.",
+                  "",
+                  "| baseline | coverage (whole corpus) | covered | "
+                  "AUC (face subset) | 95% CI | n face subset | n scored |",
+                  "|---|---|---|---|---|---|---|"]
         for name, b in payload["baselines"].items():
             lines.append(
                 f"| {name} | {b['coverage']:.1%} | {b['covered']}/{b['total']} "
                 f"| {_fmt(b['auc_face_subset'])} | "
                 f"{_fmt(b['auc_ci_lo'])}–{_fmt(b['auc_ci_hi'])} | "
-                f"{b['n_scored_face_subset']} |")
+                f"{b['n_face_subset']} | {b['n_scored_face_subset']} |")
         lines.append("")
 
     if "logo" in payload:
@@ -731,6 +808,9 @@ def main(argv: Sequence[str] | None = None, *,
     controls["jpeg_table"] = _control_or_refusal(
         jpeg_table_features(paths), labels, domains, seed=args.seed)
     payload["controls"] = controls
+    payload["control_alarm"] = control_alarm(controls)
+    if payload["control_alarm"]["fired"]:
+        logger.error("%s", payload["control_alarm"]["sentence"])
 
     detectors: dict[str, Any] = {}
     for name, entry in scored.items():
