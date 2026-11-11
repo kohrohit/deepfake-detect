@@ -154,6 +154,37 @@ assets:
     checked_by: "rohit.kohli@scoreme.in"
     files:
       - "assets/models/gend_clip.pt"
+  gend_clip_encoder_lntuned:
+    # Registered 2026-11-11 with Phase 2 (plan Task 13). DUAL PROVENANCE, and
+    # the stricter condition governs: the 304M weights are OpenAI's under MIT,
+    # and the 102,400 LayerNorm parameters inside them were refitted in this
+    # repo on FairFace-derived material, which is CC BY 4.0. MIT asks for
+    # attribution; CC BY 4.0 asks for attribution AND an indication that
+    # changes were made. Shipping this file therefore requires naming OpenAI,
+    # naming FairFace, and saying that the normalisation parameters were
+    # retuned here -- not whichever of the two is quoted first.
+    source: "training/fit_gend.py --tune-layernorms: OpenAI CLIP ViT-L/14's vision tower (clip_vit_l14_visual) with every LayerNorm weight and bias retuned jointly with the Linear(768, 2) head on self-blended and composited FairFace crops. Every other parameter is byte-identical to the MIT original; tests/test_fit_gend.py asserts that."
+    license: "MIT (OpenAI's weights) AND CC BY 4.0 (the retuned LayerNorms, inherited from fairface_corpus). Attribution to both is required, and CC BY 4.0's indicate-changes condition applies to the whole file."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these parameters: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError. The same open biometric-consent question that fairface_corpus records applies here and is NOT answered by CC BY 4.0."
+    evidence_url: "https://github.com/openai/CLIP/blob/main/LICENSE"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/clip_vit_l14_lntuned.pt"
+  gend_clip_lntuned_weights:
+    # The head fitted JOINTLY with gend_clip_encoder_lntuned, and a separate
+    # id from gend_clip_weights because it reads a different encoder's
+    # embeddings. Interchanging them loads clean and scores nonsense.
+    source: "Fitted in this repo by training/fit_gend.py --tune-layernorms: a Linear(768, 2) trained jointly with the encoder's LayerNorms on self-blended and composited FairFace crops. No generator weight file, no licensed deepfake dataset, and nothing derived from FaceForensics++ contributes to them."
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship. The encoder they read is gend_clip_encoder_lntuned, which carries MIT AND CC BY 4.0 together."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these coefficients: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/gend_clip_lntuned.pt"
   vkyc_capture_corpus:
     # PATH CORRECTED 2026-11-11. The slot D plan named
     # ~/Desktop/agents/fraud_gff/deepfake_detection/captures; that directory

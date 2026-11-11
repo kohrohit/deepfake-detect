@@ -4,8 +4,18 @@ import numpy as np
 import pytest
 import torch
 
-from dfd.detectors.gend import GendHead
-from training.fit_gend import build_training_records, fit_head, reencode
+from dfd.detectors.clip_vit import CLIPVisualTower
+from dfd.detectors.gend import GendHead, embed
+from training.clip_features import FeatureCache
+from training.fit_gend import (
+    ENCODER_ID_LNTUNED,
+    _embed_for_training,
+    build_training_records,
+    encoder_cache_id,
+    fit_head,
+    reencode,
+    tune_layernorms,
+)
 
 
 def test_every_record_passes_through_the_same_encode(tiny_fairface_root, stub_detect):
@@ -93,3 +103,120 @@ def test_a_saved_head_loads_back_strictly(tmp_path):
     torch.save(head.state_dict(), path)
     GendHead(in_dim=8).load_state_dict(
         torch.load(path, map_location="cpu", weights_only=True))
+
+
+# --- Phase 2: LayerNorm tuning (plan Task 13) -------------------------------
+
+
+def _tuning_records(n: int = 12) -> list[dict]:
+    """Paired reals and fakes over `n` subjects, in the record shape.
+
+    Synthetic rather than `build_training_records` because what these tests
+    check -- which parameters move, what the artefact loads as -- does not
+    depend on the corpus being real, and a real one costs a face detector
+    pass per test.
+    """
+    rng = np.random.default_rng(0)
+    records = []
+    for i in range(n):
+        base = rng.integers(0, 255, (48, 48, 3), dtype=np.uint8)
+        for label in (0, 1):
+            img = base.copy()
+            if label:
+                img[12:36, 12:36] = 255 - img[12:36, 12:36]
+            records.append({
+                "sample_id": f"s{i}/{label}", "subject_id": f"s{i}",
+                "label": label, "image": img, "generator": "sbi" if label else None,
+            })
+    return records
+
+
+def test_tuning_touches_layernorms_and_nothing_else():
+    # 102,400 of ~304M parameters on the real tower. A tuning run that moved
+    # anything else would be fine-tuning CLIP, which is a different licence
+    # question and a different compute budget from the one Task 6 measured.
+    tower = CLIPVisualTower.tiny()
+    before = {k: v.clone() for k, v in tower.state_dict().items()}
+    tuned, _, _ = tune_layernorms(tower, _tuning_records(), epochs=1, lr=1e-2)
+    ln = set(tuned.layernorm_parameter_names())
+    after = tuned.state_dict()
+    assert any(not torch.equal(after[k], before[k]) for k in ln)
+    assert all(torch.equal(after[k], before[k]) for k in after if k not in ln)
+
+
+def test_the_tuned_encoder_loads_through_the_same_strict_factory(tmp_path):
+    # The plan's reason for writing a COMPLETE state_dict rather than a
+    # delta: a delta needs a partial, non-strict load, and a non-strict load
+    # is how half a model gets loaded without complaining.
+    tuned, _, _ = tune_layernorms(CLIPVisualTower.tiny(), _tuning_records(),
+                                  epochs=1, lr=1e-2)
+    path = tmp_path / "e.pt"
+    torch.save(tuned.state_dict(), path)
+    CLIPVisualTower.tiny().load_state_dict(
+        torch.load(path, map_location="cpu", weights_only=True))
+
+
+def test_a_tuned_encoder_gets_its_own_feature_cache_id(tmp_path):
+    # Sharing the frozen encoder's cache would serve embeddings from the
+    # wrong model and the only symptom would be a disappointing AUC.
+    img = np.random.default_rng(0).integers(0, 255, (32, 32, 3), dtype=np.uint8)
+    frozen = FeatureCache(tmp_path, encoder_id=encoder_cache_id(
+        "assets/models/clip_vit_l14_visual.pt"))
+    tuned = FeatureCache(tmp_path, encoder_id=ENCODER_ID_LNTUNED)
+    assert frozen.encoder_id != tuned.encoder_id
+    assert frozen.key(img) != tuned.key(img)
+
+
+def test_the_tuned_head_carries_the_tuned_version():
+    # bench/eval_swaps.py refuses a corpus inside a detector's training
+    # window and keys that refusal on this string. A tuned head declaring the
+    # frozen probe's version would be evaluated under the wrong window.
+    _, head, _ = tune_layernorms(CLIPVisualTower.tiny(), _tuning_records(),
+                                 epochs=1, lr=1e-2,
+                                 version="0.2.0-lntuned-test")
+    assert head.version() == "0.2.0-lntuned-test"
+
+
+def test_tuning_refuses_a_one_class_corpus():
+    records = [r for r in _tuning_records() if r["label"] == 0]
+    with pytest.raises(ValueError, match="both labels"):
+        tune_layernorms(CLIPVisualTower.tiny(), records, epochs=1, lr=1e-2)
+
+
+def test_tuning_keeps_the_best_holdout_epoch_not_the_last():
+    # Early stopping, implemented as "keep the best epoch". Without it a run
+    # that overfits in epoch 5 ships epoch 5, and the overnight cost of the
+    # run makes "just run it again with fewer epochs" an expensive answer.
+    _, _, trace = tune_layernorms(CLIPVisualTower.tiny(), _tuning_records(),
+                                  epochs=3, lr=1e-2, seed=0)
+    assert len(trace.holdout_auc) == 3
+    scored = [a for a in trace.holdout_auc if a is not None]
+    assert trace.selected_epoch == trace.holdout_auc.index(max(scored)) + 1
+    assert trace.selected_auc == max(scored)
+
+
+def test_the_trace_counts_the_parameters_that_were_allowed_to_move():
+    # The claim "0.03% of the encoder" is checkable in the artefact rather
+    # than only in the plan's prose.
+    tower = CLIPVisualTower.tiny()
+    _, _, trace = tune_layernorms(tower, _tuning_records(), epochs=1, lr=1e-2)
+    expected = sum(
+        p.numel() for n, p in tower.named_parameters()
+        if n in set(tower.layernorm_parameter_names()))
+    assert trace.n_tuned_parameters == expected
+    assert trace.n_frozen_parameters == (
+        sum(p.numel() for p in tower.parameters()) - expected)
+
+
+def test_the_tuning_forward_matches_the_detectors_own_embed():
+    # The tuner cannot reuse `gend.embed` -- it is wrapped in no_grad and a
+    # detached embedding cannot be back-propagated through -- so the same
+    # arithmetic exists twice. A tuner that normalised differently from the
+    # detector would fit coefficients the detector never sees, and every
+    # symptom of that is "the AUC is lower than the fit reported".
+    tower = CLIPVisualTower.tiny()
+    tower.eval()
+    crops = [r["image"] for r in _tuning_records(3)]
+    with torch.no_grad():
+        mine = _embed_for_training(tower, crops)
+    assert torch.allclose(mine, embed(tower, crops), atol=0, rtol=0)

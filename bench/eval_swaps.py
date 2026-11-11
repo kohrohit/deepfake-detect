@@ -75,6 +75,12 @@ logger = logging.getLogger(__name__)
 TRAINING_WINDOWS: dict[str, int] = {
     "0.2.0-fairface10k": 10000,
     "0.1.0-probe-fairface2000": 2000,
+    # Phase 2's LayerNorm-tuned encoder and the head fitted jointly with it.
+    # Same 2,000 photographs as the frozen probe, so the same offset guard
+    # applies -- and it applies to the ENCODER now as well as to the head,
+    # which is the new thing: a frozen encoder could not memorise a corpus,
+    # and a tuned one can.
+    "0.2.0-lntuned-fairface2000": 2000,
 }
 
 #: The heading the scope block renders under, named so a test can assert the
