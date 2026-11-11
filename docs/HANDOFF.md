@@ -383,6 +383,20 @@ though what it buys arrives later.
 
 ### Slot C on the v-CIP capture corpus: the first number here that survives its control. 2026-09-25.
 
+**Corrected 2026-11-12: every `0.957` in this repository predates a fixed leak, and the honest
+number is `0.956`.** `training/fit_vcip.py` and `bench/vcip_controls.py` both fitted the feature
+standardiser ONCE over every row, before the `GroupKFold(5)` loop — so each fold's "held-out"
+score came from a pipeline whose preprocessing had already seen the test sessions. Found by a
+code review of PR #3, fixed in `352a15b` (refitted inside each fold, in both files, because a
+control is only comparable with a headline computed the same way), and then **re-measured rather
+than assumed**: session AUC **0.9570 → 0.9563**, TPR@0%FPR **0.456 → 0.441** (one session of 68).
+The leak was real and immaterial, which is a thing worth knowing exactly rather than arguing
+about. The shipped `npr.pt` weights are unaffected — the production standardiser is still fitted
+on every row, which is correct; only the reporting of held-out performance changed.
+`bench/vcip_fit.json` and `bench/vcip_controls.json` are regenerated. The older `0.957` figures
+left in docstrings and comparison tables are kept as the measurement records they were at the
+time; this block is the correction, and it applies to all of them.
+
 **The headline, and it is the controlled one.** `training/fit_vcip.py` fits slot C on 506 capture
 frames from 106 sessions — genuine v-CIP frames against real `inswapper_128` swaps of those same
 frames, folds split on session. Held out, it reaches **session AUC 0.957 and catches 45.6% of
