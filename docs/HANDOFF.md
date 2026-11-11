@@ -232,6 +232,26 @@ factor is a rule of thumb, not a measured step.
   owner attestation nobody with standing has reviewed. Nothing in Tasks 0–12 moves that, and
   `assets/manifest.yaml` says so at each entry rather than proceeding quietly.
 
+**Slot D's own code has been reviewed (2026-11-11) and nine defects fixed** — `6406dad`. The
+one worth knowing about: `encoder_cache_id` keyed the embedding cache on the encoder's FILENAME,
+and `--tune-layernorms` writes one fixed path, so a re-tune at a different learning rate would
+have been scored with the PREVIOUS encoder's cached embeddings. `bench/compare_lntuned.py` would
+then have differenced two identical score vectors and reported a paired delta of exactly 0.000 —
+which reads as "the tuning did nothing" and is indistinguishable from the real finding it would
+be impersonating. The id now carries a content digest.
+
+Also fixed there: `--report` defaulted to `bench/gend_fit.json` for BOTH phases, so a
+default-argument tuning run overwrote the provenance `bench/evidence_card.json` cites by name and
+version; `training/fit_calibration.py --offset` said MUST and enforced nothing while defaulting
+to 0, so the default invocation fitted slot D's calibration curve on its own training window;
+`?format=rd` answered a permanently FAILED submission with 409 "not scored yet", for ever, while
+`/api/analyze` answered 422 on the same row.
+
+**That review covered slot D's 37 commits, NOT PR #3's 59.** It was pointed at the working tree,
+which is a different branch 37 commits further ahead; `training/fit_gend.py`, `bench/eval_gend.py`
+and `corpora/provenance.py` do not exist at PR #3's tip at all. Owner-action item 3 is therefore
+still open, and a correctly scoped review of that range is a separate piece of work.
+
 **Task 13 (Phase 2, LayerNorm tuning) is IN FLIGHT, not done.** Started 2026-11-11 18:12 UTC on
 the deployment instance: 5 epochs, lr 1e-4, batch 8, over the same 9,886 records and the same
 7,911 / 1,975 subject-disjoint split the frozen probe used, so the comparison is like for like.
