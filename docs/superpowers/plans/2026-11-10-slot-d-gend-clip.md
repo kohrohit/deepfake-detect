@@ -2526,7 +2526,7 @@ clean from a cold cache.
 
 ---
 
-### Task 9: Calibration, from a corpus that is not DF40
+### Task 9: Calibration, from a corpus that is not DF40 — **DONE 2026-11-11** (`f5bf68e`)
 
 A detector with no calibrator returns `llr 0.0` and `uncalibrated_for_band` — the honest answer to
 "I was never calibrated in this regime", and also a detector that cannot move a verdict no matter
@@ -2537,7 +2537,7 @@ project has ruled can neither support nor refute anything.
 - Modify: `training/fit_calibration.py`
 - Modify: `tests/test_fit_calibration.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import json
@@ -2577,11 +2577,11 @@ def test_an_unknown_corpus_kind_is_refused_by_the_parser():
         main(["--corpus-kind", "df40-but-ok", "--corpus", "x"])
 ```
 
-- [ ] **Step 2: Run and watch fail**
+- [x] **Step 2: Run and watch fail**
 
 Run: `python3 -m pytest tests/test_fit_calibration.py -q`
 
-- [ ] **Step 3: Add the second source**
+- [x] **Step 3: Add the second source**
 
 Add `--corpus-kind {df40,swaps}` (default `df40`, so every existing invocation is unchanged).
 `swaps` takes `--root/--offset/--limit` and loads via `training.fit_gend.build_training_records`,
@@ -2589,7 +2589,7 @@ mapping each record to the `{image, source_id, label}` shape `_score`/`_observe`
 `split_by_source` is unchanged and still splits whole sources onto one side. Record the corpus kind
 in the report so a reader knows which curve they are looking at.
 
-- [ ] **Step 4: Fit on the held-out window and check band coverage**
+- [x] **Step 4: Fit on the held-out window and check band coverage**
 
 ```bash
 python3 -m training.fit_calibration --corpus-kind swaps \
@@ -2601,13 +2601,38 @@ Then read `report["detectors"]["gend_clip"]["bands"]`. **If the fitted bands do 
 the capture corpus actually produces** (Task 8's table says what those are), say so in the report
 rather than shipping a curve that abstains at runtime on the only band that matters.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add training/fit_calibration.py tests/test_fit_calibration.py \
         assets/models/calibration.json bench/calibration_report.json
 git commit -m "feat: a calibration curve that does not come from the corpus we cannot trust"
 ```
+
+**What Step 4 decided.** `gend_clip`'s fitted bands are `medium` and `reject`, covering 470 of the
+509 capture frames Task 8 measured — 92.3%. `reject` alone carries 218 of that corpus's 328 swapped
+frames, and it is covered only because this run used the floor Task 8 measured. The first run, on
+an EC2 checkout still carrying the provisional `min_quality_band = "low"`, fitted `medium` only and
+covered 46.8% — a curve that would have abstained with `uncalibrated_for_band` on nearly half of
+live-shaped traffic, and on the half where the attacks are. The stale-floor artefacts were deleted
+rather than kept beside the good ones.
+
+Uncovered: `high` (27 capture frames, no swapped one — it could not be fitted on any corpus) and
+`low` (12 frames; the fit split held 13 rows there, under `MIN_FIT_SAMPLES`). Both return `llr 0.0`,
+which is the honest answer and is visible in the report rather than inferred.
+
+**A defect this task found in the reporting, not in the curve.** The report carried a single `bands`
+field built from `sorted(set(f_bands))` — the bands the fit split *saw*. `Calibrator.fit` drops a
+band under `MIN_FIT_SAMPLES` or with one class, so that field claimed curves that do not exist, on
+the exact field this step tells a reader to consult. `bands_fitted` and `bands_seen` are now
+separate, and `Calibrator.fitted_bands` is the source for the first.
+
+**`npr`'s curve changed corpus.** `assets/models/calibration.json` previously held an `npr` curve
+fitted by `training/fit_vcip.py` on the capture corpus, conditioned on a 66.4% base rate that file
+itself warns about. It is now the swaps-fitted one (holdout AUC 0.546, ECE 0.297). The weaker
+coefficients are the honest ones: a curve fitted where the detector cannot separate should produce
+small llrs, and the capture-fitted curve's confidence came from a corpus one JPEG header byte
+labels for 99.2% of rows.
 
 ---
 
