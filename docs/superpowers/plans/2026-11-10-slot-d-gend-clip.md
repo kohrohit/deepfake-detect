@@ -2996,7 +2996,47 @@ numbers as load-bearing references, not as ordering.
 
 ---
 
-### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning
+### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning — **IN FLIGHT 2026-11-11**
+
+**Gate check: Task 6 said run it.** `bench/clip_latency.md`'s ruling is "Phase 2 IS runnable here
+and is NOT blocked on the GPU decision", so this task is not blocked on owner-action item 7.
+
+**Status.** Steps 1–4 are done and committed (`35e93bb`, `a428878`); Step 5 — re-measure and
+re-report — is waiting on a 5-epoch run live on the deployment instance since 18:12 UTC. Eight
+tests cover the fitter, and the 102,400-parameter / 0.034% claim is verified against the real
+ViT-L/14, not only against the tiny test tower. A chain script on the instance
+(`~/dfd/lntune_chain.sh`) fires Tasks 7, 8 and 9 against the tuned pair the moment the fit exits,
+writing `bench/gend_report_lntuned.{json,md}`, `bench/gend_vcip_lntuned.json` and
+`bench/calibration_report_lntuned.json`. **No Phase 1 artefact is overwritten by any of it** —
+including `assets/models/calibration.json`, whose default the chain redirects.
+
+**The 3x rule of thumb was measured before the run, as this plan's own Task 6 write-up asked.**
+A real step — forward, cross-entropy, backward, AdamW, LayerNorms only — is **617 ms/image** at
+batch 8 on the instance, 26% under the 829 ms that forward-times-three implied, because only
+102,400 of 303,966,208 parameters carry a weight gradient. One epoch is **1.70 h**, not 2.3 h, so
+the 5-epoch run is ~9.3 h including per-epoch holdout scoring. 8 threads buys 2% and was declined
+to keep the run in the configuration every other number in `bench/clip_latency.md` was measured
+under.
+
+**Three deviations from the reference code below, each because transcribing it faithfully would
+have shipped a defect** (the same lesson as Task 9's):
+
+1. `tune_layernorms` returns a third value, a `TuningTrace`. The 2-tuple below loses the per-epoch
+   holdout curve, which is the only evidence that early stopping did anything; a 9-hour run whose
+   shape cannot be inspected afterwards is a run somebody repeats.
+2. `ENCODER_ID_LNTUNED` is derived from a shared `encoder_cache_id()` helper rather than being the
+   bare string `"clip-l14-lntuned"`. The id scheme already in the code is `"clip-l14:<filename>"`,
+   and the constant below would have been a second, conflicting authority for the same key.
+3. `--out` no longer defaults to the SHIPPED head. Under `--tune-layernorms` it defaults to
+   `assets/models/gend_clip_lntuned.pt`, because one overnight run finishing with the old default
+   would have overwritten the only slot D artefact that is currently measured.
+
+**And one defect this task's own work surfaced, now gated.** A `logger.info` here carried seven
+format placeholders and six arguments. `logging` catches that `TypeError` itself and prints a
+traceback to stderr **without raising**, so the run continued, every test passed, and the only
+symptom was a log line that never appeared. `PLE1205`/`PLE1206` joined the ruff gate; both were
+clean across `src`, `bench`, `corpora`, `training` and `tests` when added.
+
 
 **Do not start this task until Task 6's arithmetic is written down and says it can run.** If it
 says otherwise, this task is blocked on owner-action item 7 ("Decide GPU or no GPU") and the plan
