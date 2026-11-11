@@ -3031,6 +3031,43 @@ have shipped a defect** (the same lesson as Task 9's):
    `assets/models/gend_clip_lntuned.pt`, because one overnight run finishing with the old default
    would have overwritten the only slot D artefact that is currently measured.
 
+**The decision rule, written down before the numbers exist (2026-11-11, while the run is still
+in epoch 1).** Recorded here rather than decided on sight of the result, because a rule chosen
+after the fact is a rule chosen to fit the fact. Four questions, each with its artefact:
+
+| # | Question | Artefact | Answer that favours Phase 2 |
+|---|---|---|---|
+| 1 | Did tuning move the **worst LOGO fold**? | `bench/lntuned_vs_frozen.json` | paired delta on the BASELINE's worst fold is positive AND its 95% interval clears zero |
+| 2 | Is the tuned run still **outside its own permutation null**? | `bench/gend_report_lntuned.json` | `inside_null: false` |
+| 3 | Did the tuning buy a **shortcut** instead of a detector? | same file, `control_colour` / `control_jpeg` | colour stays near 0.5 (frozen: 0.530); JPEG stays structurally 0.5 |
+| 4 | Does slot D now **clear the evidence floor**? | `bench/gend_vcip_lntuned.json` | capture-corpus **session** AUC ≥ 0.75 |
+
+**Question 4 is a different number from question 1 and this is the thing most likely to be
+misread.** The evidence gate (`src/dfd/service/evidence.py: gated_detectors`) reads the card's
+`auc` field, which is the capture-corpus session AUC — 0.663 for the frozen probe — not the LOGO
+fold. A tuned worst fold above 0.75 would mean the tuning worked and would still **not** open the
+gate. Only question 4 opens the gate, and it opens it only together with the card's existing
+cross-corpus checks (`trained_on` ≠ `corpus`, both ids in the manifest).
+
+**What ships:**
+
+- **Tuned replaces frozen as slot D only if 1, 2 and 3 all hold.** Question 4 is not required to
+  ship it — a better detector that still abstains is still better — but it IS required before
+  anything decides.
+- **If 1 fails, Phase 1's weights stay shipped and the result is recorded as measured.** That is
+  the plan's own rule and it is not renegotiated by a near miss: a positive delta whose interval
+  straddles zero is a run that cannot be distinguished from noise.
+- **If 2 fails, nothing is reported at all** beyond the fact that it failed. A number inside its
+  own null is what this project ruled every DF40 measurement to be.
+- **If 3 fails, the tuned encoder is discarded even if 1 passed.** A detector that gained by
+  learning colour is the failure mode slots A, C and E have each been caught on here.
+
+**What would void the run outright:** a holdout curve that never rises above ~0.5, a `nan` train
+loss, or a tuned encoder differing from the frozen one anywhere outside
+`layernorm_parameter_names()`. The first two read as "the optimiser did nothing"; the third means
+the freeze leaked, and `tests/test_fit_gend.py` asserts against it on both the tiny tower and —
+checked by hand on 2026-11-11 — the real ViT-L/14.
+
 **And one defect this task's own work surfaced, now gated.** A `logger.info` here carried seven
 format placeholders and six arguments. `logging` catches that `TypeError` itself and prints a
 traceback to stderr **without raising**, so the run continued, every test passed, and the only
