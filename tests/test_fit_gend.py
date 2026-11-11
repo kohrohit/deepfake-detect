@@ -254,3 +254,25 @@ def test_the_layernorms_are_not_weight_decayed():
     # Phase 1. AdamW fills the inherited value in on construction, so this
     # reads the EFFECTIVE decay, not the dict as it was passed.
     assert groups[1]["weight_decay"] > 0
+
+
+def test_the_returned_weights_are_the_best_epoch_not_the_last(monkeypatch):
+    # The trace bookkeeping can say "epoch 1" while the tower carries epoch
+    # 3's weights, and nothing downstream would notice: the artefact loads,
+    # scores, and is simply worse than the number reported beside it. This
+    # pins the WEIGHTS, by scripting the holdout AUC to peak on epoch 1 and
+    # asserting the result is bit-identical to a one-epoch run at the same
+    # seed.
+    import training.fit_gend as fg
+
+    one, _, _ = tune_layernorms(CLIPVisualTower.tiny(), _tuning_records(),
+                                epochs=1, lr=1e-2, seed=0)
+    scripted = iter([0.9, 0.4, 0.4])
+    monkeypatch.setattr(fg, "roc_auc_score", lambda *a, **k: next(scripted))
+    three, _, trace = tune_layernorms(CLIPVisualTower.tiny(), _tuning_records(),
+                                      epochs=3, lr=1e-2, seed=0)
+
+    assert trace.selected_epoch == 1 and trace.selected_auc == 0.9
+    ln = one.layernorm_parameter_names()
+    a, b = one.state_dict(), three.state_dict()
+    assert all(torch.equal(a[k], b[k]) for k in ln)
