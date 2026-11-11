@@ -151,3 +151,17 @@ def test_the_report_carries_what_this_corpus_cannot_show(tmp_path: Path) -> None
     text = md.read_text().lower()
     assert "classical" in text
     assert "not generator output" in text
+
+
+def test_measuring_the_tuned_head_without_its_encoder_is_refused(tmp_path):
+    # The same pairing rule as training/fit_calibration.py, enforced at the
+    # other end: a tuned head read through the frozen encoder is a model
+    # nobody fitted, and every number measured on it would be reported as
+    # slot D's.
+    with pytest.raises(SystemExit) as excinfo:
+        eval_swaps.main(
+            ["--root", str(tmp_path), "--offset", "10000",
+             "--out-md", str(tmp_path / "r.md"),
+             "--out-json", str(tmp_path / "r.json"),
+             "--gend-encoder", "assets/models/clip_vit_l14_lntuned.pt"])
+    assert excinfo.value.code == 2

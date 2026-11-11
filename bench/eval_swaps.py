@@ -171,6 +171,15 @@ def main(argv: Sequence[str] | None = None, *,
                              "corpora.swap_corpus.build_swap_corpus")
     parser.add_argument("--blend-weights", type=Path, default=None,
                         help="override the blend_seam weights path")
+    parser.add_argument("--gend-weights", type=Path, default=None,
+                        help="override slot D's HEAD path")
+    parser.add_argument("--gend-encoder", type=Path, default=None,
+                        help="override slot D's ENCODER path — this is how "
+                             "Phase 2's LayerNorm-tuned encoder is measured "
+                             "by the same protocol as the frozen one. The "
+                             "two are a PAIR: a tuned head over the frozen "
+                             "encoder loads clean and scores nonsense, so "
+                             "pass both or neither.")
     parser.add_argument("--identity", action="store_true",
                         help="embed every crop and certify the LOGO folds "
                              "identity-disjoint (acceptance criterion 2). "
@@ -183,9 +192,16 @@ def main(argv: Sequence[str] | None = None, *,
 
     logging.basicConfig(level=logging.INFO)
 
+    if (args.gend_weights is None) != (args.gend_encoder is None):
+        parser.error("--gend-weights and --gend-encoder go together: a head "
+                     "fitted jointly with a tuned encoder, read through the "
+                     "frozen one, produces a number that means nothing")
     if registry is None:
-        registry = (default_registry(blend_weights=args.blend_weights)
-                    if args.blend_weights is not None else default_registry())
+        overrides = {k: v for k, v in (
+            ("blend_weights", args.blend_weights),
+            ("gend_weights", args.gend_weights),
+            ("clip_weights", args.gend_encoder)) if v is not None}
+        registry = default_registry(**overrides)
 
     # BEFORE building the corpus, which takes minutes: a refusal that arrives
     # after the work is a refusal the caller learns to pass --allow past.

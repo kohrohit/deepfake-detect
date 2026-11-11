@@ -276,7 +276,11 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
     from dfd.detectors.clip_vit import CLIPVisualTower
     from dfd.detectors.loading import load_model
     from training.clip_features import FeatureCache
-    from training.fit_gend import REENCODE_QUALITY, build_training_records
+    from training.fit_gend import (
+        REENCODE_QUALITY,
+        build_training_records,
+        encoder_cache_id,
+    )
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -318,7 +322,10 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
 
     tower = load_model(args.encoder, model_factory=CLIPVisualTower.vit_l14)
     tower.eval()
-    cache = FeatureCache(args.cache, encoder_id=f"clip-l14:{args.encoder.name}")
+    # Through the shared helper, not a second copy of the f-string: this and
+    # training/fit_gend.py must key the cache identically or a measurement
+    # silently reads the fit's embeddings from a different encoder.
+    cache = FeatureCache(args.cache, encoder_id=encoder_cache_id(args.encoder))
     images = [r["image"] for r in records]
     features = cache.embed_all(tower, images)
     labels = np.asarray([r["label"] for r in records], dtype=np.int64)

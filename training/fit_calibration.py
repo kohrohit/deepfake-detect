@@ -166,6 +166,12 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--holdout", type=float, default=DEFAULT_HOLDOUT)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--gend-weights", type=Path, default=None,
+                        help="override slot D's HEAD path")
+    parser.add_argument("--gend-encoder", type=Path, default=None,
+                        help="override slot D's ENCODER path, so Phase 2's "
+                             "tuned pair is calibrated by the same procedure "
+                             "as the frozen one. Pass both or neither.")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
 
@@ -203,7 +209,15 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
                 len(records), skipped or "nothing", len(fit), len(holdout),
                 len({r["source_id"] for r in records}))
 
-    registry = registry if registry is not None else default_registry()
+    if (args.gend_weights is None) != (args.gend_encoder is None):
+        parser.error("--gend-weights and --gend-encoder go together: a head "
+                     "fitted jointly with a tuned encoder, read through the "
+                     "frozen one, produces a curve that means nothing")
+    if registry is None:
+        overrides = {k: v for k, v in (
+            ("gend_weights", args.gend_weights),
+            ("clip_weights", args.gend_encoder)) if v is not None}
+        registry = default_registry(**overrides)
     calibrators: dict[str, Calibrator] = {}
     try:
         in_domain = load_in_domain_bands(args.in_domain_bands)

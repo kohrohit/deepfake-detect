@@ -215,3 +215,16 @@ def test_the_in_domain_band_table_comes_from_the_controlled_half(tmp_path):
                                                 "reject": {"n": 232}}},
         "uncontrolled": {"per_band_frames": {"medium": {"n": 1}}}}))
     assert load_in_domain_bands(p) == {"medium": 238, "reject": 232}
+
+
+def test_calibrating_the_tuned_head_without_its_encoder_is_refused(tmp_path):
+    # Phase 2's head and encoder are fitted jointly. Reading that head
+    # through the frozen encoder loads clean, scores, and produces a curve
+    # describing a model that does not exist -- and a calibration curve is a
+    # claim about what a score MEANS, so a wrong one is worse than none.
+    with pytest.raises(SystemExit) as exc:
+        main(["--corpus-kind", "swaps", "--root", str(tmp_path),
+              "--out", str(tmp_path / "cal.json"),
+              "--report", str(tmp_path / "r.json"),
+              "--gend-weights", "assets/models/gend_clip_lntuned.pt"])
+    assert exc.value.code == 2
