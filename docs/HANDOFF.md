@@ -275,6 +275,15 @@ The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement i
   shut until something clears it.
 - **A real tuning step was measured before the run** (617 ms/image, 26% under the 3x rule of
   thumb) and `bench/clip_latency.md` now carries it.
+- **The whole chain was rehearsed end to end before it fires** (2026-11-12, local, 24 photographs
+  instead of 2,000): all five steps exit 0 with no traceback — frozen eval, tuned eval, the paired
+  comparison, the capture-corpus eval against a tuned pair, and the calibration with
+  `--gend-weights`/`--gend-encoder`. It also demonstrated the cache fix working: the two encoders
+  produced **0 of 40 identical scores** on the deciding fold. The bug's signature would have been
+  all 40 identical and a delta of exactly 0.000 with a zero-width interval; what the rehearsal
+  reports is +0.000 with CI [-0.008, +0.041] — a real comparison of two models that happen to
+  perform alike. That is the difference between "no effect" and "we measured the same model
+  twice", and it is now distinguishable.
 - **The decision rule was written down before the numbers existed** — four questions, each with
   its artefact, in the plan's Task 13 section. Read it before reading the results, not after.
 - **The deployment path already reads a tuned pair.** Checked by hand 2026-11-11 against the
