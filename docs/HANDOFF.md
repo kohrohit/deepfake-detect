@@ -251,6 +251,25 @@ The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement i
   shut until something clears it.
 - **A real tuning step was measured before the run** (617 ms/image, 26% under the 3x rule of
   thumb) and `bench/clip_latency.md` now carries it.
+- **The decision rule was written down before the numbers existed** — four questions, each with
+  its artefact, in the plan's Task 13 section. Read it before reading the results, not after.
+- **The deployment path already reads a tuned pair.** Checked by hand 2026-11-11 against the
+  smoke-test artefacts: `GendClipDetector(weights_path=<tuned head>, encoder_path=<tuned
+  encoder>)` scores a FairFace frame without abstaining and reports the tuned version string, so
+  nothing in the service needs changing to serve Phase 2 if Phase 2 wins.
+- **When the chain finishes, fetch the artefacts:**
+
+      H=ubuntu@<host>
+      for f in gend_report_frozen.json gend_report_frozen.md gend_report_frozen.scores.json \
+               gend_report_lntuned.json gend_report_lntuned.md gend_report_lntuned.scores.json \
+               lntuned_vs_frozen.json lntuned_vs_frozen.md gend_vcip_lntuned.json \
+               gend_fit_lntuned.json calibration_report_lntuned.json; do
+        scp -i key.pem $H:~/dfd/bench/$f bench/$f
+      done
+
+  The **weights stay on the instance** until the decision rule says they ship: `assets/models/`
+  is gitignored, the tuned encoder is 1.2 GB, and `gend_clip_encoder_lntuned` is registered in
+  the manifest for the day it does.
 
 The branch is not merged.
 
