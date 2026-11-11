@@ -223,9 +223,11 @@ def build_sbi_corpus(crops: Sequence[FaceCrop], *, seed: int = 0) -> list[Sample
     `swapped` key at all (`corpora/captures.py`: `bool(d.get("swapped",
     False))`). A session missing that key would silently look genuine to
     this function and be eligible for blending. As of 2026-09-22 all 442
-    real sessions carry the key explicitly (verified against the corpus at
-    `/home/rohit/Desktop/agents/fraud_gff/deepfake_detection/captures`),
-    so this is a recorded dependency, not a currently-live gap.
+    real sessions carry the key explicitly (verified against the 42-session
+    capture directory the slot D plan named -- NOT `vkyc_capture_corpus`,
+    which is the larger one every measurement since 2026-09-24 uses; see
+    that entry in `assets/manifest.yaml`), so this is a recorded dependency,
+    not a currently-live gap.
 
     Args:
         crops: real face crops. Any crop from a swapped session is refused.

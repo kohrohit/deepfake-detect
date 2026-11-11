@@ -467,6 +467,24 @@ def test_rd_format_on_an_unscored_submission_says_so_rather_than_guessing(
     assert body["status"] == "queued"
 
 
+def test_rd_format_on_a_FAILED_submission_does_not_say_come_back_later(
+        server: Any) -> None:
+    # `Store.fail` writes `error` and leaves record_json NULL, so a branch
+    # testing record_json alone answered 409 "not scored yet" -- for ever --
+    # to a client whose image can never be scored. The synchronous
+    # /api/analyze path has always answered 422 with the reason; these now
+    # agree rather than contradicting each other about the same row.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    # fail() only moves a RUNNING row, so claim it first — the same
+    # transition the worker makes before it tries to decode.
+    assert server.worker.store.claim_next() is not None
+    server.worker.store.fail(sid, "decode failed: not an image")
+    status, body = _get(server, f"/api/submissions/{sid}?format=rd")
+    assert status == 422
+    assert body["status"] == "failed"
+    assert "decode failed" in body["error"]
+
+
 def test_rd_format_on_an_unknown_id_is_still_a_404(server: Any) -> None:
     status, _ = _get(server, "/api/submissions/nope?format=rd")
     assert status == 404

@@ -1,5 +1,5 @@
 {
-  "corpus": "/home/ubuntu/datasets/fairface_sessions [offset 12000, limit 1000]",
+  "corpus": "fairface_sessions [offset 12000, limit 1000]",
   "corpus_kind": "swaps",
   "detectors": {
     "blend_seam": {

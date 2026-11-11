@@ -1,5 +1,5 @@
 {
-  "captures": "/home/ubuntu/datasets/vkyc_captures",
+  "captures": "vkyc_captures",
   "encoder": "assets/models/clip_vit_l14_visual.pt",
   "encoder_matched": {
     "distinct_tables": 1,

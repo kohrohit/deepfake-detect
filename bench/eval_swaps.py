@@ -35,6 +35,7 @@ from typing import Any
 
 from corpora.face_pool import DetectFn
 from corpora.identity import embeddings_for_records
+from corpora.provenance import corpus_label
 from corpora.swap_corpus import build_swap_corpus
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
@@ -265,7 +266,7 @@ def main(argv: Sequence[str] | None = None, *,
     payload = _json_safe(dataclasses.asdict(record))
     assert isinstance(payload, dict)
     payload["corpus"] = {
-        "root": str(args.root),
+        "root": corpus_label(args.root),
         "records": len(records),
         "fakes": sum(r["label"] for r in records),
         "skipped": skipped,

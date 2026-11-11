@@ -10,7 +10,7 @@ from dfd.detectors.clip_vit import CLIPVisualTower
 from dfd.detectors.gend import GendHead, embed
 from training.clip_features import FeatureCache
 from training.fit_gend import (
-    ENCODER_ID_LNTUNED,
+    DEFAULT_LNTUNED_ENCODER,
     _embed_for_training,
     build_training_records,
     encoder_cache_id,
@@ -164,7 +164,8 @@ def test_a_tuned_encoder_gets_its_own_feature_cache_id(tmp_path):
     img = np.random.default_rng(0).integers(0, 255, (32, 32, 3), dtype=np.uint8)
     frozen = FeatureCache(tmp_path, encoder_id=encoder_cache_id(
         "assets/models/clip_vit_l14_visual.pt"))
-    tuned = FeatureCache(tmp_path, encoder_id=ENCODER_ID_LNTUNED)
+    tuned = FeatureCache(tmp_path, encoder_id=encoder_cache_id(
+        DEFAULT_LNTUNED_ENCODER))
     assert frozen.encoder_id != tuned.encoder_id
     assert frozen.key(img) != tuned.key(img)
 
@@ -302,3 +303,23 @@ def test_a_tuned_runs_report_says_its_holdout_auc_was_selected_on(tmp_path,
     assert rc == 0
     note = json.loads(report.read_text())["held_out_auc_note"]
     assert "NOT EVEN HELD OUT" in note and "selection statistic" in note
+
+
+def test_overwriting_an_encoder_in_place_changes_its_cache_id(tmp_path):
+    # The defect this closes, in order: tune -> evaluate (cache fills) ->
+    # re-tune at a different lr, OVERWRITING the same path -> evaluate
+    # again -> every lookup hits and the second encoder is scored with the
+    # first one's embeddings. compare_lntuned then differences two
+    # identical score vectors and reports delta 0.000, which reads exactly
+    # like the real finding "the tuning did nothing".
+    path = tmp_path / "clip_vit_l14_lntuned.pt"
+    path.write_bytes(b"first encoder")
+    first = encoder_cache_id(path)
+    path.write_bytes(b"second encoder, same filename")
+    assert encoder_cache_id(path) != first
+
+
+def test_a_missing_encoder_still_yields_an_id(tmp_path):
+    # Raising here would turn a clear "encoder not found" into a hash error
+    # several frames later.
+    assert encoder_cache_id(tmp_path / "nope.pt").endswith(":absent")

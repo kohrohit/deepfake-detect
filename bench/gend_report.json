@@ -74,7 +74,7 @@
   "null_lo": 0.44921353714584233,
   "offset": 10000,
   "permutation_p": 0.02040816326530612,
-  "root": "/home/ubuntu/datasets/fairface_sessions",
+  "root": "fairface_sessions",
   "seed": 0,
   "skipped": {
     "no_face": 69

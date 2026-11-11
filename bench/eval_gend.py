@@ -41,6 +41,7 @@ import numpy.typing as npt
 from sklearn.linear_model import LogisticRegression
 
 from bench.metrics import auc, bootstrap_ci_by_group, kish_ess, permutation_null, permutation_p
+from corpora.provenance import corpus_label
 from dfd.faces import detect_faces
 
 logger = logging.getLogger(__name__)
@@ -157,9 +158,21 @@ def logo_refit(features: npt.NDArray[np.float32],
             f"one generator: {families}. A single-family corpus cannot "
             f"produce a transfer number.")
 
+    return logo_aggregates(
+        logo_fold_scores(features, labels, generators, groups, seed=seed),
+        groups, seed=seed, n_bootstrap=n_bootstrap)
+
+
+def logo_aggregates(scored: dict[str, dict[str, npt.NDArray[Any]]],
+                    groups: npt.NDArray[Any], *, seed: int = 0,
+                    n_bootstrap: int = 1000) -> dict[str, dict[str, float]]:
+    """`logo_fold_scores`'s output summarised: AUC, n, and a grouped CI.
+
+    Separate from the refit so a caller that needs BOTH the aggregates and
+    the per-record scores pays for the refit once.
+    """
     out: dict[str, dict[str, float]] = {}
-    for held, fold in logo_fold_scores(features, labels, generators, groups,
-                                       seed=seed).items():
+    for held, fold in scored.items():
         probs, y_test = fold["probs"], fold["y"]
         lo, hi = bootstrap_ci_by_group(probs, y_test, groups[fold["rows"]],
                                        auc, n=n_bootstrap, seed=seed)
@@ -368,7 +381,14 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
     group_counts = list(
         {g: int((groups == g).sum()) for g in np.unique(groups)}.values())
 
-    folds = logo_refit(features, labels, generators, groups, seed=args.seed)
+    # ONE refit for both the aggregates and the per-record scores. Calling
+    # logo_refit and then logo_fold_scores fitted every fold's
+    # LogisticRegression(max_iter=2000) over the full feature matrix twice,
+    # purely to recover scores the first call had already computed and
+    # discarded.
+    scored = logo_fold_scores(features, labels, generators, groups,
+                              seed=args.seed)
+    folds = logo_aggregates(scored, groups, seed=args.seed)
     if not folds:
         logger.error("no usable fold; nothing to report")
         return 1
@@ -382,11 +402,15 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
     # be compared, and on this corpus that is an hour of forward passes.
     samples = np.asarray([r["sample_id"] for r in records])
     scorefile = args.out_json.with_suffix(".scores.json")
-    scored = logo_fold_scores(features, labels, generators, groups,
-                              seed=args.seed)
+    # BEFORE the write, not 70 lines later beside the report's own write:
+    # with --out-json runs/2026-11-12/gend.json this raised FileNotFoundError
+    # after the whole embedding pass and all five refits, which on the
+    # deployment instance is tens of minutes thrown away.
+    args.out_json.parent.mkdir(parents=True, exist_ok=True)
     scorefile.write_text(json.dumps({
         "encoder": str(args.encoder),
-        "root": str(args.root), "offset": args.offset, "limit": args.limit,
+        "root": corpus_label(args.root), "offset": args.offset,
+        "limit": args.limit,
         "seed": args.seed,
         "note": ("out-of-fold scores, one row per record per fold, from the "
                  "same refit bench/gend_report.json publishes an AUC for. "
@@ -440,7 +464,8 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
 
     report: dict[str, Any] = {
         "measured_on": date.today().isoformat(),
-        "root": str(args.root), "offset": args.offset, "limit": args.limit,
+        "root": corpus_label(args.root), "offset": args.offset,
+        "limit": args.limit,
         "seed": args.seed, "n_shuffles": args.shuffles,
         "n_photographs": args.limit, "n_records": len(records),
         "n_fake": int(labels.sum()),

@@ -79,6 +79,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.calibration import Calibrator, save_calibrators
 from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
 from dfd.faces import FaceBox, clamp_roi, detect_faces, select_largest_face
@@ -391,7 +392,7 @@ def main(argv: Sequence[str] | None = None, *,
 
     report = {
         "fitter": "training.fit_vcip",
-        "captures": str(args.captures),
+        "captures": corpus_label(args.captures),
         "preprocessing": "native ROI crop (dfd.detectors.npr."
                          "_crop_to_roi_native); NO resize",
         "n_features": int(NPRStatsNet.N_FEATURES),

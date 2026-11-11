@@ -1,6 +1,6 @@
 {
   "fitter": "training.fit_vcip",
-  "captures": "/home/rohit/Desktop/vkyc-server/captures",
+  "captures": "captures",
   "preprocessing": "native ROI crop (dfd.detectors.npr._crop_to_roi_native); NO resize",
   "n_features": 57,
   "frames": 506,

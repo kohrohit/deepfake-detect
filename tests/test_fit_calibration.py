@@ -147,7 +147,8 @@ def test_calibration_can_be_fitted_from_the_swap_corpus(
     # where it does not (CI) slot D abstains instantly. A test that takes
     # four minutes on one box and two seconds on another is exercising two
     # different paths, and neither of them is this test's subject.
-    rc = main(["--corpus-kind", "swaps", "--root", str(tiny_fairface_root),
+    rc = main(["--corpus-kind", "swaps", "--allow-training-window",
+          "--root", str(tiny_fairface_root),
                "--offset", "0", "--limit", "8",
                "--out", str(tmp_path / "cal.json"),
                "--report", str(tmp_path / "rep.json")],
@@ -161,7 +162,8 @@ def test_the_report_records_which_corpus_the_curve_came_from(
     # Two curves for one detector, fitted on two corpora, are two different
     # claims about what a score means. A report that does not say which is
     # which cannot be read a month later.
-    main(["--corpus-kind", "swaps", "--root", str(tiny_fairface_root),
+    main(["--corpus-kind", "swaps", "--allow-training-window",
+          "--root", str(tiny_fairface_root),
           "--offset", "0", "--limit", "8",
           "--out", str(tmp_path / "cal.json"),
           "--report", str(tmp_path / "rep.json")],
@@ -228,3 +230,33 @@ def test_calibrating_the_tuned_head_without_its_encoder_is_refused(tmp_path):
               "--report", str(tmp_path / "r.json"),
               "--gend-weights", "assets/models/gend_clip_lntuned.pt"])
     assert exc.value.code == 2
+
+
+def test_swaps_calibration_refuses_an_offset_inside_the_training_window(tmp_path):
+    """The help text said MUST and nothing enforced it; --offset defaults to 0.
+
+    So the DEFAULT invocation fitted slot D's score->LLR curve on
+    photographs 0-1,999 -- exactly the window the shipped head
+    `0.1.0-probe-fairface2000` was fitted on. A calibration curve is a claim
+    about what a score MEANS, so one fitted on the model's own training data
+    is over-confident precisely where it is trusted most.
+    """
+    rc = main(["--corpus-kind", "swaps", "--root", str(tmp_path),
+               "--limit", "10", "--out", str(tmp_path / "cal.json"),
+               "--report", str(tmp_path / "r.json")])
+    assert rc == 1
+
+
+def test_the_pairing_refusal_arrives_before_the_corpus_is_built(tmp_path):
+    # It used to sit below the build -- minutes to hours of face detection
+    # over the session directory -- so a caller who passed one flag of the
+    # pair waited through all of it to be told. eval_swaps.py has carried
+    # the same rule above its build since it was written.
+    with pytest.raises(SystemExit) as exc:
+        main(["--corpus-kind", "swaps", "--root", str(tmp_path),
+              "--limit", "10", "--allow-training-window",
+              "--out", str(tmp_path / "cal.json"),
+              "--report", str(tmp_path / "r.json"),
+              "--gend-weights", "assets/models/gend_clip_lntuned.pt"])
+    assert exc.value.code == 2
+    assert not (tmp_path / "r.json").exists()

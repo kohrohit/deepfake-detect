@@ -33,7 +33,7 @@ from ..errors import DfdError
 from ..limits import DEFAULT_LIMITS
 from .contract import rd_response
 from .dashboard import DASHBOARD_HTML
-from .store import QUEUED, RUNNING, Store
+from .store import FAILED, QUEUED, RUNNING, Store
 from .worker import Worker
 
 #: The one value `?format=` accepts on a submission. Named rather than
@@ -198,6 +198,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if fmt == RD_FORMAT:
                 if not row.record_json:
+                    # TWO STATES, not one. `Store.fail` writes `error` and
+                    # leaves record_json NULL, so testing record_json alone
+                    # told a client whose image could never be scored to
+                    # keep waiting — 409 "not scored yet", for ever. The
+                    # synchronous /api/analyze path has always answered 422
+                    # with the reason; these now agree.
+                    if row.status == FAILED:
+                        self._error(HTTPStatus.UNPROCESSABLE_ENTITY,
+                                    row.error or "scoring failed",
+                                    extra={"status": row.status})
+                        return
                     # A queued submission has no verdict. UNKNOWN here would
                     # be indistinguishable from "scored, and nothing could be
                     # concluded" — a completely different statement.

@@ -1,6 +1,6 @@
 {
   "controls": "bench.vcip_controls",
-  "captures": "/home/rohit/Desktop/vkyc-server/captures",
+  "captures": "captures",
   "encoder_shortcut": {
     "measured": true,
     "what": "logistic regression on the quantisation tables alone",

@@ -186,13 +186,17 @@ assets:
     files:
       - "assets/models/gend_clip_lntuned.pt"
   vkyc_capture_corpus:
-    # PATH CORRECTED 2026-11-11. The slot D plan named
-    # ~/Desktop/agents/fraud_gff/deepfake_detection/captures; that directory
-    # is the 42-session, 142-frame corpus that is really 58 distinct images
-    # and 19 genuine crops. The corpus every measurement since 2026-09-24
-    # actually uses is the one below: 146 session folders, 554 frames, 140
-    # sessions. Both exist on this machine and they are not the same thing.
-    source: "v-CIP session captures at /home/rohit/Desktop/vkyc-server/captures — 146 session folders, 554 frames, 140 sessions (218 genuine / 336 swapped)."
+    # IDENTIFIED BY SHAPE, NOT BY PATH (redacted 2026-11-12). Two v-CIP
+    # capture directories exist on the operator's machine and they are NOT
+    # the same corpus: one is 42 sessions / 142 frames, which is really 58
+    # distinct images and 19 genuine crops, and is what the slot D plan
+    # originally named; the other, below, is what every measurement since
+    # 2026-09-24 actually uses. The shape is what tells them apart, so the
+    # shape is what is recorded. Neither path is written down here: this
+    # repository is public, and an absolute path to a corpus of biometric
+    # recordings is operator layout nobody outside needs. The directory is
+    # supplied at run time by --captures.
+    source: "v-CIP session captures — 146 session folders, 554 frames, 140 sessions (218 genuine / 336 swapped). Supplied at run time; see corpora/provenance.py for why no path is recorded."
     license: "UNRESOLVED — owner attests rights in the recordings; no legal review has addressed biometric processing. EVALUATION ONLY. Never a training input (spec §6.4)."
     commercial_use: false
     owner_attestation: "2026-09-21: the capture corpus is available with rights. Not independently verified. DPDP Act / GDPR Art. 9 treat biometric data as sensitive and a licence in the recording does not answer that."

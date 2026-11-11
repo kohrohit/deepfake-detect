@@ -41,6 +41,7 @@ import torch.nn as nn
 from bench.metrics import auc, kish_ess, tpr_at_fpr
 from bench.vcip_controls import _encode, find_matching_quality, quant_table
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.detectors.clip_vit import CLIPVisualTower
 from dfd.detectors.gend import GendClipDetector, GendHead
 from dfd.faces import detect_faces
@@ -295,7 +296,7 @@ def main(argv: Sequence[str] | None = None, *,
                        **_block(s, y, g, b, skipped)}
 
     report = {
-        "captures": str(args.captures),
+        "captures": corpus_label(args.captures),
         "weights": str(args.weights),
         "encoder": str(args.encoder),
         "uncontrolled": uncontrolled,

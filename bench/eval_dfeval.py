@@ -58,6 +58,7 @@ import numpy as np
 
 from corpora.dfeval import DFEVAL_GENERATOR, load_dfeval_images
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
 
@@ -511,7 +512,7 @@ def _corpus_block(records: Sequence[dict[str, Any]], face: np.ndarray,
                   ) -> dict[str, Any]:
     domains = Counter(str(r["domain"]) for r in records)
     return {
-        "root": str(args.root),
+        "root": corpus_label(args.root),
         "records": len(records),
         "reals": int(sum(1 for r in records if r["label"] == 0)),
         "fakes": int(sum(1 for r in records if r["label"] == 1)),

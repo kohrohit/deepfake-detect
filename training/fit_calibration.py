@@ -31,6 +31,7 @@ import numpy as np
 from bench.metrics import auc, ece
 from corpora.df40 import load_df40_records
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label as corpus_id
 from dfd.calibration import Calibrator, save_calibrators
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
@@ -166,6 +167,12 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--holdout", type=float, default=DEFAULT_HOLDOUT)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--allow-training-window", action="store_true",
+                        help="fit even though --offset falls inside a "
+                             "declared training window. For FIXTURES and "
+                             "for deliberately measuring the contamination "
+                             "-- never for a curve that ships. Mirrors "
+                             "bench/eval_swaps.py's flag of the same name.")
     parser.add_argument("--gend-weights", type=Path, default=None,
                         help="override slot D's HEAD path")
     parser.add_argument("--gend-encoder", type=Path, default=None,
@@ -175,12 +182,41 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
 
+    # BOTH refusals BEFORE the corpus is built, which takes minutes to hours
+    # including face detection over the whole session directory. A refusal
+    # that arrives after the work is a refusal the caller learns to route
+    # around -- `bench/eval_swaps.py` carries the same rule for the same
+    # reason.
+    if (args.gend_weights is None) != (args.gend_encoder is None):
+        parser.error("--gend-weights and --gend-encoder go together: a head "
+                     "fitted jointly with a tuned encoder, read through the "
+                     "frozen one, produces a curve that means nothing")
+
+    if args.corpus_kind == "swaps" and not args.allow_training_window:
+        # THE HELP TEXT SAID "MUST" AND NOTHING ENFORCED IT, and --offset
+        # defaults to 0. The default invocation therefore fitted slot D's
+        # score->LLR curve on photographs 0-1,999 -- precisely the window
+        # the shipped head 0.1.0-probe-fairface2000 was fitted on. A
+        # calibration curve is a claim about what a score MEANS, so one
+        # fitted on the model's own training data is over-confident exactly
+        # where it is trusted most. bench/eval_gend.py and bench/eval_swaps.py
+        # have both refused this since they were written; this did not.
+        from bench.eval_swaps import TRAINING_WINDOWS
+        window = max(TRAINING_WINDOWS.values())
+        if args.offset < window:
+            logger.error(
+                "--offset %d is inside a declared training window (the "
+                "largest is %d, see bench/eval_swaps.py: TRAINING_WINDOWS). "
+                "A curve fitted there has already seen its own exam. "
+                "Refusing.", args.offset, window)
+            return 1
+
     if args.corpus_kind == "df40":
         if args.corpus is None:
             parser.error("--corpus is required with --corpus-kind df40")
         records, skipped = load_df40_records(args.corpus, limit=args.limit,
                                              seed=args.seed, detect=detect)
-        corpus_label = str(args.corpus)
+        corpus_label = corpus_id(args.corpus)
     else:
         if args.root is None or args.limit is None:
             parser.error("--root and --limit are required with "
@@ -193,7 +229,7 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
         records, skipped = build_training_records(
             args.root, limit=args.limit, offset=args.offset, seed=args.seed,
             detect=detect)
-        corpus_label = (f"{args.root} [offset {args.offset}, "
+        corpus_label = (f"{corpus_id(args.root)} [offset {args.offset}, "
                         f"limit {args.limit}]")
     labels = {r["label"] for r in records}
     if len(labels) < 2:
@@ -209,10 +245,6 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
                 len(records), skipped or "nothing", len(fit), len(holdout),
                 len({r["source_id"] for r in records}))
 
-    if (args.gend_weights is None) != (args.gend_encoder is None):
-        parser.error("--gend-weights and --gend-encoder go together: a head "
-                     "fitted jointly with a tuned encoder, read through the "
-                     "frozen one, produces a curve that means nothing")
     if registry is None:
         overrides = {k: v for k, v in (
             ("gend_weights", args.gend_weights),

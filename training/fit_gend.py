@@ -20,6 +20,7 @@ the encoder and reports it as detection.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -37,6 +38,7 @@ from sklearn.metrics import roc_auc_score
 
 from corpora.captures import load_capture_sessions
 from corpora.face_pool import DetectFn, build_face_pool
+from corpora.provenance import corpus_label
 from corpora.sbi import build_sbi_corpus
 from corpora.swap_corpus import build_swap_corpus
 from dfd.detectors.clip_vit import CLIPVisualTower, preprocess
@@ -78,6 +80,13 @@ DEFAULT_LNTUNED_ENCODER = Path("assets/models/clip_vit_l14_lntuned.pt")
 #: that is currently measured.
 DEFAULT_LNTUNED_HEAD = Path("assets/models/gend_clip_lntuned.pt")
 
+#: And its report. `--out` and `--encoder-out` were split for Phase 2 and
+#: `--report` was not, so a default-argument tuning run overwrote
+#: `bench/gend_fit.json` -- the file `bench/evidence_card.json` cites BY NAME
+#: AND VERSION as slot D's training provenance. One such run and the card's
+#: pointer silently described a different model.
+DEFAULT_LNTUNED_REPORT = Path("bench/gend_fit_lntuned.json")
+
 #: Phase 2 defaults. Five epochs because `bench/clip_latency.md` measures one
 #: epoch over the 9,887-record corpus at 2.3 hours of forward-equivalent work
 #: on the deployment instance, which makes five an overnight job and ten a
@@ -94,24 +103,40 @@ DEFAULT_TUNE_BATCH = 16
 
 
 def encoder_cache_id(path: str | Path) -> str:
-    """The `FeatureCache` id for an encoder FILE.
+    """The `FeatureCache` id for an encoder FILE: its name AND its contents.
 
     One authority for the id, because the cache is content-addressed on the
     IMAGE and the encoder id is the only thing separating two models'
-    embeddings of the same pixels. Keyed on the file NAME rather than on the
-    file's hash: hashing 1.2 GB on every run costs seconds and would
-    invalidate every entry already on the instance. The trap that leaves
-    open, stated rather than hidden -- overwriting an encoder file IN PLACE
-    with different weights keeps the old id and serves the old embeddings,
-    and the only symptom is a disappointing AUC. Nothing here writes to the
-    frozen encoder's path, and the manifest registers each file separately.
+    embeddings of the same pixels.
+
+    THE DIGEST IS NOT OPTIONAL, and an earlier version of this function left
+    it out. Keyed on the filename alone, this sequence returns silently
+    wrong numbers: tune -> evaluate (the cache fills under
+    `clip-l14:clip_vit_l14_lntuned.pt`) -> re-tune at a different lr, which
+    OVERWRITES that same path -> evaluate again -> every lookup hits, and
+    the second encoder is scored with the first one's embeddings. The
+    symptom is the worst possible one for Phase 2: `bench/compare_lntuned.py`
+    differences two identical score vectors and reports a delta of exactly
+    0.000, which reads as "the tuning did nothing" and is indistinguishable
+    from the real finding it is impersonating.
+
+    Costs one read of the file per run -- ~2 seconds for ViT-L/14's 1.2 GB,
+    against the hours a wrong answer costs. A missing file hashes to
+    `absent`: it cannot be embedded with anyway, and raising here would turn
+    a clear "encoder not found" into a hash error several frames later.
     """
-    return f"clip-l14:{Path(path).name}"
-
-
-#: The tuned encoder's cache id. Distinct from the frozen encoder's, which is
-#: the whole point: sharing it would serve Phase 1's embeddings to Phase 2.
-ENCODER_ID_LNTUNED = encoder_cache_id(DEFAULT_LNTUNED_ENCODER)
+    p = Path(path)
+    digest = "absent"
+    try:
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        digest = h.hexdigest()[:12]
+    except OSError:
+        logger.warning("cannot read %s to key its cache entries; using %r",
+                       p, digest)
+    return f"clip-l14:{p.name}:{digest}"
 
 
 def reencode(img: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
@@ -483,8 +508,12 @@ def main(argv: Sequence[str] | None = None, *,
                              "gend_clip.pt otherwise -- the two heads read "
                              "different encoders and are not "
                              "interchangeable.")
-    parser.add_argument("--report", type=Path,
-                        default=Path("bench/gend_fit.json"))
+    parser.add_argument("--report", type=Path, default=None,
+                        help="where the fit report is written. Defaults to "
+                             f"{DEFAULT_LNTUNED_REPORT} under "
+                             "--tune-layernorms and bench/gend_fit.json "
+                             "otherwise -- the evidence card cites the "
+                             "latter by name and version.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--holdout", type=float, default=DEFAULT_HOLDOUT)
     parser.add_argument("--tune-layernorms", action="store_true",
@@ -509,6 +538,9 @@ def main(argv: Sequence[str] | None = None, *,
     if args.out is None:
         args.out = (DEFAULT_LNTUNED_HEAD if args.tune_layernorms
                     else Path("assets/models/gend_clip.pt"))
+    if args.report is None:
+        args.report = (DEFAULT_LNTUNED_REPORT if args.tune_layernorms
+                       else Path("bench/gend_fit.json"))
 
     records, skipped = build_training_records(
         args.root, limit=args.limit, offset=args.offset, seed=args.seed,
@@ -567,7 +599,7 @@ def main(argv: Sequence[str] | None = None, *,
     report = {
         "version": version,
         "seed": args.seed,
-        "root": str(args.root),
+        "root": corpus_label(args.root),
         "offset": args.offset,
         # The training window: the number in the version string, the number
         # in bench/eval_swaps.py's TRAINING_WINDOWS and this must agree.

@@ -65,6 +65,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
 from dfd.faces import align, clamp_roi, detect_faces
 from training.fit_vcip import (
@@ -479,7 +480,7 @@ def main(argv: Sequence[str] | None = None, *,
 
     report: dict[str, Any] = {
         "controls": "bench.vcip_controls",
-        "captures": str(args.captures),
+        "captures": corpus_label(args.captures),
         "encoder_shortcut": encoder_shortcut(args.captures),
         "matched_encoder": matched_encoder(args.captures, detect=detect),
         "preprocessing_and_blocks": preprocessing_and_blocks(

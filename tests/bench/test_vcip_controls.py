@@ -332,7 +332,10 @@ def test_main_writes_a_report_with_every_control_in_it(
     report = json.loads(out.read_text())
     assert set(report) >= {"encoder_shortcut", "matched_encoder",
                            "preprocessing_and_blocks"}
-    assert report["captures"] == str(root)
+    # The directory NAME, never the path: this repo is public and the field
+    # used to publish the operator's home layout (corpora/provenance.py).
+    assert report["captures"] == root.name
+    assert "/" not in report["captures"]
 
 
 def test_main_refuses_a_missing_capture_directory(tmp_path: Path) -> None:

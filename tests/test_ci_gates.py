@@ -289,3 +289,62 @@ def test_no_print_statements_in_src():
             if line.strip().startswith("print("):
                 offenders.append(f"{path}:{n}")
     assert offenders == [], f"print() found in src: {offenders}"
+
+
+def _tracked_files() -> list[str]:
+    proc = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
+                          text=True, check=True)
+    return proc.stdout.split()
+
+
+def test_no_tracked_file_carries_an_absolute_home_path():
+    """This repository is PUBLIC and its reports are committed.
+
+    `str(args.captures)` is the obvious thing to write into a provenance
+    field, and it published the operator's home directory layout -- along
+    with the location of a corpus of biometric v-CIP recordings whose
+    data-protection position is still open -- in five tracked files. No
+    capture data leaked; the path did. `corpora.provenance.corpus_label`
+    is the fix, and this is what stops the next writer re-introducing it.
+
+    Documentation is exempt: `docs/` legitimately records commands an
+    operator types, and a command without its path is not a command.
+
+    So are the two files whose SUBJECT is this leak -- the fix and its
+    test. They have to quote a real path to be about anything, the same way
+    a secret scanner's own test fixtures look like secrets. The exemption is
+    a literal pair rather than a prefix so it cannot quietly grow, and the
+    assertion below pins its size.
+    """
+    exempt = {"corpora/provenance.py", "tests/corpora/test_provenance.py"}
+    assert len(exempt) == 2, "the exemption list is not for new entries"
+    pattern = re.compile(r"/(?:home|Users)/[A-Za-z0-9_-]+/")
+    offenders = []
+    for name in _tracked_files():
+        if name.startswith("docs/") or name in exempt:
+            continue
+        path = ROOT / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{name}:{n}")
+    assert not offenders, (
+        "absolute home paths in a public repo's tracked files: "
+        + ", ".join(offenders[:10]))
+
+
+def test_generated_build_metadata_is_not_tracked():
+    """`pip install -e .` rewrites egg-info, and CI runs it on every job.
+
+    The tracked copy was also stale in a way that mattered: its SOURCES.txt
+    listed the September module set and had never heard of
+    `detectors/gend.py`. A committed artefact that misdescribes its own
+    repository is worse than no artefact.
+    """
+    tracked = [f for f in _tracked_files() if ".egg-info/" in f]
+    assert not tracked, f"generated build metadata is tracked: {tracked}"

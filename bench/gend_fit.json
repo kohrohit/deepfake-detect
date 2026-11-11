@@ -17,7 +17,7 @@
   "n_test": 1975,
   "n_train": 7911,
   "offset": 0,
-  "root": "/home/ubuntu/datasets/fairface_sessions",
+  "root": "fairface_sessions",
   "seed": 0,
   "skipped": {
     "no_face": 78

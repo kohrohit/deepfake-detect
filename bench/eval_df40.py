@@ -37,6 +37,7 @@ import numpy as np
 from corpora.df40 import load_df40_records
 from corpora.face_pool import DetectFn
 from corpora.identity import embeddings_for_records
+from corpora.provenance import corpus_label
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
 
@@ -207,7 +208,7 @@ def main(argv: Sequence[str] | None = None, *,
     payload = _json_safe(dataclasses.asdict(record))
     assert isinstance(payload, dict)
     payload["corpus"] = {
-        "root": str(args.root),
+        "root": corpus_label(args.root),
         "records": len(records),
         "fakes": sum(r["label"] for r in records),
         "skipped": skipped,
