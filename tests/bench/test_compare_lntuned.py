@@ -99,3 +99,30 @@ def test_the_comparison_names_the_worst_fold_of_the_frozen_baseline(tmp_path):
                              load_scorefile(tmp_path / "t.json"))
     assert out["worst_fold"] == "g1"
     assert out["decision"]["improved"] is True
+
+
+def test_an_undefined_interval_is_recorded_rather_than_crashing(tmp_path,
+                                                                monkeypatch):
+    # bootstrap_ci_by_group legitimately returns (nan, nan) when every
+    # resample was degenerate. allow_nan=False alone would turn that into a
+    # crash on the LAST step of a nine-hour chain, losing the comparison
+    # instead of recording that one interval was undefined.
+    import bench.compare_lntuned as cl
+
+    monkeypatch.setattr(cl, "bootstrap_ci_by_group",
+                        lambda *a, **k: (float("nan"), float("nan")))
+    rows = [{"sample_id": f"s{i}", "subject_id": f"c{i // 2}",
+             "generator": "g1", "label": i % 2, "score": 0.1 + 0.8 * (i % 2)}
+            for i in range(8)]
+    rows2 = [{**r, "generator": "g2"} for r in rows]
+    for name, gen in (("a", rows), ("b", rows2)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(
+            {"encoder": f"{name}.pt", "folds": {"g1": gen}}))
+    rc = cl.main(["--baseline", str(tmp_path / "a.json"),
+                  "--candidate", str(tmp_path / "b.json"),
+                  "--out-json", str(tmp_path / "o.json"),
+                  "--out-md", str(tmp_path / "o.md")])
+    assert rc == 0
+    written = json.loads((tmp_path / "o.json").read_text())
+    assert written["decision"]["delta_ci95"] == [None, None]
+    assert "undefined" in (tmp_path / "o.md").read_text()

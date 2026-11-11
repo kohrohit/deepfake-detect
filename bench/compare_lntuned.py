@@ -31,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 
 from bench.metrics import auc, bootstrap_ci_by_group
+from training.fit_blend import _json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,17 @@ def compare_scorefiles(baseline: dict[str, Any], candidate: dict[str, Any],
     }
 
 
+def _num(value: float | None) -> str:
+    """A signed 3dp number, or `undefined` -- never a bare `nan` or `None`.
+
+    An interval that could not be computed is a fact about the measurement.
+    Rendering it as "+nan" invites a reader to treat it as a number.
+    """
+    if value is None or not np.isfinite(value):
+        return "undefined"
+    return f"{value:+.3f}"
+
+
 def render_markdown(result: dict[str, Any]) -> str:
     """The comparison as a table, worst fold first and labelled as such."""
     worst = result["worst_fold"]
@@ -174,8 +186,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         "",
         f"    frozen  {d['baseline_auc']:.3f}",
         f"    tuned   {d['candidate_auc']:.3f}",
-        f"    paired delta {d['delta']:+.3f}  "
-        f"95% CI [{d['delta_ci95'][0]:+.3f}, {d['delta_ci95'][1]:+.3f}]",
+        f"    paired delta {_num(d['delta'])}  "
+        f"95% CI [{_num(d['delta_ci95'][0])}, {_num(d['delta_ci95'][1])}]",
         "",
         ("**Improved.**" if d["improved"] else "**Not improved.**")
         + " The delta is "
@@ -193,8 +205,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         lines.append(
             f"| `{fold}`{' **(worst)**' if fold == worst else ''} "
             f"| {f['baseline_auc']:.3f} | {f['candidate_auc']:.3f} "
-            f"| {f['delta']:+.3f} "
-            f"| [{f['delta_ci_lo']:+.3f}, {f['delta_ci_hi']:+.3f}] "
+            f"| {_num(f['delta'])} "
+            f"| [{_num(f['delta_ci_lo'])}, {_num(f['delta_ci_hi'])}] "
             f"| {f['n']} | {f['n_fake']} | {f['n_subjects']} |")
     lines += ["", "## What this still does not say", "",
               result["still_not"], ""]
@@ -226,8 +238,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
-    args.out_json.write_text(json.dumps(result, indent=2, sort_keys=True,
-                                        allow_nan=False) + "\n")
+    # Through `_json_safe`, as every other report in this repo is: a
+    # degenerate bootstrap legitimately returns NaN, and `allow_nan=False`
+    # alone would turn that into a crash on the LAST step of a nine-hour
+    # chain, losing the comparison rather than recording that one interval
+    # was undefined. `allow_nan=False` stays as the net underneath it.
+    args.out_json.write_text(json.dumps(_json_safe(result), indent=2,
+                                        sort_keys=True, allow_nan=False) + "\n")
     args.out_md.write_text(render_markdown(result))
     d = result["decision"]
     logger.info("worst fold %s: frozen %.4f -> tuned %.4f, paired delta "
