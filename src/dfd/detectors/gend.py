@@ -181,12 +181,30 @@ class GendClipDetector:
     slot: str = "D"
     modalities: frozenset[Modality] = field(
         default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO}))
-    #: PROVISIONAL, and it must not stay that way. Spec §5.1 requires this
-    #: floor to be MEASURED, as slot C's "reject" was: the per-band table on
-    #: the capture corpus (Task 8) decides it. "low" is the starting value
-    #: because an appearance read-out has no reason to want a blurred face --
-    #: but slot C had no reason either, and the measurement said otherwise.
-    min_quality_band: Literal["reject", "low", "medium", "high"] = "low"
+    #: MEASURED 2026-11-11, not chosen. It was provisionally "low" on the
+    #: reasoning that an appearance read-out has no use for a blurred face.
+    #: The per-band table on the capture corpus (bench/gend_vcip.json,
+    #: `encoder_matched`, 509 frames over 125 sessions) says otherwise:
+    #:
+    #:     band      n   genuine  swapped   frame AUC   TPR@0%FPR
+    #:     reject   232      14       218     0.541       0.165
+    #:     medium   238     139        99     0.573       0.000
+    #:     low       12       2        10     0.700       0.400
+    #:     high      27      27         0      none        none
+    #:
+    #: **The argument rests on the two denominator columns, not on the AUC
+    #: column.** A floor above `reject` discards 218 of 328 swapped frames
+    #: (66.5%) against 14 of 182 genuine (7.7%) — two thirds of the attacks
+    #: thrown away before the detector runs, and almost none of the honest
+    #: traffic. That is a security hole, not caution, and it holds whatever
+    #: the per-band AUCs turn out to be. Slot C's floor is `reject` for the
+    #: same reason and from the same corpus.
+    #:
+    #: `high` carries 27 genuine frames and no swapped one, so it has no AUC
+    #: and could not support a floor even if the rest of the table did.
+    #: `low`'s 0.700 is the best cell in the table and is over 12 frames; it
+    #: is not a basis for anything.
+    min_quality_band: Literal["reject", "low", "medium", "high"] = "reject"
     #: The architectures the two files load into. Fields rather than
     #: hardcoded calls for the same reason `NPRDetector.model_factory` is a
     #: field: `loading.load_model`'s secure path takes a factory, and a test

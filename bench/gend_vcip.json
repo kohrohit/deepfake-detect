@@ -1,0 +1,97 @@
+{
+  "captures": "/home/ubuntu/datasets/vkyc_captures",
+  "encoder": "assets/models/clip_vit_l14_visual.pt",
+  "encoder_matched": {
+    "distinct_tables": 1,
+    "frame_auc": 0.6744463487582754,
+    "kish_ess_frames_by_session": 106.92571192736277,
+    "measured": true,
+    "n_frames": 509,
+    "n_genuine_sessions": 58,
+    "n_sessions": 125,
+    "n_swapped_sessions": 67,
+    "per_band_frames": {
+      "high": {
+        "auc": null,
+        "n": 27,
+        "n_genuine": 27,
+        "n_swapped": 0,
+        "tpr_at_zero_fpr": null
+      },
+      "low": {
+        "auc": 0.7,
+        "n": 12,
+        "n_genuine": 2,
+        "n_swapped": 10,
+        "tpr_at_zero_fpr": 0.4
+      },
+      "medium": {
+        "auc": 0.5731414868105515,
+        "n": 238,
+        "n_genuine": 139,
+        "n_swapped": 99,
+        "tpr_at_zero_fpr": 0.0
+      },
+      "reject": {
+        "auc": 0.5412844036697247,
+        "n": 232,
+        "n_genuine": 14,
+        "n_swapped": 218,
+        "tpr_at_zero_fpr": 0.1651376146788991
+      }
+    },
+    "quality": 95,
+    "session_auc": 0.6631497683993824,
+    "session_tpr_at_zero_fpr": 0.014925373134328358,
+    "skipped": {
+      "no_face": 45
+    },
+    "what": "genuine half re-encoded at quality 95, the one reproducing the swapped half's table exactly"
+  },
+  "how_to_read": "Quote `encoder_matched`. `uncontrolled` is reported so the size of the encoder shortcut is visible, not so it can be cited: one JPEG header byte labels 99.2% of this corpus. EVALUATION ONLY \u2014 nothing here was fitted on these captures, and spec \u00a76.4 forbids it.",
+  "uncontrolled": {
+    "frame_auc": 0.6777732970393521,
+    "kish_ess_frames_by_session": 106.92571192736277,
+    "measured": true,
+    "n_frames": 509,
+    "n_genuine_sessions": 58,
+    "n_sessions": 125,
+    "n_swapped_sessions": 67,
+    "per_band_frames": {
+      "high": {
+        "auc": null,
+        "n": 23,
+        "n_genuine": 23,
+        "n_swapped": 0,
+        "tpr_at_zero_fpr": null
+      },
+      "low": {
+        "auc": 0.6,
+        "n": 12,
+        "n_genuine": 2,
+        "n_swapped": 10,
+        "tpr_at_zero_fpr": 0.2
+      },
+      "medium": {
+        "auc": 0.5798701298701299,
+        "n": 239,
+        "n_genuine": 140,
+        "n_swapped": 99,
+        "tpr_at_zero_fpr": 0.0
+      },
+      "reject": {
+        "auc": 0.5526173772261198,
+        "n": 235,
+        "n_genuine": 17,
+        "n_swapped": 218,
+        "tpr_at_zero_fpr": 0.11467889908256881
+      }
+    },
+    "session_auc": 0.6644364384971694,
+    "session_tpr_at_zero_fpr": 0.0,
+    "skipped": {
+      "no_face": 45
+    }
+  },
+  "weights": "assets/models/gend_clip.pt"
+}

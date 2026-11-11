@@ -154,6 +154,27 @@ assets:
     checked_by: "rohit.kohli@scoreme.in"
     files:
       - "assets/models/gend_clip.pt"
+  vkyc_capture_corpus:
+    # PATH CORRECTED 2026-11-11. The slot D plan named
+    # ~/Desktop/agents/fraud_gff/deepfake_detection/captures; that directory
+    # is the 42-session, 142-frame corpus that is really 58 distinct images
+    # and 19 genuine crops. The corpus every measurement since 2026-09-24
+    # actually uses is the one below: 146 session folders, 554 frames, 140
+    # sessions. Both exist on this machine and they are not the same thing.
+    source: "v-CIP session captures at /home/rohit/Desktop/vkyc-server/captures — 146 session folders, 554 frames, 140 sessions (218 genuine / 336 swapped)."
+    license: "UNRESOLVED — owner attests rights in the recordings; no legal review has addressed biometric processing. EVALUATION ONLY. Never a training input (spec §6.4)."
+    commercial_use: false
+    owner_attestation: "2026-09-21: the capture corpus is available with rights. Not independently verified. DPDP Act / GDPR Art. 9 treat biometric data as sensitive and a licence in the recording does not answer that."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+  vkyc_inswapper_swaps:
+    source: "inswapper_128 swaps of vkyc_capture_corpus frames, generated in this project"
+    license: "research-only — InsightFace's distributed models are non-commercial and inswapper_128 was withdrawn from distribution. EVALUATION ONLY; never distributed, and nothing fitted on them ships."
+    commercial_use: false
+    evidence_url: "assets/manifest.yaml: npr_capture_head"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
   fairface_corpus:
     source: "https://github.com/joojs/fairface — 97,698 real faces, pre-cropped and aligned to 224x224, with age/gender/race labels. Mirrored as HuggingFaceM4/FairFace (ungated). Sampled from Yahoo's YFCC-100M Flickr set."
     # The only face supply this project has found that is BOTH commercially
