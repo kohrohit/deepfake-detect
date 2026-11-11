@@ -157,8 +157,38 @@ def logo_refit(features: npt.NDArray[np.float32],
             f"one generator: {families}. A single-family corpus cannot "
             f"produce a transfer number.")
 
-    is_test = _half_split(groups, seed=seed)
     out: dict[str, dict[str, float]] = {}
+    for held, fold in logo_fold_scores(features, labels, generators, groups,
+                                       seed=seed).items():
+        probs, y_test = fold["probs"], fold["y"]
+        lo, hi = bootstrap_ci_by_group(probs, y_test, groups[fold["rows"]],
+                                       auc, n=n_bootstrap, seed=seed)
+        out[held] = {"auc": auc(probs, y_test), "n": len(fold["rows"]),
+                     "n_fake": int(y_test.sum()), "ci_lo": lo, "ci_hi": hi}
+    return out
+
+
+def logo_fold_scores(features: npt.NDArray[np.float32],
+                     labels: npt.NDArray[np.int64],
+                     generators: npt.NDArray[Any],
+                     groups: npt.NDArray[Any],
+                     *, seed: int = 0,
+                     ) -> dict[str, dict[str, npt.NDArray[Any]]]:
+    """Held-out generator -> the fold's test ROWS, their scores and labels.
+
+    The same refit `logo_refit` publishes an AUC for, with the per-record
+    out-of-fold scores kept instead of discarded. They are what makes a
+    PAIRED comparison possible: two encoders measured over this same corpus
+    can be differenced on the same rows, which is a different and much
+    stronger statement than two independent bootstrap intervals that happen
+    not to overlap.
+
+    `rows` indexes the ORIGINAL arrays, so a caller can recover each score's
+    sample id without re-deriving the split.
+    """
+    families = sorted({str(g) for g in generators if str(g) != REAL})
+    is_test = _half_split(groups, seed=seed)
+    out: dict[str, dict[str, npt.NDArray[Any]]] = {}
     for held in families:
         family = np.asarray([str(g) for g in generators])
         train = ~is_test & ((family == REAL) | (family != held))
@@ -169,10 +199,7 @@ def logo_refit(features: npt.NDArray[np.float32],
             continue
         clf = LogisticRegression(max_iter=2000).fit(features[train], y_train)
         probs = clf.predict_proba(features[test])[:, 1]
-        lo, hi = bootstrap_ci_by_group(probs, y_test, groups[test], auc,
-                                       n=n_bootstrap, seed=seed)
-        out[held] = {"auc": auc(probs, y_test), "n": int(test.sum()),
-                     "n_fake": int(y_test.sum()), "ci_lo": lo, "ci_hi": hi}
+        out[held] = {"rows": np.flatnonzero(test), "probs": probs, "y": y_test}
     return out
 
 
@@ -346,6 +373,36 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
         logger.error("no usable fold; nothing to report")
         return 1
     worst = min(folds, key=lambda k: folds[k]["auc"])
+
+    # The per-record out-of-fold scores, beside the report and always --
+    # never behind a flag. They are what lets a LATER run of a different
+    # encoder be compared to this one on the SAME rows (bench/
+    # compare_lntuned.py) instead of by holding two bootstrap intervals up
+    # to the light. A run whose scores were discarded has to be repeated to
+    # be compared, and on this corpus that is an hour of forward passes.
+    samples = np.asarray([r["sample_id"] for r in records])
+    scorefile = args.out_json.with_suffix(".scores.json")
+    scored = logo_fold_scores(features, labels, generators, groups,
+                              seed=args.seed)
+    scorefile.write_text(json.dumps({
+        "encoder": str(args.encoder),
+        "root": str(args.root), "offset": args.offset, "limit": args.limit,
+        "seed": args.seed,
+        "note": ("out-of-fold scores, one row per record per fold, from the "
+                 "same refit bench/gend_report.json publishes an AUC for. "
+                 "Join two of these on sample_id to compare two encoders "
+                 "paired over one corpus."),
+        "folds": {
+            held: [{"sample_id": str(samples[i]),
+                    "subject_id": str(groups[i]),
+                    "generator": str(generators[i]),
+                    "label": int(labels[i]),
+                    "score": float(score)}
+                   for i, score in zip(fold["rows"], fold["probs"], strict=True)]
+            for held, fold in scored.items()},
+    }, sort_keys=True, allow_nan=False) + "\n")
+    logger.info("wrote %s (%d folds, %d scored rows)", scorefile, len(scored),
+                sum(len(f["rows"]) for f in scored.values()))
 
     null = _null_for_worst(features, labels, generators, groups, held=worst,
                            seed=args.seed, shuffles=args.shuffles)
