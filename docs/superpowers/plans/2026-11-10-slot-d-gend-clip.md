@@ -2636,7 +2636,7 @@ labels for 99.2% of rows.
 
 ---
 
-### Task 10: The evidence card, and watching the gate open (or not)
+### Task 10: The evidence card, and watching the gate open (or not) — **DONE 2026-11-11** (`bcfe62d`)
 
 The gate needs four things true before slot D may decide: a measured `auc` at or above 0.75, a
 `trained_on` that is not the `corpus`, and **both** names present as ids in `assets/manifest.yaml`.
@@ -2645,7 +2645,7 @@ The gate needs four things true before slot D may decide: a measured `auc` at or
 - Modify: `bench/evidence_card.json`
 - Modify: `tests/service/test_evidence.py`
 
-- [ ] **Step 1: Write the entry**
+- [x] **Step 1: Write the entry**
 
 Fill it from Task 7's and Task 8's reports. Headline AUC is the **worst LOGO fold** or the
 controlled in-domain number — never the in-dataset figure, which measures memorisation.
@@ -2664,7 +2664,7 @@ controlled in-domain number — never the in-dataset figure, which measures memo
     }
 ```
 
-- [ ] **Step 2: Add a test that the card and the manifest agree**
+- [x] **Step 2: Add a test that the card and the manifest agree**
 
 ```python
 def test_every_corpus_name_in_the_card_is_a_manifest_id():
@@ -2679,7 +2679,7 @@ def test_every_corpus_name_in_the_card_is_a_manifest_id():
                 assert entry[field] in known, f"{name}.{field}"
 ```
 
-- [ ] **Step 3: Check what the gate now does**
+- [x] **Step 3: Check what the gate now does**
 
 ```bash
 python3 - <<'PY'
@@ -2692,7 +2692,7 @@ Expected: `['gend_clip']` if the measurement cleared the floor, `[]` otherwise. 
 outcomes of this plan.** If it is `[]`, the service keeps abstaining, which spec §9.2 says ships
 safely, and the honest product is a human-review flagger.
 
-- [ ] **Step 4: Start the service and read a real verdict**
+- [x] **Step 4: Start the service and read a real verdict**
 
 ```bash
 python3 -m dfd.service --evidence bench/evidence_card.json \
@@ -2705,12 +2705,37 @@ Expected: the startup WARN lines for slots A, C and E remain (correct — they a
 below the floor), and slot D either appears in the record with a non-zero `llr` or carries an
 explicit abstention reason. **Paste the actual output into the commit message.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bench/evidence_card.json tests/service/test_evidence.py
 git commit -m "feat: the card records slot D, and the gate decides without being asked twice"
 ```
+
+**The gate stayed shut, which this plan says is a correct outcome.** `gated_detectors(load_card())`
+returns `[]`. Slot D's headline is the controlled in-domain number — 0.663 session AUC over 125
+capture sessions — because that is the number measured on `vkyc_capture_corpus`, the corpus the
+card names. The worst LOGO fold, 0.738, sits in the note beside its permutation null (0.449–0.561,
+48 shuffles, p = 0.020): outside the null, so there is real signal, and still 0.012 under the
+floor. Both numbers are below 0.75, so the choice of headline does not change the verdict. The
+in-dataset 0.928 appears only to be ruled out.
+
+**Step 2 added no test.** `tests/service/test_evidence.py` already carries
+`test_the_committed_card_names_only_registered_assets`, which asserts exactly what this step's
+snippet asserts, over the same two fields with the same `None` skip. A second copy would be
+duplication, not coverage.
+
+**What Step 4 showed that the gate alone did not.** Slot D *ran*: encoder and head loaded, a face
+was found, and it produced `raw_score 0.266`. It then abstained with `uncalibrated_for_band` on a
+`reject`-band frame — not because Task 9 failed to fit that band, which it did fit, but because the
+service discarded the curve at startup: *"discarded the calibration curve for gend_clip: it has
+not been measured above the evidence floor."* A fitted curve is not permission to speak; permission
+comes from measured cross-corpus AUC. Task 9's work is therefore correct and currently inert, and
+it becomes live the moment a measurement clears the floor — not before.
+
+On the same frame `blend_seam` abstained with `below_quality_floor` where slot D ran. That is
+Task 8's measured floor visible in production: slot D's floor is `reject` because anything higher
+discards two thirds of the swapped frames.
 
 ---
 
