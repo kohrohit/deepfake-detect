@@ -2739,7 +2739,7 @@ discards two thirds of the swapped frames.
 
 ---
 
-### Task 11: The product surface — the RD-shaped contract
+### Task 11: The product surface — the RD-shaped contract — **DONE 2026-11-11** (`f0632a6`)
 
 Spec §5.3: an upload endpoint returning overall verdict and score **plus the per-detector list**,
 with slots A, C and E present as abstentions carrying their raw scores. A single number is weaker
@@ -2758,7 +2758,7 @@ than a number plus the four opinions behind it, and `fuse` already escalates har
   "score", "abstained", "reason"}], "dissenting_models": [str], "quality_band": str,
   "schema_version": str}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_maps_the_three_verdicts_onto_the_product_vocabulary():
@@ -2859,11 +2859,11 @@ def test_analyze_refuses_chunked_like_scan_does(server):
 face-like array); `_post` is the existing helper's POST sibling — add it beside `_get` rather than
 inlining `urllib` calls in seven tests.
 
-- [ ] **Step 2: Run and watch fail**
+- [x] **Step 2: Run and watch fail**
 
 Run: `python3 -m pytest tests/service -q`
 
-- [ ] **Step 3: Write `contract.py` and wire the routes**
+- [x] **Step 3: Write `contract.py` and wire the routes**
 
 `rd_response` is a pure function over `AuditRecord` — no I/O, no registry, no clock — so it is
 testable without a service. `dissenting_models` are the non-abstaining detectors whose per-detector
@@ -2877,17 +2877,41 @@ concurrency slot. Document in the module docstring that `/api/analyze` holds a w
 duration of a CPU forward pass through a 304M-parameter encoder, with Task 6's measured number, so
 nobody deploys it behind a 2-second timeout by accident.
 
-- [ ] **Step 4: Run the tests and gates**
+- [x] **Step 4: Run the tests and gates**
 
 Run: `python3 -m pytest -q && ruff check src bench corpora training && mypy --config-file mypy.ini`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/dfd/service/contract.py src/dfd/service/api.py \
         tests/service/test_contract.py tests/service/test_api.py
 git commit -m "feat: the product contract, with the three abstentions still visible in it"
 ```
+
+**What the contract actually says on this deployment.** Live, `POST /api/analyze` with a real
+FairFace frame: `verdict UNKNOWN`, `score 0.5`, `quality_band reject`, `dissenting_models []`, and
+four models all abstaining — `blend_seam` `below_quality_floor`, `effnet_b4` `weights_absent`,
+`gend_clip` `uncalibrated_for_band` carrying `raw_score 0.2558`, `npr` the same carrying `0.8964`.
+The abstentions are not padding around the answer; they *are* the answer, which is why they carry
+their raw scores.
+
+**Two judgement calls the plan left open.**
+- A fused `llr_total` of exactly 0.0 has no sign, so the dissent test cannot be applied. Where that
+  zero was *made of* non-zero opinions (+2 and −2 cancelling), it is not consensus — it is the most
+  conflicted record this system can produce, and every contributor is named. An all-silent record
+  still reports no dissenters, because silence is not disagreement.
+- `?format=` with an unrecognised value is a 400 rather than an ignored parameter. Answering
+  `?format=rd2` with the audit record would read to a caller as "this build serves rd2".
+
+**One correction to the plan's interface.** It specifies `rd_response(record: AuditRecord)`, but the
+route serving it reads finished records back out of SQLite as JSON and never reconstructs the
+dataclass. A dataclass-only signature would have passed every test in this task and failed the one
+route it exists for, so it accepts both forms and a test pins that they agree.
+
+**Measured cost of the synchronous route**: 6.3 s end to end for a single frame on this
+workstation. `api.py`'s docstring now carries Task 6's per-face numbers (276 ms on the deployment
+instance, 1,637 ms here) so nobody puts `/api/analyze` behind a 2-second gateway timeout.
 
 ---
 
