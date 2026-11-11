@@ -220,3 +220,37 @@ def test_the_tuning_forward_matches_the_detectors_own_embed():
     with torch.no_grad():
         mine = _embed_for_training(tower, crops)
     assert torch.allclose(mine, embed(tower, crops), atol=0, rtol=0)
+
+
+def test_the_layernorms_are_not_weight_decayed():
+    # AdamW's default weight_decay=0.01 pulls a LayerNorm gain toward zero,
+    # and a gain of zero deletes the channel. The LayerNorms ARE the fitted
+    # set here, so the default would quietly shrink the whole fit. The head
+    # keeps the default: it stands in for the L2 that Phase 1's
+    # LogisticRegression(C=1.0) applies to the same 1,538 numbers.
+    tower = CLIPVisualTower.tiny()
+    captured = {}
+    real = torch.optim.AdamW
+
+    def _spy(groups, **kw):
+        captured["groups"] = groups
+        captured["kw"] = kw
+        return real(groups, **kw)
+
+    torch.optim.AdamW = _spy
+    try:
+        tune_layernorms(tower, _tuning_records(), epochs=1, lr=1e-3)
+    finally:
+        torch.optim.AdamW = real
+
+    groups = captured["groups"]
+    assert len(groups) == 2
+    assert groups[0]["weight_decay"] == 0.0
+    ln = set(tower.layernorm_parameter_names())
+    tuned_ids = {id(p) for n, p in tower.named_parameters() if n in ln}
+    assert {id(p) for p in groups[0]["params"]} == tuned_ids
+    # The head's group is left to inherit torch's default, so the read-out is
+    # regularised in Phase 2 as LogisticRegression(C=1.0) regularises it in
+    # Phase 1. AdamW fills the inherited value in on construction, so this
+    # reads the EFFECTIVE decay, not the dict as it was passed.
+    assert groups[1]["weight_decay"] > 0

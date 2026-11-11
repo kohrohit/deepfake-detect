@@ -368,9 +368,21 @@ def tune_layernorms(
     head = GendHead(in_dim=int(tower.proj.shape[1]))
     if version is not None:
         head.set_version(version)
-    optimiser = torch.optim.AdamW(
-        [p for p in tower.parameters() if p.requires_grad] + list(head.parameters()),
-        lr=lr)
+    # TWO GROUPS, because AdamW's default weight_decay=0.01 is wrong for
+    # exactly the parameters this task tunes. Decay pulls a LayerNorm gain
+    # toward ZERO, and a gain of zero deletes the channel; every transformer
+    # fine-tuning recipe excludes normalisation parameters and biases from
+    # decay for that reason. Here it is not a detail -- the LayerNorms ARE
+    # the fitted set, so the default would have shrunk every one of them by
+    # ~0.5% over a 5-epoch run for no reason anyone could defend afterwards.
+    # The head keeps the default, which stands in for the L2 that
+    # `fit_head`'s LogisticRegression(C=1.0) applies in Phase 1: the two
+    # phases should not differ in how the read-out is regularised.
+    optimiser = torch.optim.AdamW([
+        {"params": [p for p in tower.parameters() if p.requires_grad],
+         "weight_decay": 0.0},
+        {"params": list(head.parameters())},
+    ], lr=lr)
 
     train, test = _split_by_subject(records, holdout=holdout, seed=seed)
     logger.info("tuning %d LayerNorm parameters (%.3f%% of %d) over %d records, "
