@@ -3077,6 +3077,16 @@ loss, or a tuned encoder differing from the frozen one anywhere outside
 the freeze leaked, and `tests/test_fit_gend.py` asserts against it on both the tiny tower and —
 checked by hand on 2026-11-11 — the real ViT-L/14.
 
+**What would NOT void it, stated now so it is not mistaken for failure later.** Phase 1's
+in-domain held-out AUC is **0.928**, and that number came from a CONVERGED logistic regression
+over frozen embeddings. Phase 2 trains its head from scratch with AdamW for five epochs, so a
+per-epoch holdout AUC below 0.928 — even on the last epoch — is not evidence that LayerNorm
+tuning failed; it may only mean the read-out has not converged the way `fit_head`'s solver does
+in one step. Neither number decides anything in any case: both are in-domain, and the tuned one
+is additionally a selection statistic. **The only comparison that decides Phase 2 is the paired
+LOGO delta at an offset beyond the training window**, which is question 1 above. Do not read the
+epoch log as a result.
+
 **And one defect this task's own work surfaced, now gated.** A `logger.info` here carried seven
 format placeholders and six arguments. `logging` catches that `TypeError` itself and prints a
 traceback to stderr **without raising**, so the run continued, every test passed, and the only
