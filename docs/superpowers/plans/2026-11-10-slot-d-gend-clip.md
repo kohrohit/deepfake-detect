@@ -2915,7 +2915,7 @@ instance, 1,637 ms here) so nobody puts `/api/analyze` behind a 2-second gateway
 
 ---
 
-### Task 12: Deploy, and write down what the next person needs
+### Task 12: Deploy, and write down what the next person needs — **DONE 2026-11-11** (`3ed1600`)
 
 **Files:**
 - Modify: `ops/deploy-ec2.sh`
@@ -2923,7 +2923,7 @@ instance, 1,637 ms here) so nobody puts `/api/analyze` behind a 2-second gateway
 - Modify: `docs/HANDOFF.md` (a new §0 block)
 - Modify: `README.md`
 
-- [ ] **Step 1: Teach the deploy script about the new weights**
+- [x] **Step 1: Teach the deploy script about the new weights**
 
 `assets/models/clip_vit_l14_visual.pt` is ~1.2 GB, which dwarfs everything the script currently
 ships and inverts its own stated reasoning about `dima806` (328 MB "would be 89% of the transfer
@@ -2933,7 +2933,7 @@ not, and a fresh instance should prefer `ops/fetch-assets.sh` plus `training/con
 **on the instance** over pushing 1.2 GB up a home uplink. Add a `--fetch-remote` path that does
 exactly that, and keep the rsync route for an instance with no outbound access.
 
-- [ ] **Step 2: Deploy and verify end to end**
+- [x] **Step 2: Deploy and verify end to end**
 
 ```bash
 ./ops/deploy-ec2.sh --host <host> --key key.pem --dry-run
@@ -2946,7 +2946,7 @@ curl -sS -X POST --data-binary @face.jpg 'http://127.0.0.1:8077/api/analyze?file
 Expected: the contract shape from Task 11, with a real per-model list. **Record the wall-clock
 latency of that call** and check it against Task 6's measurement on the same box.
 
-- [ ] **Step 3: Write the §0 resume block in `docs/HANDOFF.md`**
+- [x] **Step 3: Write the §0 resume block in `docs/HANDOFF.md`**
 
 Following the house style — headline first, the number and its control, then what is NOT true.
 It must say: what slot D measured on each corpus; whether the gate opened; what the permutation
@@ -2954,17 +2954,45 @@ null and the two shortcut controls did; what the quality-floor table said; the m
 latency; whether Phase 2 is runnable here or blocked on the GPU decision; and that the
 biometric-consent blocker (owner-action item 6) is untouched by all of it.
 
-- [ ] **Step 4: Update `docs/SERVICE.md` and `README.md`**
+- [x] **Step 4: Update `docs/SERVICE.md` and `README.md`**
 
 The endpoint list gains `/api/analyze` and `?format=rd`. The README's evidence-card paragraph
 gains slot D. **No parity claim appears in either** (spec §4.3).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ops/deploy-ec2.sh docs/SERVICE.md docs/HANDOFF.md README.md
 git commit -m "feat: slot D reaches the instance, and the handoff says what it actually did"
 ```
+
+**Deployed and verified.** `uptime_s` went 108,887.4 → 21.2, which is the only check worth making
+here: this service answers HTTP 200 from whatever process is already running, so a stale deploy and
+a good one are indistinguishable from outside. `/api/analyze` on the instance, one real FairFace
+frame, returned the Task 11 contract with all four detectors abstaining and **2.119 s** wall clock.
+Against Task 6's 276 ms for the encoder alone, the CLIP forward is ~13% of that call and face
+detection plus the other three detectors are the rest — consistent, not a contradiction.
+`gend_clip`'s raw score was byte-identical to the local run on the same file.
+
+**`--fetch-remote` added.** It excludes the 1.2 GB encoder and the 890 MB OpenAI archive from the
+rsync and runs `ops/fetch-assets.sh` + `training/convert_clip.py --verify` on the instance instead.
+Both steps skip when their output already exists, so a redeploy does not re-download. The rsync
+route stays the default for an instance with no outbound access. `--delete-excluded` remains
+deliberately absent, so an encoder already on the instance survives an excluded sync — which this
+deploy confirmed.
+
+**The not-shipped block was carrying arithmetic the tree had outgrown.** It argued dima806's 328 MB
+"would be 89% of the transfer for a detector that contributes nothing". With slot D's encoder
+present that share is closer to 10%. Both statements were true when written; the block now says so
+rather than quietly keeping the stale one.
+
+**The handoff block is deliberately NOT numbered §0.** Nineteen places in `docs/HANDOFF.md` say
+"§0" meaning the 2026-09-25 resume block, and four say "§0a" meaning the one below it. Renumbering
+to put the new block at §0 silently repoints every one of them — I did it, caught the breakage by
+chasing one quoted line (`§0a`'s "7 positives is not a training set", which lives in the block that
+would have moved), and reverted the whole cascade. The diff to that file is now purely additive:
+109 insertions, 0 deletions, every existing anchor intact. A document this size has its section
+numbers as load-bearing references, not as ordering.
 
 ---
 
