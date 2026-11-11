@@ -289,11 +289,27 @@ what it costs and what it buys, so none of them needs re-deriving before it can 
 |---|---|---|---|
 | 1 | ~~**Create a Kaggle account and accept SFHQ's terms**~~ **STRUCK 2026-09-24 — blocked upstream AND not needed.** SFHQ part 3 is already downloaded, and no installable Kaggle client can read the access token Kaggle now issues (`docs/EULA-ACCESS.md` §4a item 1) | — | nothing; it is off the critical path |
 | 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3). **Now item 1 in practice**, and DF40's own form turns out to sit downstream of it rather than beside it (§4b) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
-| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
+| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, ~~12~~ **59 commits** ahead of `main`, 0 behind, MERGEABLE, open since 2026-09-22 with no review) | a review, and it is no longer a small one | everything downstream lands on `main` rather than a branch. **This is now the critical path, not a tidy-up** — see the note below the table |
 | 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
 | 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
 | 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
 | 7 | **Decide GPU or no GPU** | money | the detector class. CPU-only is why the path is handcrafted features rather than a trained CNN (§1 correction 3) |
+
+**Item 3 has grown, measured 2026-11-11.** The "12 commits" above was true when it was written
+and is not true now. `git rev-list --left-right --count main...fix/corpus-duplicate-crops` reports
+**0 59**: fifty-nine commits ahead, none behind. `gh pr view 3` agrees — 59 commits, MERGEABLE,
+opened 2026-09-22, `reviewDecision` empty. In a document whose bar is measured output over
+paraphrase, a checkable number that has gone stale undercuts every uncheckable claim beside it,
+which is why this is corrected in place rather than left to be rediscovered.
+
+**And the work stacks on it.** `feat/slot-d-gend-clip` is not a sibling of that branch, it
+CONTAINS it: `git merge-base --is-ancestor fix/corpus-duplicate-crops feat/slot-d-gend-clip`
+succeeds, and slot D is **96 commits ahead of `main`** — the 59 of PR #3 plus 37 of its own.
+`main` has been frozen at `50ab737` since 2026-09-25 while every measurement this project has
+made since has accumulated on one unmerged line. Nothing is lost — the commits exist and are
+pushed — but the consequence is worth stating plainly: there is no reviewed baseline to fall back
+to, and a merge of PR #3 now is a review of two months of work rather than of a duplicate-crop
+fix. Whoever reviews it should know that before opening it.
 
 **Item 1, everything checkable without an account, checked 2026-09-23.** The Kaggle API answers
 dataset *listing* unauthenticated, so the slug, size and declared licence are confirmed rather than
