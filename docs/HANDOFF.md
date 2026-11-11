@@ -243,7 +243,11 @@ The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement i
   Tasks 7, 8 and 9 against the tuned pair, into `bench/gend_report_lntuned.{json,md}`,
   `bench/gend_vcip_lntuned.json` and `bench/calibration_report_lntuned.json`. Progress is in
   `~/dfd/lntune_chain.log`. **Nothing it writes overwrites a Phase 1 artefact**, including
-  `assets/models/calibration.json`.
+  `assets/models/calibration.json`. **The chain is now ~2 hours, not ~1.5**: keying the
+  feature cache on the encoder's CONTENTS rather than its filename (a review finding — a re-tune
+  overwrites the same path, and the stale cache would have reported delta 0.000, "the tuning did
+  nothing") invalidated the warm frozen cache, so both eval legs recompute 9,907 embeddings at
+  276 ms. Correct and cold beats fast and wrong; ETA ~06:00 UTC.
 - **The number that decides it** is the **worst LOGO fold**, tuned against frozen — not the mean,
   not the in-dataset AUC, and not the 0.984–0.999 compositing folds. Frozen's worst fold is
   **0.738** (`sbi`, CI 0.726–0.751). If tuned does not beat that, Phase 1's weights stay shipped
