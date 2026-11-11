@@ -18,7 +18,7 @@
       "corpus": "df40_eval_subset",
       "evidence": "bench/df40_report.md",
       "measured_on": "2026-09-22",
-      "note": "INVERTED as a point estimate, but the honest 95% CI is 0.230-0.670 and contains 0.500: this corpus cannot establish 'inverted rather than weak' (see corpus.caveat). It ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none. Refitting the SAME features on DF40 val reaches 0.800 on DF40 test, so the features are not blind — the self-blend training target was wrong. That number is in-distribution and mostly the colour shortcut above; it cannot pass this gate, by design. RETRACTED FRAMING, 2026-09-23: not merely 'cannot establish inverted rather than weak' — cannot establish anything. 0.289 is inside this corpus's permutation null (see corpus.caveat), as is every other number measured on it.",
+      "note": "INVERTED as a point estimate, but the honest 95% CI is 0.230-0.670 and contains 0.500: this corpus cannot establish 'inverted rather than weak' (see corpus.caveat). It ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none. Refitting the SAME features on DF40 val reaches 0.800 on DF40 test, so the features are not blind \u2014 the self-blend training target was wrong. That number is in-distribution and mostly the colour shortcut above; it cannot pass this gate, by design. RETRACTED FRAMING, 2026-09-23: not merely 'cannot establish inverted rather than weak' \u2014 cannot establish anything. 0.289 is inside this corpus's permutation null (see corpus.caveat), as is every other number measured on it.",
       "trained_on": "fairface_corpus",
       "trained_on_note": "self-blended (corpora/sbi.py) from FairFace crops",
       "weights": "fitted on 9974 FairFace crops, 19948 self-blended samples"
@@ -26,11 +26,11 @@
     "dima806_vit": {
       "auc": 0.5214,
       "corpus": "df40_eval_subset",
-      "evidence": "docs/HANDOFF.md §0",
+      "evidence": "docs/HANDOFF.md \u00a70",
       "measured_on": "2026-09-23",
-      "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately — a detector at chance adds a dependency and no information.",
+      "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately \u2014 a detector at chance adds a dependency and no information.",
       "trained_on": null,
-      "trained_on_note": "unknown — the HuggingFace model card does not say. Unknown cannot pass the gate.",
+      "trained_on_note": "unknown \u2014 the HuggingFace model card does not say. Unknown cannot pass the gate.",
       "weights": "assets/models/dima806 (Apache-2.0, on disk)"
     },
     "effnet_b4": {
@@ -43,14 +43,18 @@
       "weights": "absent"
     },
     "gend_clip": {
-      "auc": null,
-      "corpus": null,
-      "evidence": null,
-      "measured_on": null,
-      "note": "Registered 2026-11-10, UNMEASURED. The encoder is present and verified (assets/models/clip_vit_l14_visual.pt, 303,966,208 parameters, agreeing with OpenAI's own module to 2.116e-06); the HEAD is not fitted yet, so the detector abstains with weights_absent. This entry exists because the registry gate (tests/service/test_evidence.py) refuses a detector the card does not cover — which is the point: slot D is in the registry and has produced no number, and that must be visible rather than inferred from an absent key. Its measurement is Task 7 of docs/superpowers/plans/2026-11-10-slot-d-gend-clip.md and nothing may be written here before that runs.",
-      "trained_on": null,
-      "trained_on_note": "head not fitted. When it is, it is FairFace (CC BY 4.0) and in-repo composites of it, and NEVER FaceForensics++ or GenD's released weights.",
-      "weights": "encoder present (MIT); head absent"
+      "auc": 0.663,
+      "auc_ci95": [
+        null,
+        null
+      ],
+      "corpus": "vkyc_capture_corpus",
+      "trained_on": "fairface_corpus",
+      "trained_on_note": "self-blended (corpora/sbi.py) and composited (corpora/swaps.py) FairFace crops; photographs 0-1,999 (bench/gend_fit.json, version 0.1.0-probe-fairface2000). No capture-corpus material reaches these coefficients and spec 6.4 forbids one that does.",
+      "evidence": "bench/gend_report.md, bench/gend_report.json, bench/gend_vcip.json",
+      "measured_on": "2026-11-11",
+      "weights": "Linear(768, 2) over frozen CLIP ViT-L/14; encoder MIT, head CC BY 4.0",
+      "note": "BELOW THE FLOOR, AND NOT INSIDE ITS NULL. Two measurements, both under 0.75, so slot D does not open the gate; which of them is quoted does not change that.\n\nHEADLINE (the `auc` above), controlled in-domain, 2026-11-11: session AUC 0.663 over 125 sessions (58 genuine / 67 swapped, 509 frames) of vkyc_capture_corpus, genuine half re-encoded at quality 95 \u2014 the one quality reproducing the swapped half's luma table exactly, so one JPEG header byte can no longer label 99.2% of the corpus. TPR@0%FPR is 0.015, which is the number a reviewer would actually feel. Frames are not independent: Kish ESS is 106.9 over 509 frames, so sessions are the unit. No CI is quoted because none was computed on this corpus; `auc_ci95` is null rather than filled with a bootstrap that would imply more than was measured.\n\nTHE ENCODER SHORTCUT IS NOT WHAT THIS DETECTOR READS: uncontrolled session AUC is 0.664 against the controlled 0.663. Removing the shortcut moves slot D by 0.001. That is the opposite of slot C's behaviour on the same corpus and is the main thing this evaluation established.\n\nLEAVE-ONE-GENERATOR-OUT, 2026-11-10 (bench/gend_report.json): worst fold is `sbi` at 0.738, 95% CI 0.726-0.751, n=2,988. It sits OUTSIDE the permutation null 0.449-0.561 (48 shuffles, p = 0.020), so there is signal here and this is not a number inside its own null. It is still 0.012 under the floor. Kish ESS 996.4 by group; 4.47 on the fake side, so fake-side intervals are resampled over families.\n\nDISTRUST THE BEST FOLDS. The four compositing folds read 0.984-0.999 and must not be quoted as slot D's performance: they are classical warp/mask/blend composites generated in this repo, and a detector that beats a hard-blended boundary has not been shown to beat FSGAN, InSwapper or any diffusion pipeline. `sbi` is the worst fold precisely because self-blends are the only fold without a visible composite seam, which is why it is the one reported.\n\nSHORTCUT CONTROLS. Colour: a logistic model on Lab colour means alone, fitted and scored IN SAMPLE (the strongest form of the control), reaches 0.530 (CI 0.523-0.538) \u2014 the detector is not reading colour. JPEG: the feature is identical on every record, so the control is a structural 0.500, not a measured one.\n\nIN-DATASET 0.928 (bench/gend_fit.json) MEASURES MEMORISATION and appears here only to be ruled out as the headline."
     },
     "npr": {
       "auc": null,
