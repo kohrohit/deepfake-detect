@@ -41,8 +41,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 
 from corpora.face_pool import DetectFn
-from dfd.detectors.npr import NPRStatsNet, npr_feature
-from dfd.faces import align, clamp_roi, detect_faces
+from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
+from dfd.faces import clamp_roi, detect_faces, select_largest_face
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,26 @@ def stats_for(
     boxes = detect(frame)
     if not boxes:
         return None
-    box = max(boxes, key=lambda b: b.score)
-    if clamp_roi(frame.shape, box) is None:
+    # LARGEST, not most-confident. `dfd.faces.select_largest_face` is the
+    # serving path's rule and this file used a second one; the measured cost
+    # of that disagreement elsewhere in this repo was 0.821 against 0.954.
+    box = select_largest_face(boxes)
+    roi = clamp_roi(frame.shape, box)
+    if roi is None:
         return None
-    crop = align(frame, box, size=norm_size)
+    # `_crop_to_roi_native`, the DETECTOR's own crop, not `align(..., 224)`.
+    # NPRDetector.score crops at the ROI's native resolution and deliberately
+    # does not resize -- its docstring says so and says why: "the fitter MUST
+    # crop the same way, or the weights describe features the detector never
+    # computes", measured at 0.695 aligned-224 against 0.957 native. This
+    # file resampled, and `save_npr_model` bakes feature_mean/feature_scale
+    # from that distribution into the state_dict at --out's default of
+    # assets/models/npr.pt -- the exact path default_registry() loads. Slot C
+    # would have stopped abstaining and started standardising native features
+    # against statistics they are not drawn from.
+    crop = _crop_to_roi_native(frame, roi)
+    if crop is None or crop.size == 0:
+        return None
     residual = torch.from_numpy(npr_feature(crop)).permute(2, 0, 1)[None]
     with torch.no_grad():
         feats = NPRStatsNet().features(residual)

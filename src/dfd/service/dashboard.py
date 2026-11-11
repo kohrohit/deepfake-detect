@@ -119,6 +119,16 @@ DASHBOARD_HTML = """<!doctype html>
 const $ = (id) => document.getElementById(id);
 const fmt = (t) => t ? new Date(t).toLocaleString() : "—";
 
+// EVERY value that reaches innerHTML goes through this. The filename is
+// chosen by whoever submits: `POST /api/scan?filename=...` keeps `<`, `>`
+// and quotes (api._post applies only Path(...).name), and a file dropped in
+// the watched inbox reaches the same cell. Unescaped, one submission runs
+// script in every operator's dashboard, same-origin, with access to
+// /api/submissions/<id> — the full audit records — and to /api/scan itself.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
+  (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+           "'": "&#39;"}[c]));
+
 async function j(url, opts) {
   const r = await fetch(url, opts);
   return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
@@ -140,9 +150,9 @@ async function loadEvidence() {
     const d = ds[n];
     if (typeof d.auc === "number") worst = Math.min(worst, d.auc);
     const auc = (typeof d.auc === "number") ? d.auc.toFixed(3) : "not measured";
-    return `<tr><td><code>${n}</code></td><td>${auc}</td>`
-      + `<td>${d.corpus || "—"}</td>`
-      + `<td class="muted note">${d.note || ""}</td></tr>`;
+    return `<tr><td><code>${esc(n)}</code></td><td>${esc(auc)}</td>`
+      + `<td>${esc(d.corpus || "—")}</td>`
+      + `<td class="muted note">${esc(d.note || "")}</td></tr>`;
   }).join("");
   if (worst < 0.55) el.classList.add("bad");
   out.innerHTML =
@@ -176,12 +186,12 @@ async function loadRows() {
   const rows = (body.submissions || []).map((r) => {
     const v = r.verdict || "—";
     const vc = v.includes("fake") ? "fake" : v.includes("real") ? "real" : "";
-    return `<tr class="click" data-id="${r.id}">`
-      + `<td class="muted">${fmt(r.received_at)}</td>`
-      + `<td class="file">${r.filename}</td>`
-      + `<td class="muted">${r.source}</td>`
-      + `<td><span class="pill ${r.status}">${r.status}</span></td>`
-      + `<td>${v === "—" ? "—" : `<span class="pill ${vc}">${v}</span>`}</td>`
+    return `<tr class="click" data-id="${esc(r.id)}">`
+      + `<td class="muted">${esc(fmt(r.received_at))}</td>`
+      + `<td class="file">${esc(r.filename)}</td>`
+      + `<td class="muted">${esc(r.source)}</td>`
+      + `<td><span class="pill ${esc(r.status)}">${esc(r.status)}</span></td>`
+      + `<td>${v === "—" ? "—" : `<span class="pill ${esc(vc)}">${esc(v)}</span>`}</td>`
       + `<td>${r.llr_total === null || r.llr_total === undefined
               ? "—" : r.llr_total.toFixed(2)}</td></tr>`;
   }).join("");

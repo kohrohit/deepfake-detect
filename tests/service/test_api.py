@@ -539,3 +539,32 @@ def test_analyze_refuses_chunked_like_scan_does(server: Any) -> None:
 def test_analyze_refuses_an_empty_upload(server: Any) -> None:
     status, _ = _post(server, "/api/analyze?filename=f.jpg", b"")
     assert status == 400
+
+
+def test_the_dashboard_escapes_every_value_it_interpolates(server: Any) -> None:
+    """A filename is chosen by whoever submits, and the dashboard renders it.
+
+    `POST /api/scan?filename=...` keeps `<`, `>` and quotes -- `api._post`
+    applies only `Path(...).name` -- and a file dropped in the watched inbox
+    reaches the same cell. Unescaped, one submission runs script in every
+    operator's dashboard, same-origin, with access to the full audit records
+    at /api/submissions/<id> and to /api/scan itself.
+    """
+    _, raw = _get(server, "/")
+    page = raw.decode("utf-8")
+    # The helper exists, and no row cell interpolates a server value raw.
+    assert "const esc = (v) =>" in page
+    for raw in ("${r.filename}", "${r.source}", "${r.status}",
+                "${d.corpus", "${d.note", "${n}</code>"):
+        assert raw not in page, f"unescaped interpolation still present: {raw}"
+
+
+def test_a_scripted_filename_survives_round_trip_as_data(server: Any) -> None:
+    # The payload reaches the store intact (it is a legal filename), which
+    # is exactly why rendering has to escape rather than rely on input
+    # filtering.
+    evil = '<img src=x onerror=alert(1)>.jpg'
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename=evil, source="api")
+    status, body = _get(server, f"/api/submissions/{sid}")
+    assert status == 200
+    assert body["filename"] == evil

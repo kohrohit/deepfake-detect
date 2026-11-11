@@ -27,6 +27,18 @@ from dfd.types import Quality
 
 from .captures import CaptureSession
 
+# DELIBERATELY NOT CONVERTED YET (2026-11-12). The face selection below is
+# `max(boxes, key=.score)` where the serving path uses
+# `dfd.faces.select_largest_face`, and that disagreement was measured
+# elsewhere in this repo at 0.821 against 0.954. It is NOT fixed here yet for
+# one reason: this module builds the corpus that slot D's Phase 2 tuning run
+# is training on RIGHT NOW, and the same builder produces the evaluation
+# corpus the measurement chain will read afterwards. Changing selection
+# mid-flight would leave the fit and its evaluation preprocessing images
+# differently -- a silent train/test mismatch, which is a worse defect than
+# the one being fixed. Convert both this file and corpora/face_pool.py the
+# moment Phase 2's chain has finished, and re-run the measurement.
+
 logger = logging.getLogger(__name__)
 
 #: A face detector: frame in, boxes out. `dfd.faces.detect_faces` satisfies it.

@@ -352,9 +352,24 @@ def run_benchmark(records: list[dict], registry, config: RunConfig) -> RunRecord
         # reader that something failed and not how badly, which is the one
         # thing they need in order to decide whether to care.
         logger.warning("identity guard failed with guards waived; recording it")
-        identity_report, identity_by_fold, _ = _identity_reports(
-            records, splits,
-            dataclasses.replace(config, identity_max_false_match_rate=1.0))
+        identity_report, identity_by_fold = {}, {}
+        try:
+            identity_report, identity_by_fold, _ = _identity_reports(
+                records, splits,
+                dataclasses.replace(config,
+                                    identity_max_false_match_rate=1.0))
+        except GuardViolation:
+            # Raising a RATE to 1.0 neutralises a rate violation and nothing
+            # else. `check_identity_disjoint` also raises when a train or
+            # test id has NO embedding, and that condition does not care
+            # about the rate -- so the recompute raised again, uncaught, and
+            # aborted a run whose whole premise was enforce_guards=False.
+            # The comment above promises a waived guard leaves evidence
+            # behind rather than a blank; a traceback is neither.
+            logger.warning("identity numbers could not be recovered even "
+                           "with the rate waived (an id has no embedding); "
+                           "recording the violation without them",
+                           exc_info=True)
         identity_status = "violation"
     try:
         parity_by_detector, parity_status, parity_excluded = _parity_reports(

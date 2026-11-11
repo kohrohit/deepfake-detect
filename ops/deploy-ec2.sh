@@ -43,6 +43,13 @@
 #                       [--fetch-remote]
 set -euo pipefail
 
+# mktemp, not a fixed /tmp path. The old one was world-writable and
+# predictable: any local user could pre-create it as a symlink (truncating a
+# file the deploying user owns) or pre-seed its contents, which line 70 then
+# sed-ed straight back into the operator's terminal.
+SSH_ERR="$(mktemp -t dfd-ssh-err.XXXXXX)"
+trap 'rm -f "$SSH_ERR"' EXIT
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_NAME="ubuntu"
 HOST=""
@@ -83,9 +90,9 @@ echo
 # always the security group, not the key, so say so: the two have completely
 # different fixes and the ssh error does not distinguish them.
 echo "==> checking SSH reachability"
-if ! "${SSH[@]}" -o BatchMode=yes "$TARGET" true 2>/tmp/dfd-ssh-err; then
+if ! "${SSH[@]}" -o BatchMode=yes "$TARGET" true 2>"$SSH_ERR"; then
   echo "cannot reach $TARGET over SSH:" >&2
-  sed 's/^/    /' /tmp/dfd-ssh-err >&2
+  sed 's/^/    /' "$SSH_ERR" >&2
   echo >&2
   echo "If that is a timeout, the host is not refusing the key -- nothing is" >&2
   echo "answering on port 22. Check, in this order:" >&2
@@ -140,6 +147,7 @@ rsync -az --delete --info=stats1 \
 echo "==> installing interpreter and dependencies"
 "${SSH[@]}" "$TARGET" "REMOTE_DIR=$REMOTE_DIR bash -s" <<'REMOTE_EOF'
 set -euo pipefail
+
 cd "$HOME/$REMOTE_DIR"
 
 # python3-venv is not in the Ubuntu server image by default, and `python3 -m
@@ -174,6 +182,7 @@ if [[ $FETCH_REMOTE -eq 1 ]]; then
   # a disappointing AUC three hours later.
   "${SSH[@]}" "$TARGET" "REMOTE_DIR=$REMOTE_DIR bash -s" <<'FETCH_EOF'
 set -euo pipefail
+
 cd "$HOME/$REMOTE_DIR"
 if [[ -f assets/models/clip_vit_l14_visual.pt ]]; then
   echo "    encoder already present, skipping fetch and convert"

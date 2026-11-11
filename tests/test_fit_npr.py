@@ -242,3 +242,43 @@ def test_a_feature_with_no_variance_does_not_divide_by_zero(
                         np.full((120, 100, 3), v, dtype=np.uint8))
     assert main(["--fakes", str(fakes), "--reals", str(reals),
                  "--out", str(tmp_path / "npr.pt")], detect=_detect_one) == 0
+
+
+def test_the_fitter_computes_the_features_the_detector_computes(tmp_path):
+    """The fitter wrote weights for features the detector never computes.
+
+    `NPRDetector.score` uses `_crop_to_roi_native`, which deliberately does
+    not resize; this fitter used `align(frame, box, size=224)`, which
+    resamples. `save_npr_model` bakes feature_mean/feature_scale from that
+    distribution into the state_dict, and `--out` defaults to the path
+    `default_registry()` loads -- so slot C would have stopped abstaining
+    and started standardising native-resolution features against statistics
+    from a distribution they are not in. Measured elsewhere in this repo at
+    0.695 against 0.957.
+
+    Behavioural, not a grep: this recomputes the detector's own pipeline by
+    hand and demands the same vector.
+    """
+    from dfd.detectors.npr import _crop_to_roi_native, npr_feature
+    from dfd.faces import clamp_roi
+
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (300, 260, 3), dtype=np.uint8)
+    path = tmp_path / "x.png"
+    cv2.imwrite(str(path), img[:, :, ::-1])
+
+    got = stats_for(path, detect=_detect_one, norm_size=224)
+    assert got is not None
+
+    # The detector's path, reproduced here: same source normalisation, then
+    # a NATIVE-resolution ROI crop.
+    bgr = cv2.imread(str(path))
+    bgr = cv2.resize(bgr, (224, 224), interpolation=cv2.INTER_AREA)
+    frame = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    roi = clamp_roi(frame.shape, _box())
+    crop = _crop_to_roi_native(frame, roi)
+    residual = torch.from_numpy(npr_feature(crop)).permute(2, 0, 1)[None]
+    with torch.no_grad():
+        want = NPRStatsNet().features(residual)[0].numpy().astype(np.float32)
+
+    assert np.allclose(got, want, atol=0, rtol=0)
