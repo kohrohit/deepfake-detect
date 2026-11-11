@@ -232,7 +232,27 @@ factor is a rule of thumb, not a measured step.
   owner attestation nobody with standing has reviewed. Nothing in Tasks 0–12 moves that, and
   `assets/manifest.yaml` says so at each entry rather than proceeding quietly.
 
-**Not done:** Task 13 (Phase 2 LayerNorm tuning). The branch is not merged.
+**Task 13 (Phase 2, LayerNorm tuning) is IN FLIGHT, not done.** Started 2026-11-11 18:12 UTC on
+the deployment instance: 5 epochs, lr 1e-4, batch 8, over the same 9,886 records and the same
+7,911 / 1,975 subject-disjoint split the frozen probe used, so the comparison is like for like.
+The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement is outstanding.
+
+- **Watch it:** `ssh -i key.pem ubuntu@<host> 'tail -5 ~/dfd/lntune.log'`. One line per epoch,
+  carrying train loss and holdout AUC. ETA ~03:30 UTC; the follow-on chain finishes ~05:00.
+- **The chain is already armed.** `~/dfd/lntune_chain.sh` waits on the fit's pid and then re-runs
+  Tasks 7, 8 and 9 against the tuned pair, into `bench/gend_report_lntuned.{json,md}`,
+  `bench/gend_vcip_lntuned.json` and `bench/calibration_report_lntuned.json`. Progress is in
+  `~/dfd/lntune_chain.log`. **Nothing it writes overwrites a Phase 1 artefact**, including
+  `assets/models/calibration.json`.
+- **The number that decides it** is the **worst LOGO fold**, tuned against frozen — not the mean,
+  not the in-dataset AUC, and not the 0.984–0.999 compositing folds. Frozen's worst fold is
+  **0.738** (`sbi`, CI 0.726–0.751). If tuned does not beat that, Phase 1's weights stay shipped
+  and the result is recorded as measured. Either way the floor is still 0.75 and the gate is still
+  shut until something clears it.
+- **A real tuning step was measured before the run** (617 ms/image, 26% under the 3x rule of
+  thumb) and `bench/clip_latency.md` now carries it.
+
+The branch is not merged.
 
 ## 0. Resume here (last touched 2026-09-25, after the v-CIP fit was controlled)
 
