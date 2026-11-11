@@ -93,8 +93,28 @@ curl -s http://127.0.0.1:8077/api/submissions/<id> | python3 -m json.tool
 | `GET /api/stats` | counts by status and verdict |
 | `GET /api/submissions?limit=&status=` | newest first, without the records |
 | `GET /api/submissions/{id}` | one submission **with** its audit record |
+| `GET /api/submissions/{id}?format=rd` | the same decision as the product contract: verdict, score, and the per-model list. `409` while it is still queued, because "not scored yet" and "scored, and nothing could be concluded" are different answers |
 | `POST /api/scan?filename=` | queue raw bytes, returns `202` and an id |
+| `POST /api/analyze?filename=` | scan **and score synchronously**, returning the contract directly. See the warning below |
 | `GET /api/evidence` | the measured report card the gate reads |
+
+`?format=` accepts only `rd`. Anything else is a `400` rather than an ignored
+parameter — answering `?format=rd2` with the audit record would read to a
+caller as "this build serves rd2".
+
+> **`/api/analyze` holds a worker slot for a full CPU forward pass.** Measured
+> 2026-11-11: 276 ms per face for the CLIP ViT-L/14 encoder alone at batch 1 on
+> the deployment instance (1,637 ms on a workstation whose torch is a CUDA
+> build running a CPU path), and **2.12 s end to end** for one frame on the
+> instance once face detection and the other three detectors are included. Do
+> not put it behind a 2-second gateway timeout and conclude the service is
+> down. `/api/scan` exists for callers who can poll.
+
+Every detector appears in the contract's `models` list, including the ones that
+abstained, each with its reason and — where it produced one — its raw score. On
+this deployment that is not padding around the answer, it **is** the answer:
+nothing clears the evidence gate, so the abstentions and their reasons are the
+entire content of the response.
 
 ## The evidence gate
 

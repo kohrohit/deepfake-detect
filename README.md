@@ -15,11 +15,22 @@ train on:
 | `dima806_vit` | learned appearance | on disk, Apache-2.0 | **0.521** — chance | not wired |
 | `npr` | upsampling fingerprint (slot C) | absent | — | no |
 | `effnet_b4` | learned appearance (slot E) | absent (obtainable weights are NonCommercial) | — | no |
+| `gend_clip` | learned appearance (slot D) | fitted here: a linear head over a frozen CLIP ViT-L/14, from 2,000 FairFace photographs | **0.663** session AUC on the v-CIP capture corpus, controlled for the encoder shortcut; worst leave-one-generator-out fold **0.738** (null 0.449–0.561, p = 0.020) | no |
 
 **Nothing here can currently tell a deepfake from a real face.** The system
 is built so that this is a fact you cannot miss rather than one you have to
 go looking for: every verdict it issues today is `insufficient_evidence`, the
 dashboard says why in a banner, and a test asserts it.
+
+`gend_clip` is the closest any of them has come, and it is still short. Its
+worst leave-one-generator-out fold sits **outside** its own permutation null
+(p = 0.020), so there is real signal there rather than noise dressed as a
+number — and at 0.738 it is 0.012 under the 0.75 floor, so it does not decide.
+Both of its measurements are below the floor, which is why the choice between
+them changes nothing. Every fake it has ever seen is a self-blend or a
+classical composite generated in this repository: **transfer to an actual
+generator is unmeasured**, and no claim is made here about how it compares to
+any commercial detector.
 
 That is the product. A detector that does not work is normal; a system that
 does not know it is the failure this repository exists to avoid.

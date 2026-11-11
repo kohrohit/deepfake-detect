@@ -125,6 +125,115 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
+## Slot D — read this first (2026-11-11, after slot D was measured, calibrated and deployed)
+
+*Deliberately not numbered. Nineteen places in this document say "§0" meaning the
+2026-09-25 resume block below, and four say "§0a" meaning the one below that; renumbering
+to put this block at §0 would silently repoint every one of them. Everything predating
+slot D still lives in §0 and the owner-action list it carries.*
+
+**Slot D exists, is measured, and is not allowed to decide.** Branch `feat/slot-d-gend-clip`.
+A linear head over a frozen CLIP ViT-L/14 vision tower, fitted on 2,000 FairFace photographs.
+Tasks 0–12 of `docs/superpowers/plans/2026-11-10-slot-d-gend-clip.md` are done. 1,080 tests green,
+coverage 93.17% against an 85% gate, ruff and `mypy --strict` (38 files) clean.
+
+**The gate did not open, and that is the reported outcome, not a failure to finish.**
+`gated_detectors(load_card())` returns `[]`. The service deployed to the instance at 12:59 UTC
+today says so on every start, by name and number:
+
+    detector gend_clip: measured AUC 0.663 below the 0.75 floor, cannot decide
+
+**What it measured, per corpus.**
+
+| corpus | number | what it is |
+|---|---|---|
+| `vkyc_capture_corpus`, encoder-controlled | **session AUC 0.663** | the headline in `bench/evidence_card.json`. 125 sessions, 58 genuine / 67 swapped, 509 frames. TPR@0%FPR **0.015** |
+| FairFace swaps, leave-one-generator-out | **worst fold 0.738** (`sbi`), CI 0.726–0.751 | outside its own null; still 0.012 under the floor |
+| FairFace swaps, four compositing folds | 0.984–0.999 | **do not quote these.** Classical warp/mask/blend composites made in this repo |
+| in-dataset | 0.928 | memorisation. Named in the card only to be ruled out |
+
+**The null and the controls did their job.** The permutation null over 48 shuffles is 0.449–0.561
+and the worst fold sits outside it at p = 0.020 — so unlike every number this project ever measured
+on DF40, this one is not inside its own null. The colour shortcut control, fitted and scored **in
+sample** (the strongest form of it), reaches 0.530 (CI 0.523–0.538): the detector is not reading
+colour. The JPEG control is a structural 0.500 — the feature is identical on every record, so there
+is nothing there to separate.
+
+**The encoder shortcut is not what slot D reads.** This is the most useful thing the in-domain
+evaluation established. One JPEG header byte labels 99.2% of the capture corpus, and removing that
+shortcut moves slot D by **0.001** (uncontrolled 0.664 → controlled 0.663). Slot C behaves
+completely differently on the same corpus. Whatever slot D is weak at, it is not winning on the
+encoder.
+
+**The quality floor is `reject`, and it was measured rather than chosen.** It was provisionally
+`low` on the reasoning that an appearance read-out has no use for a blurred face. The per-band
+table on the capture corpus says otherwise, and the argument rests on the two denominator columns,
+not the AUC column:
+
+    band      n   genuine  swapped   frame AUC   TPR@0%FPR
+    reject   232      14       218     0.541       0.165
+    medium   238     139        99     0.573       0.000
+    low       12       2        10     0.700       0.400
+    high      27      27         0      none        none
+
+A floor above `reject` throws away 218 of 328 swapped frames (66.5%) against 14 of 182 genuine
+(7.7%) — two thirds of the attacks discarded before the detector runs. That is a security hole, not
+caution.
+
+**Calibration no longer comes from a corpus we cannot trust.** `training/fit_calibration.py` grew
+`--corpus-kind {df40,swaps}`; the shipped curves are fitted on paired, identically-encoded FairFace
+material at offset 12,000, clear of the head's 2,000-photograph training window. `gend_clip` has
+curves for `medium` and `reject`, covering **92.3%** of the capture corpus's frames. A first run on
+a stale remote checkout still carrying `min_quality_band = "low"` covered 46.8% and would have
+abstained on the band holding two thirds of the attacks; both runs exited 0 and neither artifact
+recorded which floor it used. **If you fit anything remotely, grep the remote file for the decision
+constant before trusting the result.**
+
+**A fitted curve is not permission to decide.** The service discards slot D's calibration at
+startup — *"discarded the calibration curve for gend_clip: it has not been measured above the
+evidence floor"* — so slot D scores a frame and still abstains with `uncalibrated_for_band`. That
+is the gate working. The calibration work is correct and inert, and goes live the moment a
+measurement clears 0.75, not before.
+
+**The product surface is up.** `POST /api/analyze` (synchronous) and `?format=rd` on
+`/api/submissions/<id>` return the RD-shaped contract. Measured on the instance today, one frame:
+
+    verdict UNKNOWN, score 0.5, quality_band reject, dissenting_models []
+    blend_seam  abstained  below_quality_floor     score null
+    effnet_b4   abstained  weights_absent          score null
+    gend_clip   abstained  uncalibrated_for_band   score 0.2664
+    npr         abstained  uncalibrated_for_band   score 0.9017
+
+All four abstentions appear deliberately. On this deployment they are the answer, not a footnote.
+
+**Latency, measured, not estimated.** CLIP ViT-L/14 forward at batch 1: **276 ms** per face on the
+instance (p95 277 ms), **1,637 ms** on the dev workstation — whose torch is a CUDA build running a
+CPU path, which is why the instance is ~6x faster. End-to-end `/api/analyze` for one frame on the
+instance: **2.12 s** wall clock, of which the encoder is ~13%; the rest is face detection and the
+other three detectors. Do not put `/api/analyze` behind a 2-second gateway timeout.
+
+**Phase 2 is runnable here and is NOT blocked on the GPU decision** (owner-action item 7). One
+epoch over the 9,887-record corpus is 2.3 hours of forward-equivalent work, so a 5-epoch LayerNorm
+tuning run is an overnight job on the instance. That is affordable only because the training window
+is 2,000 photographs; at the plan's original 60,000 it would have been 69 hours and genuinely
+blocked. See `bench/clip_latency.md` — and note its own caveat that the 3x forward→forward+backward
+factor is a rule of thumb, not a measured step.
+
+**What is NOT true.**
+
+- Slot D is not measured against a generator. Every fake it has seen is a self-blend or a
+  classical composite made in this repo. Transfer to FSGAN, InSwapper or any diffusion pipeline is
+  **unmeasured**, and the 0.984–0.999 compositing folds say nothing about it.
+- The 0.663 headline has **no confidence interval**. None was computed on the capture corpus, and
+  `auc_ci95` is null rather than filled with a bootstrap that would imply more than was measured.
+- No parity claim is made or implied against any commercial detector (spec §4.3).
+- **Owner-action item 6 — the data-protection opinion — is untouched by all of this.** FairFace's
+  CC BY licence settles copyright, not biometric consent, and the capture corpus still rests on an
+  owner attestation nobody with standing has reviewed. Nothing in Tasks 0–12 moves that, and
+  `assets/manifest.yaml` says so at each entry rather than proceeding quietly.
+
+**Not done:** Task 13 (Phase 2 LayerNorm tuning). The branch is not merged.
+
 ## 0. Resume here (last touched 2026-09-25, after the v-CIP fit was controlled)
 
 `main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,

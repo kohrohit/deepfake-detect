@@ -8,13 +8,28 @@
 # interpreter that can import it, and hand over to install.sh -- and it does
 # them idempotently, so re-running it after a code change is the deploy.
 #
-# WHAT IS DELIBERATELY NOT SHIPPED. assets/models/dima806 is 328MB of the
-# 368MB working tree and is NOT wired into the registry: it measured at
-# chance (AUC 0.5214, mean P(fake) 0.961 on reals vs 0.952 on fakes, see
-# bench/evidence_card.json). Shipping it would be 89% of the transfer for a
-# detector that contributes nothing. The weights that DO matter are small:
-# npr.pt (2.8K) plus calibration.json are what make the service return a
-# verdict instead of insufficient_evidence.
+# WHAT IS DELIBERATELY NOT SHIPPED. assets/models/dima806 is 328MB and is NOT
+# wired into the registry: it measured at chance (AUC 0.5214, mean P(fake)
+# 0.961 on reals vs 0.952 on fakes, see bench/evidence_card.json). Shipping it
+# would be transfer spent on a detector that contributes nothing.
+#
+# WHAT IS SHIPPED, AND WHY THE ARITHMETIC ABOVE CHANGED. Slot D (gend_clip)
+# cannot score without its CLIP ViT-L/14 vision tower, so
+# assets/models/clip_vit_l14_visual.pt (1.2GB) IS shipped -- it is not an
+# optional extra like dima806, it is the detector. That inverts the sentence
+# this block used to carry: dima806 was called out as 89% of the transfer, and
+# with the encoder present it is closer to 10% of it. Both facts are true; the
+# tree simply grew a 1.2GB runtime asset. The small weights still matter:
+# npr.pt (2.8K), gend_clip.pt (8.4K) and calibration.json are the fitted
+# parts, and every one of them is tiny.
+#
+# PREFER --fetch-remote ON A FRESH INSTANCE. Pushing 1.2GB (plus the 890MB
+# OpenAI archive, if it is in the tree) up a home uplink is the slowest part
+# of this script by a wide margin, and the instance can fetch the same bytes
+# from OpenAI's CDN in a fraction of the time. --fetch-remote excludes both
+# files from the rsync and runs ops/fetch-assets.sh + training/convert_clip.py
+# ON THE INSTANCE instead. The default stays rsync, for an instance with no
+# outbound access -- there the slow uplink is the only route there is.
 #
 # BINDING. The service has NO authentication (see dfd.service.api), so this
 # binds 127.0.0.1 on the remote host and nothing is exposed to the internet.
@@ -25,6 +40,7 @@
 #
 # Usage:
 #   ./ops/deploy-ec2.sh --host HOST --key KEY.pem [--user ubuntu] [--dry-run]
+#                       [--fetch-remote]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,6 +48,7 @@ USER_NAME="ubuntu"
 HOST=""
 KEY=""
 DRY=0
+FETCH_REMOTE=0
 REMOTE_DIR="dfd"
 
 while [[ $# -gt 0 ]]; do
@@ -41,7 +58,8 @@ while [[ $# -gt 0 ]]; do
     --user) USER_NAME="$2"; shift 2 ;;
     --dir)  REMOTE_DIR="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --fetch-remote) FETCH_REMOTE=1; shift ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -91,8 +109,22 @@ echo "==> syncing code and weights"
 # below are NOT synced, so they must never be deleted either: --delete-excluded
 # is deliberately absent. The remote venv lives in the repo dir and would be
 # the first casualty.
+# On the --fetch-remote route the two CLIP files are excluded here and built
+# on the instance below. They are excluded rather than deleted: --delete is on,
+# but rsync never deletes what it was told not to look at (--delete-excluded is
+# deliberately absent), so an encoder already on the instance survives.
+ENCODER_EXCLUDES=()
+if [[ $FETCH_REMOTE -eq 1 ]]; then
+  ENCODER_EXCLUDES=(
+    --exclude='assets/models/ViT-L-14.pt'
+    --exclude='assets/models/clip_vit_l14_visual.pt'
+  )
+  echo "    --fetch-remote: not sending the CLIP encoder; the instance will fetch it"
+fi
+
 rsync -az --delete --info=stats1 \
   -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new" \
+  "${ENCODER_EXCLUDES[@]+"${ENCODER_EXCLUDES[@]}"}" \
   --exclude='.git/' \
   --exclude='.venv/' \
   --exclude='__pycache__/' \
@@ -132,6 +164,27 @@ echo "    installing dfd (CPU torch)"
 
 .venv/bin/python -c "import dfd, torch, cv2; print('    dfd ok, torch', torch.__version__, 'cv2', cv2.__version__)"
 REMOTE_EOF
+
+if [[ $FETCH_REMOTE -eq 1 ]]; then
+  echo "==> fetching and converting the CLIP encoder on the instance"
+  # Both steps are skipped when their output is already present, so re-running
+  # the deploy does not re-download 890MB. convert_clip --verify re-checks the
+  # archive digest and the converted tower's parameter count against the
+  # architecture constants, so a truncated download fails here rather than as
+  # a disappointing AUC three hours later.
+  "${SSH[@]}" "$TARGET" "REMOTE_DIR=$REMOTE_DIR bash -s" <<'FETCH_EOF'
+set -euo pipefail
+cd "$HOME/$REMOTE_DIR"
+if [[ -f assets/models/clip_vit_l14_visual.pt ]]; then
+  echo "    encoder already present, skipping fetch and convert"
+else
+  ./ops/fetch-assets.sh
+  PYTHONPATH=src:. .venv/bin/python -m training.convert_clip \
+    --archive assets/models/ViT-L-14.pt \
+    --out assets/models/clip_vit_l14_visual.pt --verify
+fi
+FETCH_EOF
+fi
 
 echo "==> installing the service"
 "${SSH[@]}" "$TARGET" "cd \$HOME/$REMOTE_DIR && PYTHON=\$HOME/$REMOTE_DIR/.venv/bin/python ./ops/install.sh"
