@@ -7,6 +7,15 @@ today is `insufficient_evidence` (see /api/evidence). Do NOT expose the port
 beyond the host without putting an authenticating reverse proxy in front —
 `POST /api/scan` writes attacker-chosen bytes to the workdir and spends CPU
 decoding them.
+
+`POST /api/analyze` is `/api/scan` plus a synchronous score, and it HOLDS A
+WORKER SLOT for the whole of a CPU forward pass through a 304M-parameter
+encoder. Measured (bench/clip_latency.json, 2026-11-11): 276 ms per image at
+batch 1 on the deployment instance, p95 277 ms, and 1,637 ms on a workstation
+whose torch is a CUDA build running a CPU path -- per FACE, before face
+detection and the other three detectors. Do not put this behind a 2-second
+gateway timeout and conclude the service is down. `/api/scan` exists for
+callers who can poll.
 """
 from __future__ import annotations
 
@@ -22,9 +31,14 @@ from urllib.parse import parse_qs, urlparse
 
 from ..errors import DfdError
 from ..limits import DEFAULT_LIMITS
+from .contract import rd_response
 from .dashboard import DASHBOARD_HTML
-from .store import QUEUED, Store
+from .store import QUEUED, RUNNING, Store
 from .worker import Worker
+
+#: The one value `?format=` accepts on a submission. Named rather than
+#: inlined so the route and its refusal message cannot drift apart.
+RD_FORMAT = "rd"
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +104,17 @@ class _Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _error(self, status: int, message: str) -> None:
-        self._send(status, {"error": message})
+    def _error(self, status: int, message: str,
+               extra: dict[str, Any] | None = None) -> None:
+        """Send an error body. `extra` carries facts the caller needs to act.
+
+        A 409 that says only "conflict" tells a client nothing about whether
+        to retry; one carrying `status: queued` tells them to wait.
+        """
+        body: dict[str, Any] = {"error": message}
+        if extra:
+            body.update(extra)
+        self._send(status, body)
 
     def _slot(self) -> bool:
         """Take a concurrency slot, or refuse the request with 503.
@@ -164,6 +187,27 @@ class _Handler(BaseHTTPRequestHandler):
             if row is None:
                 self._error(HTTPStatus.NOT_FOUND, f"no submission {sid!r}")
                 return
+            fmt = query.get("format", [None])[0]
+            if fmt is not None and fmt != RD_FORMAT:
+                # Refused rather than ignored: answering `?format=rd2` with
+                # the audit record would read to a caller as "this build
+                # serves rd2", and they would ship against a format that
+                # does not exist here.
+                self._error(HTTPStatus.BAD_REQUEST,
+                            f"unknown format {fmt!r}; expected {RD_FORMAT!r}")
+                return
+            if fmt == RD_FORMAT:
+                if not row.record_json:
+                    # A queued submission has no verdict. UNKNOWN here would
+                    # be indistinguishable from "scored, and nothing could be
+                    # concluded" — a completely different statement.
+                    self._error(HTTPStatus.CONFLICT,
+                                f"submission {sid!r} is not scored yet",
+                                extra={"status": row.status})
+                    return
+                self._send(HTTPStatus.OK,
+                           rd_response(json.loads(row.record_json)))
+                return
             payload = row.summary()
             # Whether the INPUT is still on disk. Retention deletes scored
             # files after a window while keeping every record, so a reader
@@ -184,43 +228,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _post(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.rstrip("/") != "/api/scan":
+        route = parsed.path.rstrip("/")
+        if route not in ("/api/scan", "/api/analyze"):
             self._error(HTTPStatus.NOT_FOUND, f"no route {parsed.path!r}")
             return
-
-        # This handler reads exactly `Content-Length` bytes and does not
-        # decode chunked transfer encoding. Left unchecked, a chunked upload
-        # arrives as length 0 and is accepted as an EMPTY submission, which
-        # then fails at decode and is recorded as a refusal about the file
-        # rather than about the request. Refuse it at the door instead.
-        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-            self._error(HTTPStatus.LENGTH_REQUIRED,
-                        "chunked transfer encoding is not supported; send "
-                        "Content-Length")
-            return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "malformed Content-Length")
-            return
-        if length < 0:
-            self._error(HTTPStatus.BAD_REQUEST, "negative Content-Length")
-            return
-        limit = self.server.max_upload_bytes  # type: ignore[attr-defined]
-        if length > limit:
-            # Refused from the header, before reading the body: reading it to
-            # find out how big it is, is the denial of service.
-            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                        f"upload of {length} bytes exceeds the {limit}-byte limit")
-            return
-        data = self.rfile.read(length) if length else b""
-        if len(data) != length:
-            # The socket closed or timed out mid-body. Accepting the prefix
-            # would store a truncated file and report a decode failure about
-            # content the caller never finished sending.
-            self._error(HTTPStatus.BAD_REQUEST,
-                        f"body ended after {len(data)} of {length} bytes")
-            return
+        data = self._read_upload()
+        if data is None:
+            return  # `_read_upload` has already answered.
 
         query = parse_qs(parsed.query)
         filename = Path(query.get("filename", ["upload"])[0]).name or "upload"
@@ -230,7 +244,91 @@ class _Handler(BaseHTTPRequestHandler):
         except DfdError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return
+        if route == "/api/analyze":
+            self._analyze(sid)
+            return
         self._send(HTTPStatus.ACCEPTED, {"id": sid, "status": QUEUED})
+
+    def _analyze(self, sid: str) -> None:
+        """Score `sid` now and answer with the contract.
+
+        Synchronous, but NOT unrecorded: it drains through the ordinary
+        worker path, so an `/api/analyze` decision leaves exactly the audit
+        trail an `/api/scan` one does. A decision a client received and the
+        service cannot show you afterwards is the one kind this project
+        cannot have.
+
+        `Store.claim_next` claims the OLDEST queued row rather than a named
+        one, so this drains until its own row is terminal and may score
+        other people's backlog on the way. That is bounded by the queue and
+        is the honest cost of synchronous scoring on a queue-shaped service.
+        """
+        while True:
+            row = self._store.get(sid)
+            if row is None:
+                self._error(HTTPStatus.NOT_FOUND, f"no submission {sid!r}")
+                return
+            if row.status not in (QUEUED, RUNNING):
+                break
+            if not self._worker.process_one():
+                # Queue empty and our row still not terminal: another worker
+                # holds it. Report what is true rather than blocking.
+                self._error(HTTPStatus.CONFLICT,
+                            f"submission {sid!r} is being scored elsewhere",
+                            extra={"status": row.status})
+                return
+        if not row.record_json:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY,
+                        row.error or "scoring failed",
+                        extra={"status": row.status})
+            return
+        self._send(HTTPStatus.OK, rd_response(json.loads(row.record_json)))
+
+    def _read_upload(self) -> bytes | None:
+        """The shared upload path for every POST route.
+
+        Shared rather than re-derived: an `/api/analyze` that read a chunked
+        body as length 0 would accept an EMPTY submission and report a decode
+        failure about content the caller never finished sending — the exact
+        defect the chunked check below exists to stop, reintroduced by
+        copying four checks instead of calling one method.
+
+        Returns the body, or None when it has already sent an error.
+        """
+        # This handler reads exactly `Content-Length` bytes and does not
+        # decode chunked transfer encoding. Left unchecked, a chunked upload
+        # arrives as length 0 and is accepted as an EMPTY submission, which
+        # then fails at decode and is recorded as a refusal about the file
+        # rather than about the request. Refuse it at the door instead.
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            self._error(HTTPStatus.LENGTH_REQUIRED,
+                        "chunked transfer encoding is not supported; send "
+                        "Content-Length")
+            return None
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, "malformed Content-Length")
+            return None
+        if length < 0:
+            self._error(HTTPStatus.BAD_REQUEST, "negative Content-Length")
+            return None
+        limit = self.server.max_upload_bytes  # type: ignore[attr-defined]
+        if length > limit:
+            # Refused from the header, before reading the body: reading it to
+            # find out how big it is, is the denial of service.
+            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        f"upload of {length} bytes exceeds the {limit}-byte limit")
+            return None
+        data = self.rfile.read(length) if length else b""
+        if len(data) != length:
+            # The socket closed or timed out mid-body. Accepting the prefix
+            # would store a truncated file and report a decode failure about
+            # content the caller never finished sending.
+            self._error(HTTPStatus.BAD_REQUEST,
+                        f"body ended after {len(data)} of {length} bytes")
+            return None
+        return data
 
     def _health(self) -> dict[str, Any]:
         stats = self._store.stats()
