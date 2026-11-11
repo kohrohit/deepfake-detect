@@ -284,6 +284,12 @@ The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement i
   reports is +0.000 with CI [-0.008, +0.041] — a real comparison of two models that happen to
   perform alike. That is the difference between "no effect" and "we measured the same model
   twice", and it is now distinguishable.
+- **The decision rule is now CODE, and it runs itself.** `bench/phase2_verdict.py` reads the
+  three artefacts, answers the four pre-registered questions and writes `bench/phase2_verdict.md`.
+  A third watcher on the instance (`~/dfd/verdict_watch.sh`, waiting on the chain's pid) fires it
+  when the chain exits, so the whole sequence — fit, then measurement chain, then verdict — is
+  autonomous. **Read `bench/phase2_verdict.md` first when you come back.** A missing artefact
+  answers `—`, never "no": an incomplete run must not read as a clean negative.
 - **The decision rule was written down before the numbers existed** — four questions, each with
   its artefact, in the plan's Task 13 section. Read it before reading the results, not after.
 - **The deployment path already reads a tuned pair.** Checked by hand 2026-11-11 against the
