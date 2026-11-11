@@ -173,8 +173,12 @@ async function loadStats() {
     ? `up ${Math.round(h.body.uptime_s)}s · ${h.body.submissions} submissions seen`
     : "service unreachable";
   const st = s.body.status || {}, vd = s.body.verdict || {};
-  const box = (k, n) => `<div class="stat"><div class="n">${n || 0}</div>`
-    + `<div class="k">${k}</div></div>`;
+  // Both arguments are server-computed today (literal keys, integer
+  // counts), so this is belt and braces -- but "everything that reaches
+  // innerHTML goes through esc" is only a usable rule if it has no
+  // exceptions a reader has to verify.
+  const box = (k, n) => `<div class="stat"><div class="n">${esc(n || 0)}</div>`
+    + `<div class="k">${esc(k)}</div></div>`;
   $("stats").innerHTML = box("queued", st.queued) + box("running", st.running)
     + box("done", st.done) + box("failed", st.failed)
     + box("fake", vd.fake) + box("real", vd.real)

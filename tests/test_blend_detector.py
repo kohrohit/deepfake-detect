@@ -423,3 +423,23 @@ def _model_versioned(version: str) -> BlendModel:
     return BlendModel(mean=np.zeros(n), scale=np.full(n, 1e5),
                       coef=np.ones(n), intercept=0.0,
                       feature_names=FEATURE_NAMES, version=version)
+
+
+def test_the_blend_fitter_and_detector_crop_to_the_same_size():
+    """`fit_npr.py` shipped with these two disagreeing; this pins the pair.
+
+    `training/fit_blend.py` computes `seam_features` on `corpora.face_pool`'s
+    crop (`DEFAULT_CROP_SIZE`); `BlendDetector.score` computes it on
+    `_crop_to_roi`'s output (`_ALIGN_SIZE`). `seam_features` normalises its
+    annulus GEOMETRY by image size but its residual and Laplacian kernels are
+    fixed in pixels, so the same face at a different resolution yields
+    different statistics -- measured in `_crop_to_roi`'s own docstring at up
+    to 178 training-set standard deviations.
+
+    `_ALIGN_SIZE` is derived from `align`'s signature and cannot drift on its
+    own; `DEFAULT_CROP_SIZE` is an independent literal and can.
+    """
+    from corpora.face_pool import DEFAULT_CROP_SIZE
+    from dfd.detectors.blend import _ALIGN_SIZE
+
+    assert DEFAULT_CROP_SIZE == _ALIGN_SIZE
