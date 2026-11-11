@@ -393,7 +393,12 @@ than assumed**: session AUC **0.9570 → 0.9563**, TPR@0%FPR **0.456 → 0.441**
 The leak was real and immaterial, which is a thing worth knowing exactly rather than arguing
 about. The shipped `npr.pt` weights are unaffected — the production standardiser is still fitted
 on every row, which is correct; only the reporting of held-out performance changed.
-`bench/vcip_fit.json` and `bench/vcip_controls.json` are regenerated. The older `0.957` figures
+The controlled pair — the one this document says to quote — moves the same way: **0.949 → 0.948**
+at 30.9%. Every control in `bench/vcip_controls.json` shifted by the same small amount in the same
+direction, which is what removing one uniform leak looks like; the `aligned` control's TPR@0%FPR
+went 0.0147 → 0.0000, so the native-versus-aligned gap this project built its slot-C preprocessing
+on is, if anything, slightly wider than recorded. `bench/vcip_fit.json` and
+`bench/vcip_controls.json` are regenerated. The older `0.957` figures
 left in docstrings and comparison tables are kept as the measurement records they were at the
 time; this block is the correction, and it applies to all of them.
 
