@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import torch
@@ -276,3 +278,27 @@ def test_the_returned_weights_are_the_best_epoch_not_the_last(monkeypatch):
     ln = one.layernorm_parameter_names()
     a, b = one.state_dict(), three.state_dict()
     assert all(torch.equal(a[k], b[k]) for k in ln)
+
+
+def test_a_tuned_runs_report_says_its_holdout_auc_was_selected_on(tmp_path,
+                                                                  monkeypatch):
+    # The frozen path's held-out AUC is an honest in-domain number. The tuned
+    # path's is not even that: the epoch that produced the weights was chosen
+    # BY that number, on those rows, so it is biased upward by however many
+    # epochs were compared. The note has to say which of the two it is.
+    import training.fit_gend as fg
+
+    records = _tuning_records()
+    tower = CLIPVisualTower.tiny()
+    monkeypatch.setattr(fg, "load_model", lambda *a, **k: tower)
+    monkeypatch.setattr(fg, "build_training_records",
+                        lambda *a, **k: (records, {}))
+    report = tmp_path / "r.json"
+    rc = fg.main(["--root", str(tmp_path), "--limit", "12",
+                  "--cache", str(tmp_path / "c"), "--tune-layernorms",
+                  "--epochs", "2", "--lr", "1e-2", "--batch-size", "4",
+                  "--encoder-out", str(tmp_path / "e.pt"),
+                  "--out", str(tmp_path / "h.pt"), "--report", str(report)])
+    assert rc == 0
+    note = json.loads(report.read_text())["held_out_auc_note"]
+    assert "NOT EVEN HELD OUT" in note and "selection statistic" in note

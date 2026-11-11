@@ -601,7 +601,16 @@ def main(argv: Sequence[str] | None = None, *,
         "held_out_auc_note": (
             "IN-DOMAIN. A smoke test that the pipeline is wired, not a "
             "result. It does not appear in bench/evidence_card.json and "
-            "must not be quoted as slot D's performance."),
+            "must not be quoted as slot D's performance."
+            + ("" if trace is None else
+               " AND, for a --tune-layernorms run, NOT EVEN HELD OUT: the "
+               "epoch that produced these weights was SELECTED by this very "
+               "number, on these very rows. It is a selection statistic and "
+               "is biased upward by however many epochs were compared. The "
+               "honest holdout for a tuned run is bench/gend_report_lntuned."
+               "json at an offset beyond the training window; see the "
+               "per-epoch curve under `tuning` for how much was selected "
+               "over.")),
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(_json_safe(report), indent=2,

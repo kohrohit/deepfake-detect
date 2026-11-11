@@ -3062,6 +3062,15 @@ cross-corpus checks (`trained_on` ≠ `corpus`, both ids in the manifest).
 - **If 3 fails, the tuned encoder is discarded even if 1 passed.** A detector that gained by
   learning colour is the failure mode slots A, C and E have each been caught on here.
 
+**One honest wrinkle in the running job's own artefact.** `bench/gend_fit_lntuned.json`'s
+`held_out_auc_note` will carry the PRE-FIX wording, because the fit loaded `training/fit_gend.py`
+at 18:42 UTC and the note was corrected at 18:58. The correction says the thing that matters: a
+tuned run's "held-out" AUC is **not held out** — the epoch that produced the weights was selected
+by that very number on those very rows, so it is a selection statistic biased upward by however
+many epochs were compared. The run was NOT restarted for a prose change; the substantive part,
+the per-epoch holdout curve under `tuning`, is in the artefact either way and is how you see how
+much was selected over. Any future run carries the corrected note.
+
 **What would void the run outright:** a holdout curve that never rises above ~0.5, a `nan` train
 loss, or a tuned encoder differing from the frozen one anywhere outside
 `layernorm_parameter_names()`. The first two read as "the optimiser did nothing"; the third means
