@@ -2286,7 +2286,7 @@ on its own training reals and reads stronger than it is.
 
 ---
 
-### Task 8: The in-domain evaluation, and the quality floor it decides
+### Task 8: The in-domain evaluation, and the quality floor it decides — **DONE 2026-11-11** (`19f4eac`)
 
 The capture corpus is the only material that looks like live v-CIP traffic, and a detector trained
 on Flickr photographs faces a real domain shift towards it. **Evaluation only**: this module fits
@@ -2311,7 +2311,7 @@ nothing, and the biometric-consent question (spec §9.1) stays open regardless o
   - `def main(argv=None, *, detect=detect_faces) -> int` — `--captures`, `--encoder`,
     `--weights`, `--out`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -2407,11 +2407,11 @@ def test_the_encoder_shortcut_control_runs_and_is_reported(capture_pair_fixture)
 encoder and head on `tmp_path`, in the shape `tests/test_fit_vcip.py` already uses. Do not invent
 a second fixture style for the same corpus.
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend_vcip.py -q`
 
-- [ ] **Step 3: Write it**
+- [x] **Step 3: Write it**
 
 Reuse, do not reimplement: `training.fit_vcip._frames` and `select_face` for frame selection
 (the largest-face rule — getting this wrong is what made every slot C number stale once), and
@@ -2421,7 +2421,7 @@ Report: session-level AUC (sessions, never frames — frames of one session shar
 at a zero false-alarm budget, the per-band table with denominators, and the same numbers after the
 encoder shortcut is removed. **Quote the controlled pair.**
 
-- [ ] **Step 4: Run it**
+- [x] **Step 4: Run it**
 
 ```bash
 python3 -m bench.eval_gend_vcip --captures ~/Desktop/agents/fraud_gff/deepfake_detection/captures \
@@ -2429,7 +2429,7 @@ python3 -m bench.eval_gend_vcip --captures ~/Desktop/agents/fraud_gff/deepfake_d
     --weights assets/models/gend_clip.pt --out bench/gend_vcip.json
 ```
 
-- [ ] **Step 5: Set the quality floor from the table, not from taste**
+- [x] **Step 5: Set the quality floor from the table, not from taste**
 
 Replace slot D's provisional `min_quality_band` with the measured value and paste the per-band
 table into the attribute's comment, in the form `NPRDetector.min_quality_band` already uses —
@@ -2437,7 +2437,7 @@ including the denominators and an explicit sentence about which columns the argu
 the table says a floor above `reject` discards a large share of swapped frames, the floor goes
 down, whatever the per-band AUCs say.
 
-- [ ] **Step 6: Register the two evaluation corpora**
+- [x] **Step 6: Register the two evaluation corpora**
 
 ```yaml
   vkyc_capture_corpus:
@@ -2457,13 +2457,72 @@ down, whatever the per-band AUCs say.
     checked_by: "rohit.kohli@scoreme.in"
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add bench/eval_gend_vcip.py tests/bench/test_eval_gend_vcip.py \
         bench/gend_vcip.json assets/manifest.yaml src/dfd/detectors/gend.py
 git commit -m "feat: slot D meets the traffic it is for, and its quality floor stops being a guess"
 ```
+
+**Step 4's `--captures` path is the wrong corpus, and it matters.** The plan names
+`~/Desktop/agents/fraud_gff/deepfake_detection/captures`: 42 sessions, 142 frames, and really 58
+distinct images with 19 genuine crops. The corpus every measurement since 2026-09-24 actually uses
+is `/home/rohit/Desktop/vkyc-server/captures` — **146 session folders, 554 frames, 140 sessions,
+218 genuine / 336 swapped**. Both exist on this machine. The run used the second, and
+`assets/manifest.yaml: vkyc_capture_corpus` now records which one it is and why, so the next
+reader does not have to rediscover it.
+
+## THE RESULT
+
+509 frames scored over 125 sessions (58 genuine / 67 swapped), 45 frames skipped `no_face`. Kish
+ESS of frames by session: **106.9** of 125.
+
+| | frame AUC | session AUC | session TPR @ 0% FPR |
+|---|---|---|---|
+| uncontrolled | 0.678 | 0.664 | 0.000 |
+| **encoder-matched (q95)** | **0.674** | **0.663** | **0.015** |
+
+**The encoder shortcut is not what slot D is reading, and that is the finding.** The two rows are
+the same number — 0.664 against 0.663. One JPEG header byte labels 99.2% of this corpus, and slot
+C's uncontrolled figures were inflated by exactly that. Slot D's survives the control untouched.
+It is a weak number honestly, rather than a strong number dishonestly.
+
+**0.663 is well under the 0.75 floor**, and the TPR at a zero false-alarm budget is 1.5% — slot D
+catches essentially nothing on live-shaped traffic at an operationally usable threshold. Together
+with Task 7's 0.738 worst fold, slot D does not open the evidence gate on either corpus.
+
+## Step 5: the floor is `reject`, and the table says so
+
+| band | n | genuine | swapped | frame AUC | TPR@0%FPR |
+|---|---|---|---|---|---|
+| reject | 232 | 14 | 218 | 0.541 | 0.165 |
+| medium | 238 | 139 | 99 | 0.573 | 0.000 |
+| low | 12 | 2 | 10 | 0.700 | 0.400 |
+| high | 27 | 27 | 0 | none | none |
+
+**The argument rests on the denominator columns, not the AUC column.** A floor above `reject`
+discards **218 of 328 swapped frames (66.5%)** against 14 of 182 genuine (7.7%) — two thirds of
+the attacks thrown away before the detector runs, and almost none of the honest traffic. That is a
+security hole, not caution. The provisional `"low"` is replaced by `"reject"`, which is also slot
+C's floor, measured from the same corpus and for the same reason. `high` has no swapped frame at
+all so it has no AUC; `low`'s 0.700 is the best cell in the table and rests on 12 frames.
+
+**One fix the run forced.** YuNet reports face boxes that run off the edge of a frame, and
+`dfd.quality.measure_quality` crops without clamping — so the first real run died on
+`cv2.error: (-215:Assertion failed) !_src.empty()` out of `cvtColor`. `_clamped_roi` clips the box
+to the frame and counts a frame with nothing left under `roi_outside_frame`. One unmeasurable
+frame is a skip with a reason, not a failed evaluation of the other 553. (`GendClipDetector`
+already clamps its own crop; `measure_quality` is called before it and does not.)
+
+**Two small deviations.** `matched_encoder` in `bench/vcip_controls.py` could not be reused whole —
+it is slot-C specific, building `NPRStatsNet` features — so this module reuses its MECHANICS
+(`quant_table`, `find_matching_quality`, `_encode`) and scores through `GendClipDetector.score`,
+which is what Step 3 asks for: the measured path is the deployed path. And `main` takes
+`encoder_factory`/`head_factory` so the test can drive the whole entry point on a tiny tower.
+
+**Measured after Step 7:** 1,051 tests pass (1,045 before, +6), coverage 93.19%, ruff and mypy
+clean from a cold cache.
 
 ---
 
