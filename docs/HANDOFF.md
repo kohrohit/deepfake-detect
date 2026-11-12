@@ -140,9 +140,14 @@ honest output rather than a bug:
 |---|---|---|
 | D `gend_clip` frozen | capture-corpus session AUC **0.663** | below the 0.75 floor |
 | D `gend_clip` tuned (Phase 2) | **0.7594**, 95% CI **[0.672, 0.839]** | point estimate clears the floor; the interval contains it, and the paired gain over frozen is [-0.0072, +0.1993] |
-| C `npr` (capture-fitted) | **0.956** held out | `commercial_use: false` — fitted on inswapper_128 output and on the capture corpus; cannot ship at all |
-| A `blend_seam` | 0.738 in-domain | classical composites only; no generator ever measured |
-| E `effnet_b4` | — | no weights; the licensed ones cannot ship |
+| C `npr` (capture-fitted) | **0.956** held out, session folds | `commercial_use: false` — fitted on inswapper_128 output and on the capture corpus; cannot ship at all, and the card carries `auc: null` for it |
+| A `blend_seam` | card says **0.289** on `df40_eval_subset` | that corpus was ruled able to neither support nor refute anything (every number on it is inside its own permutation null). Its fit-time holdouts are higher but are not evidence |
+| E `effnet_b4` | `auc: null` | no weights; the licensed ones cannot ship |
+| `dima806_vit` | **0.5214** | chance, measured; not wired into the registry |
+
+Four of the five carry `auc: null` or a number below the floor, and the fifth
+(`gend_clip` at 0.663) is the only one the gate names in its refusal.
+`gated_detectors(load_card())` returns the empty set, verified today.
 
 **The three things that would change that, none of which is code:**
 
