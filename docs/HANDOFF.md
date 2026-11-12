@@ -170,8 +170,14 @@ Four of the five carry `auc: null` or a number below the floor, and the fifth
 - Phase 2's leave-one-generator-out is contaminated at the encoder and an honest version needs one
   tuned encoder per fold — five runs at ~9 hours. Recorded, not fixed; `bench/phase2_verdict.md`
   prints the caveat above every verdict.
-- Slot D's capture-corpus number still has no CI in `bench/evidence_card.json` (`auc_ci95` is
-  null). `eval_gend_vcip` now computes one, so the card can be filled in next time it is written.
+- ~~Slot D's capture-corpus number has no CI in `bench/evidence_card.json`.~~ **Done 2026-11-12.**
+  `auc_ci95` now reads **[0.557, 0.763]**, copied from `bench/gend_vcip.json`'s
+  `encoder_matched.session_auc_ci95` — a percentile bootstrap over the 125 sessions, n=1000.
+  It changes no decision: the gate reads the point estimate and `gated_detectors(load_card())`
+  still returns the empty set. What it makes visible is that the interval **contains the 0.75
+  floor** (0.663 under it, 0.763 over it), so this corpus resolves neither direction. Two tests in
+  `tests/service/test_evidence.py` now pin the card to that artefact and assert the straddle, so
+  neither can change silently.
 
 ## Slot D — read this first (2026-11-11, after slot D was measured, calibrated and deployed)
 
@@ -272,8 +278,12 @@ factor is a rule of thumb, not a measured step.
 - Slot D is not measured against a generator. Every fake it has seen is a self-blend or a
   classical composite made in this repo. Transfer to FSGAN, InSwapper or any diffusion pipeline is
   **unmeasured**, and the 0.984–0.999 compositing folds say nothing about it.
-- The 0.663 headline has **no confidence interval**. None was computed on the capture corpus, and
-  `auc_ci95` is null rather than filled with a bootstrap that would imply more than was measured.
+- **Corrected 2026-11-12.** This block used to say the 0.663 headline had no confidence interval.
+  It has one — **[0.557, 0.763]**, bootstrapped over sessions and now in the card. The reason it
+  was absent was never that a bootstrap would overclaim; it was that nobody had computed one.
+  Having it does not make 0.663 better: the interval **spans the 0.75 floor**, which is the
+  honest statement that 125 sessions cannot separate this detector from the bar it has to clear.
+  It is not a permutation test, and none was run on this corpus.
 - No parity claim is made or implied against any commercial detector (spec §4.3).
 - **Owner-action item 6 — the data-protection opinion — is untouched by all of this.** FairFace's
   CC BY licence settles copyright, not biometric consent, and the capture corpus still rests on an
