@@ -16,9 +16,7 @@ from ..audit import AuditRecord
 from ..calibration import Calibrator, load_calibrators
 from ..detectors.blend import DEFAULT_BLEND_WEIGHTS
 from ..detectors.registry import (
-    DEFAULT_CLIP_WEIGHTS,
     DEFAULT_EFFNET_WEIGHTS,
-    DEFAULT_GEND_WEIGHTS,
     DEFAULT_NPR_WEIGHTS,
     default_registry,
 )
@@ -50,8 +48,18 @@ class ServiceConfig:
     blend_weights: Path = Path(DEFAULT_BLEND_WEIGHTS)
     npr_weights: Path = Path(DEFAULT_NPR_WEIGHTS)
     effnet_weights: Path = Path(DEFAULT_EFFNET_WEIGHTS)
-    gend_weights: Path = Path(DEFAULT_GEND_WEIGHTS)
-    clip_weights: Path = Path(DEFAULT_CLIP_WEIGHTS)
+    # SLOT D'S PAIR IS RESOLVED, NOT HARDCODED. These defaulted to the frozen
+    # constants and were passed to `default_registry` explicitly, so
+    # `slot_d_pair()` -- the function that prefers Phase 2's tuned pair when
+    # both halves are installed -- was never consulted by the service. The
+    # registry preferred the tuned pair and the service asked for the frozen
+    # one over the top of it, which is why shipping Phase 2 changed nothing
+    # until this line did.
+    #
+    # `None` means "let the registry decide"; an explicit path still wins,
+    # and the registry still refuses one half of the pair without the other.
+    gend_weights: Path | None = None
+    clip_weights: Path | None = None
     face_model: Path = Path(DEFAULT_MODEL)
     policy: Policy = DEFAULT_POLICY
     limits: Limits = DEFAULT_LIMITS
