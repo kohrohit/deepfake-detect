@@ -51,6 +51,48 @@ FROZEN_COLOUR_CONTROL = 0.530
 COLOUR_CONTROL_MARGIN = 0.05
 
 
+def _paired_sessions(frozen: dict[str, Any],
+                     tuned: dict[str, Any]) -> dict[str, Any]:
+    """The paired session-level delta, or an explanation of its absence.
+
+    Returns `paired_delta`, `paired_ci95` and `paired_established`. The last
+    is the one that matters: a positive point estimate whose interval
+    contains zero is a difference this corpus cannot resolve, and saying so
+    is the whole job.
+    """
+    import numpy as np
+
+    from bench.compare_lntuned import paired_delta_ci
+
+    fs = frozen["encoder_matched"].get("sessions")
+    ts = tuned["encoder_matched"].get("sessions")
+    if not fs or not ts:
+        return {"paired_delta": None, "paired_ci95": None,
+                "paired_established": None,
+                "paired_note": "one of the runs stored no per-session "
+                               "scores, so no paired test is possible"}
+    fb = {r["session_id"]: r for r in fs}
+    tb = {r["session_id"]: r for r in ts}
+    if set(fb) != set(tb):
+        return {"paired_delta": None, "paired_ci95": None,
+                "paired_established": None,
+                "paired_note": "the two runs did not score the same "
+                               "sessions; a paired test needs one corpus"}
+    ids = sorted(fb)
+    if any(fb[i]["label"] != tb[i]["label"] for i in ids):
+        return {"paired_delta": None, "paired_ci95": None,
+                "paired_established": None,
+                "paired_note": "the two runs disagree about a session's "
+                               "label"}
+    y = np.array([fb[i]["label"] for i in ids])
+    a = np.array([fb[i]["score"] for i in ids])
+    b = np.array([tb[i]["score"] for i in ids])
+    delta, lo, hi = paired_delta_ci(a, b, y, np.array(ids), n=2000, seed=0)
+    return {"paired_delta": delta, "paired_ci95": [lo, hi],
+            "paired_established": bool(delta > 0 and lo > 0),
+            "paired_n_sessions": len(ids)}
+
+
 def _load(path: Path) -> dict[str, Any] | None:
     try:
         loaded: dict[str, Any] = json.loads(path.read_text())
@@ -126,8 +168,21 @@ def evaluate(comparison: dict[str, Any] | None,
     else:
         matched = tuned_vcip["encoder_matched"]
         auc = matched.get("session_auc")
+        ci = matched.get("session_auc_ci95")
+        # THE QUESTION IS UNCHANGED -- it was registered as a point-estimate
+        # test and it stays one, because moving a bar after seeing the data
+        # is what pre-registration exists to prevent. But the interval is
+        # REPORTED beside the answer, because registering a point-estimate
+        # test was a mistake and "yes" read alone is a stronger claim than
+        # the measurement supports. If `floor_inside_interval` is true, the
+        # honest statement is "the point estimate clears the floor and the
+        # uncertainty does not permit the claim".
         q4.update(answer=(auc is not None and float(auc) >= AUC_FLOOR),
                   session_auc=auc, floor=AUC_FLOOR,
+                  session_auc_ci95=ci,
+                  floor_inside_interval=(
+                      bool(ci) and ci[0] is not None
+                      and float(ci[0]) <= AUC_FLOOR <= float(ci[1])),
                   session_tpr_at_zero_fpr=matched.get(
                       "session_tpr_at_zero_fpr"))
     questions["4_clears_the_floor"] = q4
@@ -151,11 +206,25 @@ def evaluate(comparison: dict[str, Any] | None,
         if t is None or f is None:
             q5["answer"] = None
         else:
+            # THE PAIRED TEST, and it is the only one that can answer
+            # whether tuning moved this corpus. Both arms score the SAME
+            # sessions, so the difference is taken on those sessions and
+            # bootstrapped over them. The registered answer stays what it
+            # was -- direction -- and `paired_established` says whether the
+            # direction survives the arithmetic.
+            paired = _paired_sessions(frozen_vcip, tuned_vcip)
             q5.update(answer=float(t) > float(f), tuned=float(t),
                       frozen=float(f), delta=float(t) - float(f),
-                      note="No interval: these are two single numbers on one "
-                           "corpus, not a paired bootstrap. A positive delta "
-                           "here is evidence of direction, not of size.")
+                      tuned_ci95=tuned_vcip["encoder_matched"].get(
+                          "session_auc_ci95"),
+                      frozen_ci95=frozen_vcip["encoder_matched"].get(
+                          "session_auc_ci95"),
+                      **paired,
+                      note="The marginal intervals are reported but are NOT "
+                           "the test: both arms score the same sessions, so "
+                           "overlapping marginal intervals say nothing about "
+                           "a paired difference either way. "
+                           "`paired_ci95` is the test.")
     questions["5_capture_corpus_unbiased"] = q5
 
     answers = {k: v.get("answer") for k, v in questions.items()}
@@ -196,6 +265,36 @@ def evaluate(comparison: dict[str, Any] | None,
     }
 
 
+#: Printed whenever the floor sits inside the measured interval. Question 4
+#: was registered as a point-estimate test and stays one; this says what that
+#: answer is worth when the uncertainty straddles the bar.
+_FLOOR_CAVEAT = (
+    " — **on the point estimate only. The 95% interval CONTAINS the floor**, "
+    "so the measurement does not support the claim that slot D clears it. "
+    "Question 4 was registered as a point-estimate test, which was a mistake; "
+    "the question is left as registered and this is the correction.")
+
+
+def _paired_line(result: dict[str, Any]) -> str:
+    """One sentence on the only unbiased, properly-tested number here."""
+    q5 = result["questions"]["5_capture_corpus_unbiased"]
+    est = q5.get("paired_established")
+    if est is None:
+        return ("**No paired test of the capture corpus was possible** — see "
+                f"`{q5.get('paired_note', 'missing per-session scores')}`.")
+    ci = q5["paired_ci95"]
+    body = (f"paired delta {q5['paired_delta']:+.4f}, 95% CI "
+            f"[{ci[0]:+.4f}, {ci[1]:+.4f}] over "
+            f"{q5.get('paired_n_sessions')} sessions")
+    if est:
+        return (f"**The unbiased improvement is established**: {body} — the "
+                "interval clears zero.")
+    return (f"**The unbiased improvement is NOT established**: {body} — the "
+            "interval contains zero. The direction is positive on every "
+            "honest measure and this corpus cannot resolve it. That is the "
+            "finding, not a failure to finish.")
+
+
 def render(result: dict[str, Any]) -> str:
     lines = ["# Phase 2 — the pre-registered verdict", ""]
     if result["incomplete"]:
@@ -219,8 +318,11 @@ def render(result: dict[str, Any]) -> str:
               f"**Tuned encoder ships: "
               f"{'YES' if result['tuned_encoder_ships'] else 'NO'}**",
               f"**Evidence floor cleared: "
-              f"{'YES' if result['gate_would_open'] else 'NO'}**",
-              "", result["rule"], "",
+              f"{'YES' if result['gate_would_open'] else 'NO'}**"
+              + (_FLOOR_CAVEAT
+                 if result["questions"]["4_clears_the_floor"].get(
+                     "floor_inside_interval") else ""),
+              "", _paired_line(result), "", result["rule"], "",
               result["if_not_shipping"], ""]
     return "\n".join(lines)
 

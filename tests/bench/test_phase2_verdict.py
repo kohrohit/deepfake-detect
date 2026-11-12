@@ -131,3 +131,71 @@ def test_the_rendered_verdict_carries_the_upper_bound_warning():
 def test_a_missing_frozen_baseline_leaves_question_5_unanswered():
     r = evaluate(_comparison(), _logo(), _vcip(), None)
     assert r["questions"]["5_capture_corpus_unbiased"]["answer"] is None
+
+
+def test_a_floor_inside_the_interval_is_flagged_without_changing_the_answer():
+    """Question 4 was registered as a point-estimate test. That was a mistake.
+
+    Phase 2 landed at 0.7594 with a 95% interval of [0.672, 0.839]: the point
+    estimate clears 0.75 and the interval contains it. The registered answer
+    stays `True` -- moving a bar after seeing data is what pre-registration
+    prevents -- but printing "YES" alone would be a stronger claim than the
+    measurement supports.
+    """
+    vcip = {"encoder_matched": {"session_auc": 0.7594,
+                                "session_auc_ci95": [0.6716, 0.8392],
+                                "session_tpr_at_zero_fpr": 0.134}}
+    r = evaluate(_comparison(), _logo(), vcip, _vcip(0.663))
+    q4 = r["questions"]["4_clears_the_floor"]
+    assert q4["answer"] is True
+    assert q4["floor_inside_interval"] is True
+    out = render(r)
+    assert "interval CONTAINS the floor" in out
+
+
+def test_an_interval_entirely_above_the_floor_is_not_flagged():
+    vcip = {"encoder_matched": {"session_auc": 0.90,
+                                "session_auc_ci95": [0.82, 0.95],
+                                "session_tpr_at_zero_fpr": 0.5}}
+    r = evaluate(_comparison(), _logo(), vcip, _vcip(0.663))
+    assert r["questions"]["4_clears_the_floor"]["floor_inside_interval"] is False
+    assert "interval CONTAINS the floor" not in render(r)
+
+
+def _sessions(scores, labels):
+    return [{"session_id": f"s{i}", "label": int(l), "score": float(s)}
+            for i, (s, l) in enumerate(zip(scores, labels))]
+
+
+def test_the_paired_capture_test_is_what_decides_question_5():
+    # Phase 2's real result: +0.0962 with a paired interval of
+    # [-0.0072, +0.1993] over 125 sessions. The direction is positive and
+    # the corpus cannot resolve it, which is the finding.
+    import numpy as np
+    rng = np.random.default_rng(0)
+    y = np.array([i % 2 for i in range(60)])
+    a = rng.normal(0.5, 0.3, 60) + 0.05 * y
+    b = a + rng.normal(0.02, 0.3, 60)
+    frozen = {"encoder_matched": {"session_auc": 0.6,
+                                  "sessions": _sessions(a, y)}}
+    tuned = {"encoder_matched": {"session_auc": 0.65,
+                                 "sessions": _sessions(b, y)}}
+    r = evaluate(_comparison(), _logo(), tuned, frozen)
+    q5 = r["questions"]["5_capture_corpus_unbiased"]
+    assert q5["paired_ci95"] is not None
+    assert q5["paired_n_sessions"] == 60
+    assert isinstance(q5["paired_established"], bool)
+    assert "paired delta" in render(r)
+
+
+def test_mismatched_sessions_refuse_a_paired_test_rather_than_faking_one():
+    frozen = {"encoder_matched": {"session_auc": 0.6,
+                                  "sessions": _sessions([0.1, 0.9], [0, 1])}}
+    tuned = {"encoder_matched": {"session_auc": 0.7,
+                                 "sessions": [{"session_id": "zz", "label": 0,
+                                               "score": 0.2}]}}
+    r = evaluate(_comparison(), _logo(), tuned, frozen)
+    q5 = r["questions"]["5_capture_corpus_unbiased"]
+    assert q5["paired_established"] is None
+    assert "same sessions" in q5["paired_note"]
+    assert "No paired test" in render(r)

@@ -1,0 +1,86 @@
+{
+  "deciding_questions": [
+    "1_worst_fold_moved",
+    "2_outside_its_null",
+    "3_no_shortcut"
+  ],
+  "gate_would_open": true,
+  "if_not_shipping": "Phase 1's weights stay shipped and the result is recorded as measured. That is the plan's own rule and a near miss does not renegotiate it.",
+  "incomplete": [],
+  "question_1_is_an_upper_bound": "The tuned encoder was tuned on ALL FIVE generator families, so a leave-one-generator-out fold is disjoint at the head and contaminated at the encoder. Question 1 therefore favours the tuned arm for a reason that is not generalisation. Question 5 is the unbiased comparison: the encoder never saw the capture corpus, whose fakes are inswapper_128 \u2014 a family absent from training. If 1 and 5 disagree, believe 5.",
+  "questions": {
+    "1_worst_fold_moved": {
+      "answer": true,
+      "artefact": "bench/lntuned_vs_frozen.json",
+      "delta": 0.2608448147052911,
+      "delta_ci95": [
+        0.24794992950473688,
+        0.2732782880174216
+      ],
+      "fold": "sbi",
+      "frozen": 0.7380272409392921,
+      "question": "paired delta on the baseline's worst LOGO fold is positive and its 95% interval clears zero",
+      "tuned": 0.9988720556445831
+    },
+    "2_outside_its_null": {
+      "answer": true,
+      "artefact": "bench/gend_report_lntuned.json",
+      "null": [
+        0.2927771747055297,
+        0.7197104713144634
+      ],
+      "permutation_p": 0.07692307692307693,
+      "question": "the tuned run sits outside its own permutation null",
+      "worst_fold_auc": 0.9949672720791951
+    },
+    "3_no_shortcut": {
+      "answer": true,
+      "artefact": "bench/gend_report_lntuned.json",
+      "colour": 0.5301742261648733,
+      "colour_ceiling": 0.5800000000000001,
+      "frozen_colour": 0.53,
+      "jpeg": 0.5,
+      "jpeg_structural": true,
+      "question": "the colour and JPEG controls stay flat"
+    },
+    "4_clears_the_floor": {
+      "answer": true,
+      "artefact": "bench/gend_vcip_lntuned.json",
+      "floor": 0.75,
+      "floor_inside_interval": true,
+      "question": "capture-corpus session AUC >= 0.75",
+      "session_auc": 0.7593926917138446,
+      "session_auc_ci95": [
+        0.671613642428045,
+        0.8392337662337662
+      ],
+      "session_tpr_at_zero_fpr": 0.13432835820895522
+    },
+    "5_capture_corpus_unbiased": {
+      "answer": true,
+      "artefact": "bench/gend_vcip_lntuned.json vs bench/gend_vcip.json",
+      "delta": 0.09624292331446216,
+      "frozen": 0.6631497683993824,
+      "frozen_ci95": [
+        0.5568763760686045,
+        0.762725462037962
+      ],
+      "note": "The marginal intervals are reported but are NOT the test: both arms score the same sessions, so overlapping marginal intervals say nothing about a paired difference either way. `paired_ci95` is the test.",
+      "paired_ci95": [
+        -0.007179763739085726,
+        0.19926563721130777
+      ],
+      "paired_delta": 0.09624292331446216,
+      "paired_established": false,
+      "paired_n_sessions": 125,
+      "question": "capture-corpus session AUC, tuned against frozen (UNBIASED: the encoder never saw this corpus or its generator)",
+      "tuned": 0.7593926917138446,
+      "tuned_ci95": [
+        0.671613642428045,
+        0.8392337662337662
+      ]
+    }
+  },
+  "rule": "Questions 1, 2 and 3 decide whether the tuned encoder replaces the frozen one. Question 4 is separate and decides nothing about shipping: it reports whether slot D clears the 0.75 evidence floor, which is necessary and not sufficient for the gate \u2014 dfd/service/evidence.py still applies the card's cross-corpus checks. A tuned worst fold above 0.75 does NOT open the gate.",
+  "tuned_encoder_ships": true
+}

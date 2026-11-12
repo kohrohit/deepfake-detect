@@ -253,6 +253,16 @@ def _block(scores: list[float], labels: list[int], sessions: list[str],
         "session_tpr_at_zero_fpr": (tpr_at_fpr(sess_s, sess_y, ZERO_FPR)
                                     if both_sessions else None),
         "per_band_frames": per_band(s, y, np.asarray(bands)),
+        # PER-SESSION SCORES, kept rather than summarised away. Two encoders
+        # measured over this same corpus can then be differenced on the SAME
+        # sessions. The alternative is holding two overlapping intervals up
+        # to the light, which is how Phase 2's +0.096 would otherwise have to
+        # be argued -- and overlapping intervals are not evidence of no
+        # difference any more than non-overlapping ones are proof of one.
+        "sessions": [
+            {"session_id": str(sid), "label": int(lab), "score": float(sc)}
+            for sid, lab, sc in zip(sess_ids, sess_y, sess_s, strict=True)
+        ],
         "skipped": skipped,
     }
 

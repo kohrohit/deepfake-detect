@@ -178,3 +178,23 @@ def test_the_session_auc_carries_an_interval():
     assert hi - lo > 0.0, "a zero-width interval is not an interval"
     assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0
     assert "sessions ARE the resampling unit" in block["session_auc_ci95_note"]
+
+
+def test_the_block_keeps_per_session_scores_for_pairing():
+    # Phase 2's whole question is whether tuning moved the capture-corpus
+    # number. Both arms score the SAME sessions, so the difference can be
+    # taken on those sessions -- but only if the scores survive the report.
+    from bench.eval_gend_vcip import _block
+
+    rng = np.random.default_rng(1)
+    scores, labels, sessions, bands = [], [], [], []
+    for i in range(10):
+        for _ in range(3):
+            scores.append(float(rng.random()))
+            labels.append(i % 2)
+            sessions.append(f"s{i}")
+            bands.append("medium")
+    rows = _block(scores, labels, sessions, bands, {})["sessions"]
+    assert len(rows) == 10
+    assert {r["session_id"] for r in rows} == {f"s{i}" for i in range(10)}
+    assert all(set(r) == {"session_id", "label", "score"} for r in rows)
