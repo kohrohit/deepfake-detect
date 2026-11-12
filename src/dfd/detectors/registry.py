@@ -1,6 +1,7 @@
 """Re-export so callers import the registry from an obvious place."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .base import Detector, Registry, SyntheticDetector, abstain  # noqa: F401
@@ -8,6 +9,8 @@ from .blend import DEFAULT_BLEND_WEIGHTS, BlendDetector
 from .effnet import EffNetDetector
 from .gend import GendClipDetector
 from .npr import NPRDetector, NPRStatsNet
+
+logger = logging.getLogger(__name__)
 
 #: Where a deployment is expected to place weights. Both files are gitignored
 #: and absent in this repo, so both detectors abstain with `weights_absent`.
@@ -20,12 +23,53 @@ DEFAULT_EFFNET_WEIGHTS = Path("assets/models/effnet_b4_ffpp.pt")
 DEFAULT_GEND_WEIGHTS = Path("assets/models/gend_clip.pt")
 DEFAULT_CLIP_WEIGHTS = Path("assets/models/clip_vit_l14_visual.pt")
 
+#: Phase 2's pair (plan Task 13). Measured on the capture corpus at session
+#: AUC **0.7594** against the frozen pair's **0.663**, and the plan's
+#: pre-registered rule returned "tuned encoder ships: YES". Preferred over
+#: the frozen pair when BOTH files are present.
+DEFAULT_GEND_LNTUNED_WEIGHTS = Path("assets/models/gend_clip_lntuned.pt")
+DEFAULT_CLIP_LNTUNED_WEIGHTS = Path("assets/models/clip_vit_l14_lntuned.pt")
+
+
+def slot_d_pair() -> tuple[Path, Path]:
+    """`(head, encoder)` for slot D: Phase 2's pair when it is installed.
+
+    BOTH OR NEITHER, and that is the whole rule. The tuned head was fitted
+    JOINTLY with the tuned encoder, so a tuned head read through the frozen
+    encoder loads cleanly, scores confidently, and describes a model nobody
+    fitted. `bench/eval_swaps.py` and `training/fit_calibration.py` refuse
+    that combination at the command line; this refuses it by never
+    assembling it.
+
+    SHIPPING THE TUNED PAIR DOES NOT MAKE SLOT D DECIDE. The evidence gate
+    reads `bench/evidence_card.json`, which still records 0.663, so slot D
+    still abstains with `uncalibrated_for_band` on every request. What
+    changes is which model produces the raw score sitting beside that
+    abstention — the better one, by the only unbiased comparison available.
+    A deployment that has not run Phase 2 simply does not have these files
+    and keeps the frozen pair; `AuditRecord`'s per-detector version string
+    says which was used, so the two are never confused after the fact.
+    """
+    head, encoder = DEFAULT_GEND_LNTUNED_WEIGHTS, DEFAULT_CLIP_LNTUNED_WEIGHTS
+    if head.is_file() and encoder.is_file():
+        logger.info("slot D: using the Phase 2 LayerNorm-tuned pair (%s, %s)",
+                    encoder.name, head.name)
+        return head, encoder
+    if head.is_file() or encoder.is_file():
+        # Half a pair is the dangerous state, so it is the loud one.
+        logger.warning(
+            "slot D: only one half of the tuned pair is present (%s=%s, "
+            "%s=%s); falling back to the frozen pair. A tuned head read "
+            "through the frozen encoder is a model nobody fitted.",
+            encoder.name, encoder.is_file(), head.name, head.is_file())
+    return DEFAULT_GEND_WEIGHTS, DEFAULT_CLIP_WEIGHTS
+
 
 def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,
                      effnet_weights: str | Path = DEFAULT_EFFNET_WEIGHTS,
                      blend_weights: str | Path = DEFAULT_BLEND_WEIGHTS,
-                     gend_weights: str | Path = DEFAULT_GEND_WEIGHTS,
-                     clip_weights: str | Path = DEFAULT_CLIP_WEIGHTS) -> Registry:
+                     gend_weights: str | Path | None = None,
+                     clip_weights: str | Path | None = None) -> Registry:
     """The detector set the CLI consults.
 
     Four distinct physics, per spec §6: NPR's upsampling fingerprint (slot C),
@@ -42,6 +86,18 @@ def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,
             names ("npr", "blend_seam", "effnet_b4", "gend_clip") cannot
             collide.
     """
+    # Resolved together, never independently: see `slot_d_pair`. A caller
+    # that overrides one and not the other gets the other's DEFAULT, which
+    # would be the mismatched-pair bug by a side door, so both must be given
+    # or neither.
+    if (gend_weights is None) != (clip_weights is None):
+        raise ValueError(
+            "gend_weights and clip_weights go together: a head fitted "
+            "jointly with a tuned encoder, read through a different "
+            "encoder, is a model nobody fitted")
+    if gend_weights is None or clip_weights is None:
+        gend_weights, clip_weights = slot_d_pair()
+
     registry = Registry()
     # The factory is what keeps slot C on `loading.load_model`'s SECURE
     # path: with it, weights load under `weights_only=True` as a plain

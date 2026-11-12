@@ -359,3 +359,44 @@ def test_blend_seam_abstains_when_its_model_file_is_absent(tmp_path) -> None:
         source_id="s")
     result = registry.get("blend_seam").score([obs])
     assert result.abstained and result.reason == "weights_absent"
+
+
+def test_the_tuned_pair_is_used_when_both_halves_are_installed(tmp_path,
+                                                               monkeypatch):
+    """Phase 2 measured 0.7594 against the frozen pair's 0.663 and the
+    pre-registered rule said it ships. The registry had never loaded it."""
+    from dfd.detectors import registry as reg
+
+    head, enc = tmp_path / "h.pt", tmp_path / "e.pt"
+    head.write_bytes(b"h")
+    enc.write_bytes(b"e")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS", enc)
+    assert reg.slot_d_pair() == (head, enc)
+
+
+def test_half_a_tuned_pair_falls_back_to_the_frozen_one(tmp_path, monkeypatch):
+    """The dangerous state, so it is the loud one.
+
+    The tuned head was fitted JOINTLY with the tuned encoder. Read through
+    the frozen encoder it loads cleanly, scores confidently, and describes a
+    model nobody fitted.
+    """
+    from dfd.detectors import registry as reg
+
+    head = tmp_path / "h.pt"
+    head.write_bytes(b"h")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS",
+                        tmp_path / "missing.pt")
+    assert reg.slot_d_pair() == (reg.DEFAULT_GEND_WEIGHTS,
+                                 reg.DEFAULT_CLIP_WEIGHTS)
+
+
+def test_overriding_one_half_of_the_pair_is_refused():
+    # Otherwise the other silently takes its DEFAULT -- the mismatched-pair
+    # bug by a side door.
+    with pytest.raises(ValueError, match="go together"):
+        default_registry(gend_weights="x.pt")
+    with pytest.raises(ValueError, match="go together"):
+        default_registry(clip_weights="x.pt")
