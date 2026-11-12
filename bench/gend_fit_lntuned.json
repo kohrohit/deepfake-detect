@@ -1,0 +1,51 @@
+{
+  "cache_hits": 0,
+  "cache_misses": 0,
+  "encoder": "assets/models/clip_vit_l14_visual.pt",
+  "encoder_out": "assets/models/clip_vit_l14_lntuned.pt",
+  "families": {
+    "real": 3983,
+    "sbi": 1995,
+    "swap_lowres_paste": 969,
+    "swap_mouth_patch": 991,
+    "swap_poisson": 979,
+    "swap_warp_hull": 969
+  },
+  "held_out_auc": 0.9971753157532599,
+  "held_out_auc_note": "IN-DOMAIN. A smoke test that the pipeline is wired, not a result. It does not appear in bench/evidence_card.json and must not be quoted as slot D's performance.",
+  "n_photographs": 2000,
+  "n_records": 9886,
+  "n_subjects": 1001,
+  "n_test": 1975,
+  "n_train": 7911,
+  "offset": 0,
+  "root": "fairface_sessions",
+  "seed": 0,
+  "skipped": {
+    "no_face": 78
+  },
+  "tuning": {
+    "batch_size": 8,
+    "epochs": 5,
+    "holdout_auc_per_epoch": [
+      0.9940907435139839,
+      0.9958066433335535,
+      0.9969910509060932,
+      0.997049632215886,
+      0.9971753157532599
+    ],
+    "lr": 0.0001,
+    "n_frozen_parameters": 303863808,
+    "n_tuned_parameters": 102400,
+    "selected_auc": 0.9971753157532599,
+    "selected_epoch": 5,
+    "train_loss_per_epoch": [
+      0.4837033693380715,
+      0.1089256151421922,
+      0.044014268226176594,
+      0.026573027050419994,
+      0.01864658783984243
+    ]
+  },
+  "version": "0.2.0-lntuned-fairface2000"
+}
