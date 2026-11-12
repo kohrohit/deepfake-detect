@@ -66,6 +66,29 @@ Without systemd, the same thing in the foreground:
 python3 -m dfd.service -v
 ```
 
+## `?filename=` is optional
+
+Both `POST /api/scan` and `POST /api/analyze` accept bytes with no filename:
+
+```bash
+curl -X POST --data-binary @face.jpg http://127.0.0.1:8077/api/analyze?format=simple
+```
+
+`dfd.pipeline` routes to an ingest adapter by EXTENSION — deliberately,
+because `load_image` on a video returns its first frame with no sign the rest
+was ignored — so a caller who posted bytes and no name used to get
+`unsupported file extension ''`, describing a problem they did not cause.
+When the name carries no extension, the bytes are asked instead
+(`dfd/ingest/sniff.py`).
+
+Two things it will not do. It **never overrides a name you gave**: `x.png` is
+served as a PNG whatever the bytes look like, because dispatch-by-extension is
+the contract the rest of the package is tested against. And it **never
+guesses**: every branch returns a suffix only on an unambiguous signature, so
+an unrecognised stream is left alone and reaches the same clear extension
+error. Matroska and WebM share a magic number, and a RIFF file that is neither
+WEBP nor AVI is neither — both come back unnamed rather than wrong.
+
 ## `?format=simple` — is this a deepfake, and how sure are you
 
 The three-field view, for a caller who wants a boolean rather than four

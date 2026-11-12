@@ -30,6 +30,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from ..errors import DfdError
+from ..ingest.sniff import sniff_suffix
 from ..limits import DEFAULT_LIMITS
 from .contract import rd_response, simple_response
 from .dashboard import DASHBOARD_HTML
@@ -263,6 +264,24 @@ class _Handler(BaseHTTPRequestHandler):
 
         query = parse_qs(parsed.query)
         filename = Path(query.get("filename", ["upload"])[0]).name or "upload"
+        # `?filename=` IS OPTIONAL. `dfd.pipeline` routes to an ingest
+        # adapter by extension -- deliberately, because `load_image` on a
+        # video silently returns its first frame -- so a caller who posts
+        # bytes and no name used to get "unsupported file extension ''",
+        # which describes a problem they did not cause and cannot act on.
+        # When the name carries no extension the bytes are asked instead.
+        #
+        # This never overrides a caller who DID name their file: `x.png` is
+        # served as a PNG whatever the bytes look like, because
+        # dispatch-by-extension is the contract the rest of the package is
+        # tested against. `sniff_suffix` returns None unless it is certain,
+        # so an unrecognised stream still reaches the same clear error.
+        if not Path(filename).suffix:
+            sniffed = sniff_suffix(data)
+            if sniffed:
+                filename += sniffed
+                logger.debug("no extension given; bytes look like %s",
+                             sniffed)
         try:
             sid = self._worker.submit_bytes(data, filename=filename,
                                             source="api")

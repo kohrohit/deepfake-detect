@@ -605,3 +605,50 @@ def test_an_unknown_format_is_refused_on_both_routes(server: Any) -> None:
     status, body = _post(server, "/api/analyze?format=rd2", _JPEG_BYTES)
     assert status == 400
     assert "simple" in body["error"] and "rd" in body["error"]
+
+
+def test_analyze_works_with_no_filename_at_all(server: Any) -> None:
+    """`?filename=` is optional: the bytes name themselves.
+
+    Dispatch is by extension, so a caller posting bytes and no name used to
+    get "unsupported file extension ''" — a problem they did not cause and
+    could not act on.
+    """
+    status, body = _post(server, "/api/analyze?format=simple", _JPEG_BYTES)
+    assert status == 200
+    assert "is_deepfake" in body
+    assert body["reason"] == "insufficient_evidence"
+
+
+def test_a_supplied_extension_is_never_overridden_by_the_bytes(
+        server: Any) -> None:
+    # Dispatch-by-extension is the contract the rest of the package is
+    # tested against; sniffing only fills in a name that was missing.
+    status, body = _post(server, "/api/scan?filename=photo.png", _JPEG_BYTES)
+    assert status == 202
+    row = server.worker.store.get(body["id"])
+    assert row.filename == "photo.png"
+
+
+def test_an_unrecognisable_stream_is_left_unnamed(server: Any) -> None:
+    """Guessing wrong is worse than not guessing.
+
+    A wrong suffix routes the file to a decoder that fails confusingly, or
+    silently reads one frame of a video as an image. Leaving the name alone
+    lets `dfd.pipeline`'s existing, clear extension error fire instead --
+    which it does on the real ingest path; this `server` fixture stubs
+    `decide`, so what is checked HERE is the API's own job: whether it
+    completed the name.
+    """
+    status, body = _post(server, "/api/scan", b"this is just prose" * 20)
+    assert status == 202
+    row = server.worker.store.get(body["id"])
+    assert row.filename == "upload", "an unrecognised stream was given a suffix"
+
+
+def test_a_name_without_an_extension_is_completed_from_the_bytes(
+        server: Any) -> None:
+    status, body = _post(server, "/api/scan?filename=holiday", _JPEG_BYTES)
+    assert status == 202
+    row = server.worker.store.get(body["id"])
+    assert row.filename == "holiday.jpg"
