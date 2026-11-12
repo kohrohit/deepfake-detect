@@ -38,7 +38,12 @@ import numpy as np
 import numpy.typing as npt
 import torch.nn as nn
 
-from bench.metrics import auc, kish_ess, tpr_at_fpr
+from bench.metrics import (
+    auc,
+    bootstrap_ci_by_group,
+    kish_ess,
+    tpr_at_fpr,
+)
 from bench.vcip_controls import _encode, find_matching_quality, quant_table
 from corpora.face_pool import DetectFn
 from corpora.provenance import corpus_label
@@ -54,6 +59,11 @@ logger = logging.getLogger(__name__)
 #: The false-alarm budget the product is quoted at. Zero, because a v-CIP
 #: flow that rejects genuine applicants has a cost nobody has priced.
 ZERO_FPR = 0.0
+
+#: Resamples for the session-level interval. Matches the 1,000 every other
+#: grouped bootstrap in this repo uses, so two intervals in one report are
+#: not drawn from different budgets.
+SESSION_BOOTSTRAP = 1000
 
 
 def session_scores(scores: npt.NDArray[np.float64],
@@ -224,6 +234,22 @@ def _block(scores: list[float], labels: list[int], sessions: list[str],
         "kish_ess_frames_by_session": kish_ess(counts),
         "frame_auc": auc(s, y) if both_frames else None,
         "session_auc": auc(sess_s, sess_y) if both_sessions else None,
+        # THE INTERVAL, because the point estimate alone cannot answer the
+        # only question anyone asks of this number: is it above the 0.75
+        # evidence floor? Phase 2 landed at 0.7594 -- clearing the floor by
+        # 0.0094 on 58 genuine and 67 swapped SESSIONS, where a Hanley-McNeil
+        # standard error is around 0.04. Without an interval, "clears the
+        # floor" and "cannot be distinguished from the floor" look identical.
+        # Resampled over SESSIONS, which are already the unit here.
+        "session_auc_ci95": (
+            list(bootstrap_ci_by_group(sess_s, sess_y, sess_ids, auc,
+                                       n=SESSION_BOOTSTRAP, seed=0))
+            if both_sessions else None),
+        "session_auc_ci95_note": (
+            "percentile bootstrap over sessions, n="
+            f"{SESSION_BOOTSTRAP}. The sessions ARE the resampling unit: "
+            "frames within a session are not independent (see "
+            "kish_ess_frames_by_session)."),
         "session_tpr_at_zero_fpr": (tpr_at_fpr(sess_s, sess_y, ZERO_FPR)
                                     if both_sessions else None),
         "per_band_frames": per_band(s, y, np.asarray(bands)),

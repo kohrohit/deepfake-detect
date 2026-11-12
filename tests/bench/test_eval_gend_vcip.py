@@ -148,3 +148,33 @@ def test_the_encoder_shortcut_control_runs_and_is_reported(capture_pair_fixture)
     report = json.loads(capture_pair_fixture.out.read_text())
     assert "uncontrolled" in report and "encoder_matched" in report
     assert report["encoder_matched"]["quality"] is not None
+
+
+def test_the_session_auc_carries_an_interval():
+    """0.7594 against a 0.75 floor is a margin of 0.0094 on 125 sessions.
+
+    Without an interval, "clears the evidence floor" and "cannot be
+    distinguished from the evidence floor" are the same printed number. The
+    resampling unit is the SESSION, because frames within one are not
+    independent -- `kish_ess_frames_by_session` is 106.9 over 509 frames.
+    """
+    from bench.eval_gend_vcip import _block
+
+    rng = np.random.default_rng(0)
+    scores, labels, sessions, bands = [], [], [], []
+    for i in range(40):
+        label = i % 2
+        for _ in range(4):
+            # Deliberately overlapping: a ceiling AUC of 1.0 would make the
+            # interval degenerate and prove nothing about it.
+            scores.append(float(rng.normal(0.55 if label else 0.45, 0.5)))
+            labels.append(label)
+            sessions.append(f"s{i}")
+            bands.append("medium")
+    block = _block(scores, labels, sessions, bands, {})
+    lo, hi = block["session_auc_ci95"]
+    assert block["session_auc"] < 1.0, "fixture is at ceiling"
+    assert lo <= block["session_auc"] <= hi
+    assert hi - lo > 0.0, "a zero-width interval is not an interval"
+    assert 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0
+    assert "sessions ARE the resampling unit" in block["session_auc_ci95_note"]

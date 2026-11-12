@@ -42,6 +42,11 @@
     },
     "quality": 95,
     "session_auc": 0.6631497683993824,
+    "session_auc_ci95": [
+      0.5568763760686045,
+      0.762725462037962
+    ],
+    "session_auc_ci95_note": "percentile bootstrap over sessions, n=1000. The sessions ARE the resampling unit: frames within a session are not independent (see kish_ess_frames_by_session).",
     "session_tpr_at_zero_fpr": 0.014925373134328358,
     "skipped": {
       "no_face": 45
@@ -88,6 +93,11 @@
       }
     },
     "session_auc": 0.6644364384971694,
+    "session_auc_ci95": [
+      0.5593814945332972,
+      0.762130447725649
+    ],
+    "session_auc_ci95_note": "percentile bootstrap over sessions, n=1000. The sessions ARE the resampling unit: frames within a session are not independent (see kish_ess_frames_by_session).",
     "session_tpr_at_zero_fpr": 0.0,
     "skipped": {
       "no_face": 45

@@ -1,0 +1,107 @@
+{
+  "captures": "vkyc_captures",
+  "encoder": "assets/models/clip_vit_l14_lntuned.pt",
+  "encoder_matched": {
+    "distinct_tables": 1,
+    "frame_auc": 0.6594918842625265,
+    "kish_ess_frames_by_session": 106.92571192736277,
+    "measured": true,
+    "n_frames": 509,
+    "n_genuine_sessions": 58,
+    "n_sessions": 125,
+    "n_swapped_sessions": 67,
+    "per_band_frames": {
+      "high": {
+        "auc": null,
+        "n": 27,
+        "n_genuine": 27,
+        "n_swapped": 0,
+        "tpr_at_zero_fpr": null
+      },
+      "low": {
+        "auc": 0.65,
+        "n": 12,
+        "n_genuine": 2,
+        "n_swapped": 10,
+        "tpr_at_zero_fpr": 0.5
+      },
+      "medium": {
+        "auc": 0.6984957488554611,
+        "n": 238,
+        "n_genuine": 139,
+        "n_swapped": 99,
+        "tpr_at_zero_fpr": 0.15151515151515152
+      },
+      "reject": {
+        "auc": 0.7067496723460026,
+        "n": 232,
+        "n_genuine": 14,
+        "n_swapped": 218,
+        "tpr_at_zero_fpr": 0.44036697247706424
+      }
+    },
+    "quality": 95,
+    "session_auc": 0.7593926917138446,
+    "session_auc_ci95": [
+      0.671613642428045,
+      0.8392337662337662
+    ],
+    "session_auc_ci95_note": "percentile bootstrap over sessions, n=1000. The sessions ARE the resampling unit: frames within a session are not independent (see kish_ess_frames_by_session).",
+    "session_tpr_at_zero_fpr": 0.13432835820895522,
+    "skipped": {
+      "no_face": 45
+    },
+    "what": "genuine half re-encoded at quality 95, the one reproducing the swapped half's table exactly"
+  },
+  "how_to_read": "Quote `encoder_matched`. `uncontrolled` is reported so the size of the encoder shortcut is visible, not so it can be cited: one JPEG header byte labels 99.2% of this corpus. EVALUATION ONLY \u2014 nothing here was fitted on these captures, and spec \u00a76.4 forbids it.",
+  "uncontrolled": {
+    "frame_auc": 0.6440501394629835,
+    "kish_ess_frames_by_session": 106.92571192736277,
+    "measured": true,
+    "n_frames": 509,
+    "n_genuine_sessions": 58,
+    "n_sessions": 125,
+    "n_swapped_sessions": 67,
+    "per_band_frames": {
+      "high": {
+        "auc": null,
+        "n": 23,
+        "n_genuine": 23,
+        "n_swapped": 0,
+        "tpr_at_zero_fpr": null
+      },
+      "low": {
+        "auc": 0.55,
+        "n": 12,
+        "n_genuine": 2,
+        "n_swapped": 10,
+        "tpr_at_zero_fpr": 0.5
+      },
+      "medium": {
+        "auc": 0.6756854256854257,
+        "n": 239,
+        "n_genuine": 140,
+        "n_swapped": 99,
+        "tpr_at_zero_fpr": 0.0707070707070707
+      },
+      "reject": {
+        "auc": 0.6600107933081489,
+        "n": 235,
+        "n_genuine": 17,
+        "n_swapped": 218,
+        "tpr_at_zero_fpr": 0.40825688073394495
+      }
+    },
+    "session_auc": 0.7555326814204838,
+    "session_auc_ci95": [
+      0.6636347218313163,
+      0.8369598269628937
+    ],
+    "session_auc_ci95_note": "percentile bootstrap over sessions, n=1000. The sessions ARE the resampling unit: frames within a session are not independent (see kish_ess_frames_by_session).",
+    "session_tpr_at_zero_fpr": 0.08955223880597014,
+    "skipped": {
+      "no_face": 45
+    }
+  },
+  "weights": "assets/models/gend_clip_lntuned.pt"
+}
