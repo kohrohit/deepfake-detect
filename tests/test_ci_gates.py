@@ -348,3 +348,28 @@ def test_generated_build_metadata_is_not_tracked():
     """
     tracked = [f for f in _tracked_files() if ".egg-info/" in f]
     assert not tracked, f"generated build metadata is tracked: {tracked}"
+
+
+def test_the_deploy_never_deletes_phase_2s_weights():
+    """`assets/models/*_lntuned.*` exist on the instance and nowhere else.
+
+    `training/fit_gend.py --tune-layernorms` produces them ON the deployment
+    box -- `clip_vit_l14_lntuned.pt` is 1.2GB and took nine hours -- and they
+    are gitignored, so they are never in the local tree `deploy-ec2.sh`
+    mirrors FROM. The script rsyncs with `--delete`. Without this exclude the
+    next deploy removes them silently, with no copy anywhere.
+
+    `--delete-excluded` must stay absent for the exclude to protect rather
+    than merely skip; the script's own comment says so for the venv, and the
+    same sentence is what saves these.
+    """
+    script = (ROOT / "ops/deploy-ec2.sh").read_text()
+    assert "--exclude='assets/models/*_lntuned.*'" in script
+    # The flag, not the word: the script's own comments discuss
+    # `--delete-excluded` at length to explain why it is absent, so a bare
+    # substring search finds those and proves nothing.
+    live = [ln for ln in script.splitlines()
+            if "--delete-excluded" in ln and not ln.lstrip().startswith("#")]
+    assert not live, (
+        f"--delete-excluded is actually passed ({live}); it would delete "
+        f"exactly what the excludes protect")

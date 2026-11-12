@@ -116,6 +116,19 @@ echo "==> syncing code and weights"
 # below are NOT synced, so they must never be deleted either: --delete-excluded
 # is deliberately absent. The remote venv lives in the repo dir and would be
 # the first casualty.
+#
+# ...and so, nearly, were Phase 2's weights. assets/models/*_lntuned.* --
+# clip_vit_l14_lntuned.pt (1.2GB), gend_clip_lntuned.pt, calibration_lntuned.json
+# -- are produced ON the instance by training/fit_gend.py --tune-layernorms and
+# are gitignored, so they exist in exactly one place on earth and never in the
+# local tree rsync is mirroring FROM. Without this exclude, --delete removes
+# nine hours of compute on the next deploy, silently, with no copy anywhere.
+# Caught on 2026-11-12 by backing them up before a deploy rather than after.
+#
+# They are excluded rather than shipped because they cannot be shipped: they
+# are gitignored research artefacts, the registry does not load them, and
+# nothing in a release depends on them. A fresh instance simply will not have
+# them, which is correct -- it has not run Phase 2.
 # On the --fetch-remote route the two CLIP files are excluded here and built
 # on the instance below. They are excluded rather than deleted: --delete is on,
 # but rsync never deletes what it was told not to look at (--delete-excluded is
@@ -142,6 +155,7 @@ rsync -az --delete --info=stats1 \
   --exclude='*.pdf' \
   --exclude='*.pem' \
   --exclude='assets/models/dima806/' \
+  --exclude='assets/models/*_lntuned.*' \
   "$REPO/" "$TARGET:$REMOTE_DIR/"
 
 echo "==> installing interpreter and dependencies"
