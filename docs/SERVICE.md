@@ -66,6 +66,54 @@ Without systemd, the same thing in the foreground:
 python3 -m dfd.service -v
 ```
 
+## `?format=simple` — is this a deepfake, and how sure are you
+
+The three-field view, for a caller who wants a boolean rather than four
+detectors and their reasons. Available on both
+`POST /api/analyze?format=simple` and
+`GET /api/submissions/<id>?format=simple`.
+
+```json
+{
+  "is_deepfake": null,
+  "confidence": null,
+  "verdict": "UNKNOWN",
+  "reason": "insufficient_evidence",
+  "detectors_consulted": 4,
+  "detectors_that_decided": 0,
+  "why_no_answer": [
+    {"name": "blend_seam", "reason": "below_quality_floor"},
+    {"name": "effnet_b4",  "reason": "weights_absent"},
+    {"name": "gend_clip",  "reason": "uncalibrated_for_band"},
+    {"name": "npr",        "reason": "uncalibrated_for_band"}
+  ],
+  "quality_band": "reject",
+  "schema_version": 1
+}
+```
+
+**`confidence` is `null` when `is_deepfake` is `null`, and never `0.5`.** That
+is the one property of this format worth knowing before integrating against
+it. A `0.5` would be a number, and a caller who thresholds numbers would
+extract a verdict from a refusal to give one — undoing the evidence gate with
+one convenient default. `null` cannot be thresholded.
+
+**`confidence` is in the ANSWER GIVEN, not in "fake".** `is_deepfake: true`
+with `confidence: 0.9` means 90% sure it IS manipulated; `is_deepfake: false`
+with `confidence: 0.9` means 90% sure it is NOT. For a single P(fake) axis use
+`?format=rd`'s `score`, which is the recorded posterior.
+
+**Today every request returns `null`.** That is not a fault and not a
+placeholder: no detector in this deployment is measured above the 0.75
+evidence floor (`bench/evidence_card.json`, `dfd/service/evidence.py`), so
+none of them is permitted to decide. `why_no_answer` names each one and why,
+so a null answer is distinguishable from a server fault without a second
+request. The format starts returning real verdicts the moment a detector
+clears the floor — nothing about the endpoint needs to change then.
+
+It is a projection of the same audit record `?format=rd` serves, not a second
+opinion, so the two cannot disagree about one submission.
+
 ## Use
 
 Three ways in, one way out.

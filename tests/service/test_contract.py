@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from dfd.audit import AuditRecord
-from dfd.service.contract import rd_response
+from dfd.service.contract import rd_response, simple_response
 from dfd.types import Verdict
 
 
@@ -132,3 +132,74 @@ def test_the_stored_json_form_of_a_record_is_accepted_too():
     import json
     rec = _record(verdict=Verdict.FAKE, posterior=0.9)
     assert rd_response(json.loads(rec.to_json())) == rd_response(rec)
+
+
+# --- the three-field view ---------------------------------------------------
+
+
+def test_an_abstention_has_a_null_confidence_not_a_half():
+    """The one property this format must never lose.
+
+    A `confidence: 0.5` on an UNKNOWN is a NUMBER, and a caller who
+    thresholds numbers would extract a verdict from a refusal to give one --
+    undoing the evidence gate with one convenient default in a convenience
+    format. `null` cannot be thresholded.
+    """
+    rec = _record(verdict=Verdict.INSUFFICIENT_EVIDENCE, posterior=0.5,
+                  evidence=(_evidence("gend_clip", abstained=True,
+                                      reason="uncalibrated_for_band",
+                                      raw=0.32),))
+    out = simple_response(rec)
+    assert out["is_deepfake"] is None
+    assert out["confidence"] is None
+    assert out["reason"] == "insufficient_evidence"
+
+
+def test_a_null_answer_names_every_detector_that_declined():
+    # So a caller can tell "nothing is measured well enough" from "the
+    # server fell over", without a second request.
+    rec = _record(verdict=Verdict.INSUFFICIENT_EVIDENCE, posterior=0.5,
+                  evidence=(_evidence("gend_clip", abstained=True,
+                                      reason="uncalibrated_for_band"),
+                            _evidence("effnet_b4", abstained=True,
+                                      reason="weights_absent", raw=None)))
+    out = simple_response(rec)
+    assert out["detectors_consulted"] == 2
+    assert out["detectors_that_decided"] == 0
+    assert {w["name"] for w in out["why_no_answer"]} == {"gend_clip",
+                                                         "effnet_b4"}
+    assert {w["reason"] for w in out["why_no_answer"]} == {
+        "uncalibrated_for_band", "weights_absent"}
+
+
+def test_confidence_is_in_the_answer_given_not_in_fake():
+    # MANIPULATED at posterior 0.9 is 90% confident it IS a deepfake.
+    fake = simple_response(_record(verdict=Verdict.FAKE, posterior=0.9,
+                                   llr_total=2.0,
+                                   evidence=(_evidence("npr", llr=2.0),)))
+    assert fake["is_deepfake"] is True
+    assert fake["confidence"] == pytest.approx(0.9)
+
+    # AUTHENTIC at posterior 0.1 is 90% confident it is NOT one. Reporting
+    # 0.1 here would read as "10% confident it is authentic", which is the
+    # opposite of what the record says.
+    real = simple_response(_record(verdict=Verdict.REAL, posterior=0.1,
+                                   llr_total=-2.0,
+                                   evidence=(_evidence("npr", llr=-2.0),)))
+    assert real["is_deepfake"] is False
+    assert real["confidence"] == pytest.approx(0.9)
+
+
+def test_out_of_distribution_is_also_a_null_answer():
+    # "I have never seen anything like this" is not "this is fine".
+    out = simple_response(_record(verdict=Verdict.OUT_OF_DISTRIBUTION,
+                                  posterior=0.5))
+    assert out["is_deepfake"] is None and out["confidence"] is None
+
+
+def test_it_accepts_the_json_form_the_store_reads_back():
+    # The route serving this never reconstructs the dataclass.
+    import json
+    rec = _record(verdict=Verdict.FAKE, posterior=0.8, llr_total=1.0,
+                  evidence=(_evidence("npr", llr=1.0),))
+    assert simple_response(json.loads(rec.to_json())) == simple_response(rec)

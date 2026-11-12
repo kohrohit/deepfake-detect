@@ -2996,13 +2996,22 @@ numbers as load-bearing references, not as ordering.
 
 ---
 
-### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning — **IN FLIGHT 2026-11-11**
+### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning — **DONE 2026-11-12** (`cee335e`)
 
 **Gate check: Task 6 said run it.** `bench/clip_latency.md`'s ruling is "Phase 2 IS runnable here
 and is NOT blocked on the GPU decision", so this task is not blocked on owner-action item 7.
 
-**Status.** Steps 1–4 are done and committed (`35e93bb`, `a428878`); Step 5 — re-measure and
-re-report — is waiting on a 5-epoch run live on the deployment instance since 18:12 UTC. Eight
+**Status: COMPLETE.** The run finished 02:10 UTC, the measurement chain 04:04, and the verdict
+rendered itself into `bench/phase2_verdict.md`. **All thirteen tasks of this plan are done.**
+
+**The result, in one line: Phase 2 is positive in direction on every unbiased measure and
+established on none of them.** The paired capture-corpus delta is +0.0962 with 95% CI
+[-0.0072, +0.1993] over 125 sessions, and the 0.75 evidence floor is NOT cleared despite a 0.7594
+point estimate, whose own interval is [0.672, 0.839]. `bench/evidence_card.json` is deliberately
+untouched and the gate stays shut.
+
+*(Superseded status note, kept because the plan is a record: Steps 1–4 were committed in
+`35e93bb` and `a428878` while Step 5 was still running.)* Eight
 tests cover the fitter, and the 102,400-parameter / 0.034% claim is verified against the real
 ViT-L/14, not only against the tiny test tower. A chain script on the instance
 (`~/dfd/lntune_chain.sh`) fires Tasks 7, 8 and 9 against the tuned pair the moment the fit exits,

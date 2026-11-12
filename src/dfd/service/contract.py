@@ -131,3 +131,60 @@ def _model_verdict(evidence: Mapping[str, Any]) -> str | None:
     if llr > 0:
         return "MANIPULATED"
     return "AUTHENTIC" if llr < 0 else None
+
+
+#: The simplest question a caller can ask: is this a deepfake, and how sure
+#: are you. `rd_response` answers it with four detectors and their reasons;
+#: this answers it with three fields, for an integrator who wants a boolean.
+SIMPLE_SCHEMA_VERSION = 1
+
+
+def simple_response(record: AuditRecord | Mapping[str, Any]) -> dict[str, Any]:
+    """`{is_deepfake, confidence, reason}` — the three-field view.
+
+    THE ONE RULE THAT MATTERS HERE: **an abstention has no confidence.**
+    When the system cannot say, `is_deepfake` is `null` and `confidence` is
+    `null` — never `0.5`. A 0.5 would be a number, and a caller who
+    thresholds numbers would extract a verdict from a refusal to give one;
+    that is precisely the failure this service's evidence gate exists to
+    prevent, and it would be undone by one convenient default in a
+    convenience format. `null` cannot be thresholded.
+
+    CONFIDENCE IS IN THE ANSWER GIVEN, not in "fake". For MANIPULATED it is
+    the posterior P(fake); for AUTHENTIC it is P(authentic) = 1 - posterior.
+    A caller who wants a single P(fake) axis should use `rd_response`'s
+    `score`, which is the recorded posterior and never a recomputation.
+
+    `why_no_answer` names every detector that declined and why, so a null
+    answer is distinguishable from a server fault without a second request.
+    On this deployment that list IS the answer: no detector is measured above
+    the 0.75 evidence floor, so all of them decline.
+    """
+    rd = rd_response(record)
+    verdict = rd["verdict"]
+    score = float(rd["score"])
+
+    if verdict == "MANIPULATED":
+        is_deepfake: bool | None = True
+        confidence: float | None = score
+    elif verdict == "AUTHENTIC":
+        is_deepfake, confidence = False, 1.0 - score
+    else:
+        is_deepfake, confidence = None, None
+
+    silent = [{"name": m["name"], "reason": m["reason"]}
+              for m in rd["models"] if m["abstained"]]
+    deciding = [m for m in rd["models"] if not m["abstained"]]
+
+    return {
+        "is_deepfake": is_deepfake,
+        "confidence": confidence,
+        "verdict": verdict,
+        "reason": ("decided" if is_deepfake is not None
+                   else "insufficient_evidence"),
+        "detectors_consulted": len(rd["models"]),
+        "detectors_that_decided": len(deciding),
+        "why_no_answer": silent if is_deepfake is None else [],
+        "quality_band": rd["quality_band"],
+        "schema_version": SIMPLE_SCHEMA_VERSION,
+    }

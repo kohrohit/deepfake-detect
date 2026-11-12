@@ -125,6 +125,54 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
+## Where this project actually stands (2026-11-12)
+
+**Engineering on the written plans is complete. The product cannot ship, and not for engineering
+reasons.** All 13 tasks of the slot D plan are done, the 22-task P0 plan and the 6-task
+composition-root plan before it were done, `main` carries all of it (`78a13e0`), the instance runs
+it, 1,143 tests pass and both CI legs are green.
+
+**What stops it shipping is that nothing has been shown to work.** The evidence gate
+(`dfd/service/evidence.py`) returns an empty set, every detector abstains by name, and that is the
+honest output rather than a bug:
+
+| slot | best honest number | why it does not decide |
+|---|---|---|
+| D `gend_clip` frozen | capture-corpus session AUC **0.663** | below the 0.75 floor |
+| D `gend_clip` tuned (Phase 2) | **0.7594**, 95% CI **[0.672, 0.839]** | point estimate clears the floor; the interval contains it, and the paired gain over frozen is [-0.0072, +0.1993] |
+| C `npr` (capture-fitted) | **0.956** held out, session folds | `commercial_use: false` — fitted on inswapper_128 output and on the capture corpus; cannot ship at all, and the card carries `auc: null` for it |
+| A `blend_seam` | card says **0.289** on `df40_eval_subset` | that corpus was ruled able to neither support nor refute anything (every number on it is inside its own permutation null). Its fit-time holdouts are higher but are not evidence |
+| E `effnet_b4` | `auc: null` | no weights; the licensed ones cannot ship |
+| `dima806_vit` | **0.5214** | chance, measured; not wired into the registry |
+
+Four of the five carry `auc: null` or a number below the floor, and the fifth
+(`gend_clip` at 0.663) is the only one the gate names in its refusal.
+`gated_detectors(load_card())` returns the empty set, verified today.
+
+**The three things that would change that, none of which is code:**
+
+1. **A data-protection opinion** (owner-action 6). Every number above rests on an owner
+   attestation nobody with standing has reviewed, and FairFace's CC BY settles copyright, not
+   biometric consent. This gates whether either corpus may lawfully be used at all, so it gates
+   everything else.
+2. **A real generator corpus** (owner-action 2). Nothing in this repository has ever been measured
+   against FSGAN, SimSwap, InSwapper or a diffusion pipeline on licence-clean data. Every
+   shippable number comes from self-blends and classical composites this repo makes itself.
+3. **Somebody's fraud-loss and friction numbers** (owner-action 5). Every threshold is a
+   placeholder until then.
+
+**What is left that IS code, and it is small:**
+
+- `corpora/face_pool.py` and `corpora/swap_corpus.py` still select the most-confident face where
+  the serving path selects the largest. Deferred on 2026-11-12 because they build the corpus
+  Phase 2 was training on at the time; that run is finished, so this can now be converted and the
+  measurement re-run. The reason is written into both files.
+- Phase 2's leave-one-generator-out is contaminated at the encoder and an honest version needs one
+  tuned encoder per fold — five runs at ~9 hours. Recorded, not fixed; `bench/phase2_verdict.md`
+  prints the caveat above every verdict.
+- Slot D's capture-corpus number still has no CI in `bench/evidence_card.json` (`auc_ci95` is
+  null). `eval_gend_vcip` now computes one, so the card can be filled in next time it is written.
+
 ## Slot D — read this first (2026-11-11, after slot D was measured, calibrated and deployed)
 
 *Deliberately not numbered. Nineteen places in this document say "§0" meaning the
@@ -328,7 +376,7 @@ what it costs and what it buys, so none of them needs re-deriving before it can 
 |---|---|---|---|
 | 1 | ~~**Create a Kaggle account and accept SFHQ's terms**~~ **STRUCK 2026-09-24 — blocked upstream AND not needed.** SFHQ part 3 is already downloaded, and no installable Kaggle client can read the access token Kaggle now issues (`docs/EULA-ACCESS.md` §4a item 1) | — | nothing; it is off the critical path |
 | 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3). **Now item 1 in practice**, and DF40's own form turns out to sit downstream of it rather than beside it (§4b) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
-| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, ~~12~~ **59 commits** ahead of `main`, 0 behind, MERGEABLE, open since 2026-09-22 with no review) | a review, and it is no longer a small one | everything downstream lands on `main` rather than a branch. **This is now the critical path, not a tidy-up** — see the note below the table |
+| 3 | ~~**Review and merge PR #3**~~ **DONE 2026-11-12.** Reviewed against a clean worktree at its tip (seven defects found, all fixed in PR #4), merged as `6fa7eb5` with a merge commit — squash was measured at 18 conflicted files when slot D followed, against zero. Slot D merged after it as `f8391f5`, the deploy fix as `78a13e0`. `main` is no longer frozen at September. | done | done |
 | 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
 | 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
 | 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
