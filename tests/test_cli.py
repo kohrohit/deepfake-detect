@@ -268,3 +268,51 @@ def test_score_runs_without_calibration_and_says_nothing_was_loaded(
         cli.main(["score", str(img),
                   "--calibration", str(tmp_path / "missing.json")])
     assert not seen["calibrators"]
+
+
+def test_the_calibration_default_follows_the_resolved_slot_d_pair(png, tmp_path,
+                                                                  capsys):
+    """Omitting --calibration must ask the registry, not a constant.
+
+    The default was the literal `assets/models/calibration.json`, so a
+    checkout with Phase 2's weights installed scored with the tuned model
+    and calibrated with the frozen model's curve. The CLI applies no
+    evidence gate, so unlike the service it emitted real verdicts off that
+    pairing.
+    """
+    curve = tmp_path / "resolved.json"
+    curve.write_text(json.dumps({"format_version": 1, "detectors": {}}))
+
+    with mock.patch("dfd.cli.slot_d_calibration", return_value=curve) as res:
+        main(["score", str(png), "--face-model", MISSING_FACE_MODEL])
+
+    res.assert_called_once()
+    json.loads(capsys.readouterr().out)
+
+
+def test_an_explicit_calibration_still_wins_over_the_resolver(png, tmp_path,
+                                                             capsys):
+    """The escape hatch stays open; only the DEFAULT changed."""
+    curve = tmp_path / "explicit.json"
+    curve.write_text(json.dumps({"format_version": 1, "detectors": {}}))
+
+    with mock.patch("dfd.cli.slot_d_calibration") as res:
+        main(["score", str(png), "--calibration", str(curve),
+              "--face-model", MISSING_FACE_MODEL])
+
+    res.assert_not_called()
+    json.loads(capsys.readouterr().out)
+
+
+def test_an_unresolvable_calibration_runs_uncalibrated_rather_than_guessing(
+        png, capsys):
+    """`slot_d_calibration` returns None when the tuned pair has no curve.
+
+    The CLI must treat that as "no calibration" and still produce a record,
+    not fall back to the frozen curve and not crash.
+    """
+    with mock.patch("dfd.cli.slot_d_calibration", return_value=None):
+        assert main(["score", str(png),
+                     "--face-model", MISSING_FACE_MODEL]) == 0
+
+    json.loads(capsys.readouterr().out)

@@ -179,6 +179,35 @@ Four of the five carry `auc: null` or a number below the floor, and the fifth
   `tests/service/test_evidence.py` now pin the card to that artefact and assert the straddle, so
   neither can change silently.
 
+### The calibration flag — fixed 2026-11-12
+
+**PR #9's defect had a twin, and this one was not inert.** `slot_d_pair()` resolves slot D's
+weights at runtime, but the calibration path was a literal in two places: `ops/dfd.service`
+passed `--calibration __REPO__/assets/models/calibration.json`, and `dfd.cli`'s flag defaulted
+to the same constant. On an instance carrying Phase 2's weights that meant the **tuned** model
+produced the score and the **frozen** model's curve interpreted it.
+
+The service was shielded by the evidence gate, which discards the curve of any detector it has
+not cleared — so there the bug was latent, waiting for the gate to open. **The CLI applies no
+such gate**, so it was emitting real verdicts off the mispairing. Demonstrated on the instance:
+
+    gend_clip version : 0.2.0-lntuned-fairface2000    <- tuned model scored
+    calibration       : assets/models/calibration.json <- frozen curve interpreted
+    raw 0.008388, reject band -> llr -3.8441   (correct curve: -4.0174)
+    verdict: real
+
+`dfd.detectors.registry.slot_d_calibration()` now resolves the curve **from `slot_d_pair()`**
+rather than from its own `is_file` checks, so the two can never disagree. It returns the tuned
+curve for the tuned pair, the frozen curve for the frozen pair, and **`None`** when the tuned
+pair is installed without its own curve — running uncalibrated rather than borrowing the frozen
+one, because borrowing is the defect. An explicit `--calibration` still wins in both entry
+points; only the default changed.
+
+`tests/service/test_main.py` is new, and exists because PR #9's commit message already said
+why the tests missed it: the composition root — where flags become a `ServiceConfig` — had no
+coverage at all. It now also asserts that the shipped unit file passes no `--calibration`,
+since a correct default is inert if the unit overrides it.
+
 ## Slot D — read this first (2026-11-11, after slot D was measured, calibrated and deployed)
 
 *Deliberately not numbered. Nineteen places in this document say "§0" meaning the

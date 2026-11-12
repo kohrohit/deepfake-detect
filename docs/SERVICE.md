@@ -266,6 +266,26 @@ that does not exist. Run the fitter when a detector clears the gate. Fitting
 a curve is not a licence to decide: that is the gate's job, and it reads
 measured cross-corpus AUC, not this file.
 
+**A curve belongs to the weights it was fitted on, and the default now says
+so.** `coef` and `intercept` describe where one particular model puts reals
+and fakes; applied to a different model's scores they still produce a
+confident number and the number is wrong. `--calibration` therefore defaults
+to whatever `dfd.detectors.registry.slot_d_calibration()` resolves — the
+tuned curve when Phase 2's pair is installed, the frozen curve when it is
+not, and **nothing at all** when the tuned pair is installed without its own
+curve. That last case runs uncalibrated on purpose: borrowing the frozen
+curve is the defect this resolution exists to prevent.
+
+Fixed 2026-11-12. `ops/dfd.service` used to pass
+`--calibration assets/models/calibration.json` as a literal while the
+registry resolved the tuned pair underneath it — PR #9's defect in a second
+place. The CLI had the same constant as its flag default, and because the
+CLI applies no evidence gate it was emitting real verdicts off the
+mispairing: on the instance, raw 0.008388 in the `reject` band read llr
+**-3.8441** under the frozen curve against **-4.0174** under its own. Pass
+`--calibration` explicitly only to pin a curve, and pin the weights to
+match.
+
 ## Operations
 
 - **Crash recovery.** A submission is `running` only while a worker holds it.
