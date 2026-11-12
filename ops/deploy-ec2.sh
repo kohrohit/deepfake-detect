@@ -246,7 +246,6 @@ Score a file without the dashboard:
     ssh -i $KEY $TARGET 'cd $REMOTE_DIR && .venv/bin/python -c "
 from dfd.cli import main; import sys
 sys.exit(main([\"score\",\"IMAGE.jpg\",
-  \"--calibration\",\"assets/models/calibration.json\",
   \"--face-model\",\"assets/models/face_detection_yunet_2023mar.onnx\",
   \"--pretty\"]))"'
 

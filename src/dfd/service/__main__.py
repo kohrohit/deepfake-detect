@@ -16,6 +16,7 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
+from ..detectors.registry import slot_d_calibration
 from ..policy import DEFAULT_POLICY, Policy
 from .app import DEFAULT_ROOT, ServiceConfig, build_service
 
@@ -42,7 +43,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="SQLite database (default: <root>/dfd.sqlite3)")
     p.add_argument("--calibration", type=Path, default=None,
                    help="calibration JSON from training.fit_calibration. "
-                        "Without it every verdict is insufficient_evidence.")
+                        "Defaults to the curve matching whichever slot D "
+                        "pair is installed, so a tuned model is never read "
+                        "through the frozen model's curve. Without a curve "
+                        "every verdict is insufficient_evidence.")
     p.add_argument("--evidence", type=Path,
                    default=Path("bench/evidence_card.json"),
                    help="measured detector report card shown on the dashboard")
@@ -82,7 +86,15 @@ def config_from_args(args: argparse.Namespace) -> ServiceConfig:
         inbox=args.inbox or root / "inbox",
         workdir=args.workdir or root / "work",
         evidence_path=args.evidence,
-        calibration_path=args.calibration,
+        # RESOLVED, NOT PASSED THROUGH. `ops/dfd.service` used to hand us
+        # the frozen curve as a literal while `slot_d_pair()` resolved the
+        # tuned weights underneath it, so the tuned model's scores were
+        # calibrated by the frozen model's curve -- PR #9's defect in a
+        # second place. An explicit flag still wins; `None` now means "ask
+        # the registry", and the registry may answer `None` for "no curve
+        # matches the installed pair, so run uncalibrated".
+        calibration_path=(args.calibration if args.calibration is not None
+                          else slot_d_calibration()),
         blend_weights=args.blend_weights,
         face_model=args.face_model,
         policy=Policy(fake_threshold=args.fake_threshold,

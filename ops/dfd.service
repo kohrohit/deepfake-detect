@@ -23,8 +23,14 @@ ExecStart=__PYTHON__ -m dfd.service \
     --root %h/.local/share/dfd \
     --evidence __REPO__/bench/evidence_card.json \
     --blend-weights __REPO__/assets/models/blend_seam.npz \
-    --face-model __REPO__/assets/models/face_detection_yunet_2023mar.onnx \
-    --calibration __REPO__/assets/models/calibration.json
+    --face-model __REPO__/assets/models/face_detection_yunet_2023mar.onnx
+
+# NO --calibration, DELIBERATELY. The curve must match the slot D weights
+# the registry resolves at runtime, and this file is written once at install
+# time. Passing the frozen path here is how the tuned model came to be
+# calibrated by the frozen model's curve on the instance; the service now
+# asks `dfd.detectors.registry.slot_d_calibration()` instead. Pass the flag
+# only to pin a specific curve, and then pin the weights to match.
 
 # Restart on any exit, including a clean one: a detection service that has
 # stopped is indistinguishable from one that is up and scoring nothing, and

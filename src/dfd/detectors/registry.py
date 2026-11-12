@@ -30,6 +30,12 @@ DEFAULT_CLIP_WEIGHTS = Path("assets/models/clip_vit_l14_visual.pt")
 DEFAULT_GEND_LNTUNED_WEIGHTS = Path("assets/models/gend_clip_lntuned.pt")
 DEFAULT_CLIP_LNTUNED_WEIGHTS = Path("assets/models/clip_vit_l14_lntuned.pt")
 
+#: Slot D's calibration, in the two flavours that match its two weight pairs.
+#: `training/fit_calibration.py` writes one file per pair; a curve is fitted on
+#: a specific model's scores and means nothing applied to another's.
+DEFAULT_CALIBRATION = Path("assets/models/calibration.json")
+DEFAULT_CALIBRATION_LNTUNED = Path("assets/models/calibration_lntuned.json")
+
 
 def slot_d_pair() -> tuple[Path, Path]:
     """`(head, encoder)` for slot D: Phase 2's pair when it is installed.
@@ -63,6 +69,53 @@ def slot_d_pair() -> tuple[Path, Path]:
             "through the frozen encoder is a model nobody fitted.",
             encoder.name, encoder.is_file(), head.name, head.is_file())
     return DEFAULT_GEND_WEIGHTS, DEFAULT_CLIP_WEIGHTS
+
+
+def slot_d_calibration() -> Path | None:
+    """The calibration file matching whichever pair `slot_d_pair` resolved.
+
+    IT RESOLVES FROM `slot_d_pair`, NOT FROM ITS OWN `is_file` CHECKS, and
+    that is the point. A calibration curve is fitted on one model's scores:
+    `coef` and `intercept` describe where THAT model puts reals and fakes.
+    Applied to a different model's scores it still produces a confident
+    number, and the number is wrong.
+
+    This is PR #9's defect wearing different clothes. There, `ServiceConfig`
+    defaulted the weight paths to the frozen constants and passed them over
+    the top of `slot_d_pair`. Here, `ops/dfd.service` passed
+    `--calibration assets/models/calibration.json` as a literal while the
+    registry resolved the tuned pair underneath it, so the tuned model's
+    scores were read through the frozen model's curve. Measured on the
+    instance 2026-11-12: raw 0.008388 in the `reject` band reads llr -3.8441
+    under the frozen curve against -4.0174 under its own. Small on that
+    frame, systematic across every frame, and invisible in the output --
+    both numbers look equally confident.
+
+    Returns:
+        The tuned curve when the tuned pair is installed, the frozen curve
+        when it is not, and `None` when the tuned pair is installed but its
+        curve is absent.
+
+    `None` RATHER THAN A FALLBACK. Returning the frozen curve for a tuned
+    pair is the defect this function exists to prevent, so the missing-curve
+    case must not land back on it. No calibration makes slot D abstain with
+    `uncalibrated_for_band` -- visible and harmless, which is the direction
+    this project fails in everywhere else.
+    """
+    head, _ = slot_d_pair()
+    if head != DEFAULT_GEND_LNTUNED_WEIGHTS:
+        return DEFAULT_CALIBRATION
+    if DEFAULT_CALIBRATION_LNTUNED.is_file():
+        logger.info("slot D: using the Phase 2 calibration %s",
+                    DEFAULT_CALIBRATION_LNTUNED.name)
+        return DEFAULT_CALIBRATION_LNTUNED
+    logger.warning(
+        "slot D: the tuned pair is installed but its calibration %s is "
+        "absent. Running UNCALIBRATED rather than borrowing %s, which was "
+        "fitted on the frozen model's scores and would describe a model "
+        "nobody fitted.",
+        DEFAULT_CALIBRATION_LNTUNED.name, DEFAULT_CALIBRATION.name)
+    return None
 
 
 def default_registry(npr_weights: str | Path = DEFAULT_NPR_WEIGHTS,

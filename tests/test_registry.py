@@ -400,3 +400,84 @@ def test_overriding_one_half_of_the_pair_is_refused():
         default_registry(gend_weights="x.pt")
     with pytest.raises(ValueError, match="go together"):
         default_registry(clip_weights="x.pt")
+
+
+def test_the_tuned_pair_gets_the_calibration_it_was_fitted_with(tmp_path,
+                                                                monkeypatch):
+    """A curve belongs to the model whose scores it was fitted on.
+
+    `slot_d_pair` resolves the weights at runtime, but the calibration path
+    was a constant in `ops/dfd.service` and a constant default in the CLI,
+    so the tuned model's scores were read through the frozen model's curve.
+    Measured on the instance 2026-11-12: raw 0.008388 reads llr -3.8441
+    under the frozen curve and -4.0174 under its own. Same class of defect
+    as PR #9 -- config answering a question the registry had already
+    resolved.
+    """
+    from dfd.detectors import registry as reg
+
+    head, enc = tmp_path / "h.pt", tmp_path / "e.pt"
+    calib = tmp_path / "calibration_lntuned.json"
+    for p in (head, enc, calib):
+        p.write_bytes(b"x")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS", enc)
+    monkeypatch.setattr(reg, "DEFAULT_CALIBRATION_LNTUNED", calib)
+
+    assert reg.slot_d_calibration() == calib
+
+
+def test_a_tuned_pair_without_its_curve_refuses_the_frozen_one(tmp_path,
+                                                               monkeypatch):
+    """Fails closed, and that is the whole point of the function.
+
+    Borrowing the frozen curve here is exactly the defect being fixed, so
+    the absent-curve case must not quietly land back on it. `None` means no
+    calibration, which makes slot D abstain with `uncalibrated_for_band` --
+    visible, and harmless.
+    """
+    from dfd.detectors import registry as reg
+
+    head, enc = tmp_path / "h.pt", tmp_path / "e.pt"
+    head.write_bytes(b"h")
+    enc.write_bytes(b"e")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS", enc)
+    monkeypatch.setattr(reg, "DEFAULT_CALIBRATION_LNTUNED",
+                        tmp_path / "missing.json")
+
+    assert reg.slot_d_calibration() is None
+
+
+def test_the_frozen_pair_keeps_the_frozen_calibration(tmp_path, monkeypatch):
+    from dfd.detectors import registry as reg
+
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS",
+                        tmp_path / "missing_head.pt")
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS",
+                        tmp_path / "missing_enc.pt")
+
+    assert reg.slot_d_calibration() == reg.DEFAULT_CALIBRATION
+
+
+def test_the_calibration_resolves_in_lockstep_with_the_pair(tmp_path,
+                                                            monkeypatch):
+    """The two decisions must never disagree, so they share one test.
+
+    A future edit that changes which pair is resolved without changing
+    which curve is resolved reintroduces the defect, and nothing else
+    would catch it.
+    """
+    from dfd.detectors import registry as reg
+
+    head, enc = tmp_path / "h.pt", tmp_path / "e.pt"
+    calib = tmp_path / "c.json"
+    for p in (head, enc, calib):
+        p.write_bytes(b"x")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS", enc)
+    monkeypatch.setattr(reg, "DEFAULT_CALIBRATION_LNTUNED", calib)
+
+    tuned_pair = reg.slot_d_pair() == (head, enc)
+    tuned_curve = reg.slot_d_calibration() == calib
+    assert tuned_pair == tuned_curve

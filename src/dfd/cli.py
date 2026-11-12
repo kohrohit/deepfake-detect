@@ -26,7 +26,8 @@ from pathlib import Path
 
 from .audit import AuditRecord, record_digest
 from .calibration import load_calibrators
-from .detectors.registry import default_registry
+from .detectors import registry as _registry
+from .detectors.registry import default_registry, slot_d_calibration
 from .errors import DfdError
 from .faces import DEFAULT_MODEL
 from .ingest.video import DEFAULT_MAX_FRAMES
@@ -38,7 +39,13 @@ from .types import Context
 #: how `DEFAULT_MODEL` and the weight paths are handled: this tool is run from
 #: a checkout, and an absolute path baked in at import time would point at
 #: whichever checkout happened to install it.
-DEFAULT_CALIBRATION = Path("assets/models/calibration.json")
+#:
+#: NO LONGER THE DEFAULT. `--calibration` now defaults to whatever
+#: `slot_d_calibration()` resolves, because this constant as a default meant
+#: a checkout with Phase 2's weights installed scored with the tuned model
+#: and calibrated with the frozen model's curve. Kept as the name of the
+#: frozen curve, which is still what the resolver returns for a frozen pair.
+DEFAULT_CALIBRATION = _registry.DEFAULT_CALIBRATION
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +120,18 @@ def _build_parser() -> argparse.ArgumentParser:
     score.add_argument("-v", "--verbose", action="count", default=0,
                        help="log to stderr at INFO; repeat (-vv) for DEBUG. "
                             "stdout carries the record either way")
-    score.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
+    score.add_argument("--calibration", default=None,
                        help="per-band calibration curves (training/"
                             "fit_vcip.py or training/fit_calibration.py "
-                            "write these). WITHOUT THEM EVERY DETECTOR "
-                            "ABSTAINS with `uncalibrated_for_band` and the "
-                            "verdict is always insufficient_evidence, "
-                            "however good its weights are. An absent file "
-                            "is not an error — it is the state of a fresh "
-                            "checkout, and abstaining is then correct")
+                            "write these). Defaults to the curve matching "
+                            "whichever slot D pair is installed, so a tuned "
+                            "model is never read through the frozen model's "
+                            "curve. WITHOUT THEM EVERY DETECTOR ABSTAINS "
+                            "with `uncalibrated_for_band` and the verdict is "
+                            "always insufficient_evidence, however good its "
+                            "weights are. An absent file is not an error — "
+                            "it is the state of a fresh checkout, and "
+                            "abstaining is then correct")
     score.add_argument("--pretty", action="store_true",
                        help="indent the JSON for reading; the digest is always "
                             "taken over the canonical form")
@@ -174,11 +184,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     # with `uncalibrated_for_band` — which is the honest output, not a
     # failure. Refusing to run would make a fresh checkout look broken.
     calibrators = None
-    calib_path = Path(args.calibration)
-    if calib_path.is_file():
+    # An explicit --calibration still wins; only the DEFAULT consults the
+    # registry. `slot_d_calibration()` returns None when the tuned pair is
+    # installed without its own curve, which means "run uncalibrated"
+    # rather than "borrow the frozen one".
+    calib_path = Path(args.calibration) if args.calibration else (
+        slot_d_calibration())
+    if calib_path is not None and calib_path.is_file():
         calibrators = load_calibrators(calib_path)
         logger.debug("loaded calibration for %s from %s",
                      sorted(calibrators), calib_path)
+    elif calib_path is None:
+        # Distinct from "the file is missing": the registry REFUSED to name
+        # one, because the tuned pair is installed without its own curve.
+        logger.debug("slot D's calibration could not be resolved; detectors "
+                     "will abstain with uncalibrated_for_band")
     else:
         logger.debug("no calibration at %s; detectors will abstain with "
                      "uncalibrated_for_band", calib_path)
