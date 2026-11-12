@@ -568,3 +568,40 @@ def test_a_scripted_filename_survives_round_trip_as_data(server: Any) -> None:
     status, body = _get(server, f"/api/submissions/{sid}")
     assert status == 200
     assert body["filename"] == evil
+
+
+def test_analyze_serves_the_simple_format(server: Any) -> None:
+    status, body = _post(server, "/api/analyze?format=simple", _JPEG_BYTES)
+    assert status == 200
+    assert set(body) >= {"is_deepfake", "confidence", "reason",
+                         "why_no_answer", "detectors_consulted"}
+    # On this deployment nothing is measured above the evidence floor, so
+    # the honest answer is null -- and NEVER 0.5, which a caller could
+    # threshold back into a verdict.
+    assert body["is_deepfake"] is None
+    assert body["confidence"] is None
+    assert body["reason"] == "insufficient_evidence"
+
+
+def test_the_two_formats_never_disagree_about_one_submission(
+        server: Any) -> None:
+    # `simple` is a projection of the same record, not a second opinion.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg",
+                                     source="api")
+    assert server.worker.process_one()
+    _, rd = _get(server, f"/api/submissions/{sid}?format=rd")
+    _, simple = _get(server, f"/api/submissions/{sid}?format=simple")
+    assert simple["verdict"] == rd["verdict"]
+    assert simple["detectors_consulted"] == len(rd["models"])
+    if rd["verdict"] == "UNKNOWN":
+        assert simple["is_deepfake"] is None
+
+
+def test_an_unknown_format_is_refused_on_both_routes(server: Any) -> None:
+    # Answering `?format=rd2` with something would read as "this build
+    # serves rd2", and a caller would ship against a format that is not here.
+    status, body = _get(server, "/api/submissions/x?format=rd2")
+    assert status in (400, 404)
+    status, body = _post(server, "/api/analyze?format=rd2", _JPEG_BYTES)
+    assert status == 400
+    assert "simple" in body["error"] and "rd" in body["error"]

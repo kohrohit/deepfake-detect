@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..errors import DfdError
 from ..limits import DEFAULT_LIMITS
-from .contract import rd_response
+from .contract import rd_response, simple_response
 from .dashboard import DASHBOARD_HTML
 from .store import FAILED, QUEUED, RUNNING, Store
 from .worker import Worker
@@ -39,6 +39,16 @@ from .worker import Worker
 #: The one value `?format=` accepts on a submission. Named rather than
 #: inlined so the route and its refusal message cannot drift apart.
 RD_FORMAT = "rd"
+
+#: The three-field view: `is_deepfake`, `confidence`, `reason`. For a caller
+#: who wants a boolean rather than four detectors and their reasons. Served
+#: from the SAME record as `rd` -- it is a projection, not a second opinion,
+#: so the two can never disagree about one submission.
+SIMPLE_FORMAT = "simple"
+
+#: Every `?format=` this build serves. Named so the route and its refusal
+#: message cannot drift apart.
+FORMATS = (RD_FORMAT, SIMPLE_FORMAT)
 
 logger = logging.getLogger(__name__)
 
@@ -188,15 +198,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, f"no submission {sid!r}")
                 return
             fmt = query.get("format", [None])[0]
-            if fmt is not None and fmt != RD_FORMAT:
+            if fmt is not None and fmt not in FORMATS:
                 # Refused rather than ignored: answering `?format=rd2` with
                 # the audit record would read to a caller as "this build
                 # serves rd2", and they would ship against a format that
                 # does not exist here.
-                self._error(HTTPStatus.BAD_REQUEST,
-                            f"unknown format {fmt!r}; expected {RD_FORMAT!r}")
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    f"unknown format {fmt!r}; expected one of "
+                    f"{', '.join(repr(f) for f in FORMATS)}")
                 return
-            if fmt == RD_FORMAT:
+            if fmt in FORMATS:
                 if not row.record_json:
                     # TWO STATES, not one. `Store.fail` writes `error` and
                     # leaves record_json NULL, so testing record_json alone
@@ -216,8 +228,10 @@ class _Handler(BaseHTTPRequestHandler):
                                 f"submission {sid!r} is not scored yet",
                                 extra={"status": row.status})
                     return
+                record = json.loads(row.record_json)
                 self._send(HTTPStatus.OK,
-                           rd_response(json.loads(row.record_json)))
+                           rd_response(record) if fmt == RD_FORMAT
+                           else simple_response(record))
                 return
             payload = row.summary()
             # Whether the INPUT is still on disk. Retention deletes scored
@@ -256,11 +270,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return
         if route == "/api/analyze":
-            self._analyze(sid)
+            fmt = query.get("format", [RD_FORMAT])[0]
+            if fmt not in FORMATS:
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    f"unknown format {fmt!r}; expected one of "
+                    f"{', '.join(repr(f) for f in FORMATS)}")
+                return
+            self._analyze(sid, fmt=fmt)
             return
         self._send(HTTPStatus.ACCEPTED, {"id": sid, "status": QUEUED})
 
-    def _analyze(self, sid: str) -> None:
+    def _analyze(self, sid: str, *, fmt: str = RD_FORMAT) -> None:
         """Score `sid` now and answer with the contract.
 
         Synchronous, but NOT unrecorded: it drains through the ordinary
@@ -293,7 +314,9 @@ class _Handler(BaseHTTPRequestHandler):
                         row.error or "scoring failed",
                         extra={"status": row.status})
             return
-        self._send(HTTPStatus.OK, rd_response(json.loads(row.record_json)))
+        record = json.loads(row.record_json)
+        self._send(HTTPStatus.OK, rd_response(record) if fmt == RD_FORMAT
+                   else simple_response(record))
 
     def _read_upload(self) -> bytes | None:
         """The shared upload path for every POST route.
