@@ -7,6 +7,16 @@ numbers -- and this project's own answer to that problem everywhere else is to m
 (`dfd.service.evidence.gated_detectors` is the precedent). So the four questions are here, each
 reading its own artefact, each answering before anyone has formed an opinion.
 
+QUESTION 1 IS BIASED IN THE TUNED ARM'S FAVOUR, AND THAT IS NOT FIXABLE WITHOUT RE-TUNING PER
+FOLD. Leave-one-generator-out holds a family out of the HEAD's refit. For the frozen encoder that
+is a true transfer measurement: the encoder never saw any fake. For the TUNED encoder it is not —
+`training/fit_gend.py --tune-layernorms` tuned the LayerNorms on all five families at once, so
+when the fold holds out `sbi` the encoder has already been tuned to separate `sbi`. The fold is
+generator-disjoint at the head and contaminated at the encoder. An honest Phase 2 LOGO would
+re-tune one encoder per fold — five runs, roughly nine hours each on the deployment box — which
+is why this is recorded rather than fixed. Read question 1 as an UPPER BOUND on the tuned arm,
+never as a transfer number, and read question 5 for the unbiased comparison.
+
 WHAT THIS DOES NOT DO. It does not decide whether slot D may contribute evidence to a verdict;
 that is the 0.75 evidence floor and it lives in `dfd/service/evidence.py`. Question 4 reports
 whether the floor is cleared, but clearing it is necessary and not sufficient -- the card's
@@ -51,7 +61,8 @@ def _load(path: Path) -> dict[str, Any] | None:
 
 def evaluate(comparison: dict[str, Any] | None,
              tuned_logo: dict[str, Any] | None,
-             tuned_vcip: dict[str, Any] | None) -> dict[str, Any]:
+             tuned_vcip: dict[str, Any] | None,
+             frozen_vcip: dict[str, Any] | None = None) -> dict[str, Any]:
     """The four pre-registered questions, each with its evidence.
 
     A missing artefact answers `None`, never `False`: "the chain did not get
@@ -121,18 +132,57 @@ def evaluate(comparison: dict[str, Any] | None,
                       "session_tpr_at_zero_fpr"))
     questions["4_clears_the_floor"] = q4
 
+    # Q5 -- the UNBIASED comparison, and the reason it exists is above:
+    # the capture corpus is the one evaluation the tuned encoder cannot have
+    # been contaminated by. It never saw a capture frame, and that corpus's
+    # fakes are inswapper_128 output -- a generator family absent from
+    # training entirely, where every family in question 1 was present.
+    q5: dict[str, Any] = {"question": "capture-corpus session AUC, tuned "
+                                      "against frozen (UNBIASED: the encoder "
+                                      "never saw this corpus or its "
+                                      "generator)",
+                          "artefact": "bench/gend_vcip_lntuned.json vs "
+                                      "bench/gend_vcip.json"}
+    if tuned_vcip is None or frozen_vcip is None:
+        q5["answer"] = None
+    else:
+        t = tuned_vcip["encoder_matched"].get("session_auc")
+        f = frozen_vcip["encoder_matched"].get("session_auc")
+        if t is None or f is None:
+            q5["answer"] = None
+        else:
+            q5.update(answer=float(t) > float(f), tuned=float(t),
+                      frozen=float(f), delta=float(t) - float(f),
+                      note="No interval: these are two single numbers on one "
+                           "corpus, not a paired bootstrap. A positive delta "
+                           "here is evidence of direction, not of size.")
+    questions["5_capture_corpus_unbiased"] = q5
+
     answers = {k: v.get("answer") for k, v in questions.items()}
     incomplete = [k for k, v in answers.items() if v is None]
-    ships = (not incomplete
-             and bool(answers["1_worst_fold_moved"])
-             and bool(answers["2_outside_its_null"])
-             and bool(answers["3_no_shortcut"]))
+    # SHIPPING is decided by questions 1-3, exactly as registered on
+    # 2026-11-11. Questions 4 and 5 are reported, not gating: 4 says whether
+    # the evidence floor is cleared (a different gate, in
+    # dfd/service/evidence.py) and 5 is the unbiased read on whether the
+    # tuning helped at all. An unanswered 4 or 5 must not turn a decided
+    # "ships" into "no" -- that would let a missing artefact veto a
+    # measurement that was made.
+    deciding = ("1_worst_fold_moved", "2_outside_its_null", "3_no_shortcut")
+    ships = all(answers[k] is True for k in deciding)
     return {
         "questions": questions,
         "incomplete": incomplete,
         "tuned_encoder_ships": ships,
-        "gate_would_open": (not incomplete
-                            and bool(answers["4_clears_the_floor"])),
+        "gate_would_open": answers["4_clears_the_floor"] is True,
+        "deciding_questions": list(deciding),
+        "question_1_is_an_upper_bound": (
+            "The tuned encoder was tuned on ALL FIVE generator families, so a "
+            "leave-one-generator-out fold is disjoint at the head and "
+            "contaminated at the encoder. Question 1 therefore favours the "
+            "tuned arm for a reason that is not generalisation. Question 5 is "
+            "the unbiased comparison: the encoder never saw the capture "
+            "corpus, whose fakes are inswapper_128 — a family absent from "
+            "training. If 1 and 5 disagree, believe 5."),
         "rule": ("Questions 1, 2 and 3 decide whether the tuned encoder "
                  "replaces the frozen one. Question 4 is separate and "
                  "decides nothing about shipping: it reports whether slot D "
@@ -160,6 +210,12 @@ def render(result: dict[str, Any]) -> str:
         if detail:
             lines.append(f"      {json.dumps(detail, sort_keys=True)}")
     lines += ["",
+              "> **Question 1 is an upper bound, not a transfer number.** The "
+              "tuned encoder was tuned on all five generator families, so a "
+              "leave-one-generator-out fold is disjoint at the head and "
+              "contaminated at the encoder. Question 5 is the unbiased "
+              "comparison. If they disagree, believe 5.",
+              "",
               f"**Tuned encoder ships: "
               f"{'YES' if result['tuned_encoder_ships'] else 'NO'}**",
               f"**Evidence floor cleared: "
@@ -178,6 +234,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         default=Path("bench/gend_report_lntuned.json"))
     parser.add_argument("--tuned-vcip", type=Path,
                         default=Path("bench/gend_vcip_lntuned.json"))
+    parser.add_argument("--frozen-vcip", type=Path,
+                        default=Path("bench/gend_vcip.json"),
+                        help="the FROZEN encoder's capture-corpus result, "
+                             "for the one comparison the tuned encoder "
+                             "cannot have contaminated")
     parser.add_argument("--out-json", type=Path,
                         default=Path("bench/phase2_verdict.json"))
     parser.add_argument("--out-md", type=Path,
@@ -185,7 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     result = evaluate(_load(args.comparison), _load(args.tuned_logo),
-                      _load(args.tuned_vcip))
+                      _load(args.tuned_vcip), _load(args.frozen_vcip))
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(result, indent=2, sort_keys=True,
                                         allow_nan=False) + "\n")

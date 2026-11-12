@@ -3049,6 +3049,31 @@ fold. A tuned worst fold above 0.75 would mean the tuning worked and would still
 gate. Only question 4 opens the gate, and it opens it only together with the card's existing
 cross-corpus checks (`trained_on` ≠ `corpus`, both ids in the manifest).
 
+**A FLAW IN QUESTION 1, FOUND 2026-11-12 BEFORE ANY QUESTION-1 NUMBER EXISTED.**
+Leave-one-generator-out holds a family out of the HEAD's refit. For the FROZEN encoder that is a
+true transfer measurement — the encoder never saw a fake of any kind. For the TUNED encoder it is
+not: `--tune-layernorms` tuned the LayerNorms on all five families at once (`bench/gend_fit.json`
+records `sbi`, `swap_lowres_paste`, `swap_mouth_patch`, `swap_poisson`, `swap_warp_hull`), so when
+the fold holds `sbi` out of the head, **the encoder has already been tuned to separate `sbi`**.
+The fold is generator-disjoint at the head and contaminated at the encoder.
+
+So question 1 compares a clean number (frozen) against a contaminated one (tuned) and will favour
+tuning for a reason that is not generalisation. Fixing it properly means re-tuning one encoder per
+fold — five runs at ~9 hours each on the deployment box — which is why this is **recorded rather
+than fixed**, and recorded here while the run was still in epoch 4 so it cannot be mistaken for an
+excuse invented after an unwelcome result.
+
+**Question 5, added at the same time, is the unbiased comparison.** The capture corpus is the one
+evaluation the tuned encoder cannot have contaminated: it never saw a capture frame, and that
+corpus's fakes are `inswapper_128` output — a generator family absent from training entirely,
+where every family in question 1 was present. Frozen scores session AUC **0.663** there. If
+questions 1 and 5 disagree, believe 5.
+
+**The shipping rule is NOT changed by this** — questions 1, 2 and 3 still decide, exactly as
+registered — because moving a bar after seeing four epochs is the thing pre-registration exists to
+prevent. What changes is how question 1 must be READ: as an upper bound on the tuned arm, never as
+a transfer number. `bench/phase2_verdict.py` prints that warning above every verdict it renders.
+
 **What ships:**
 
 - **Tuned replaces frozen as slot D only if 1, 2 and 3 all hold.** Question 4 is not required to
