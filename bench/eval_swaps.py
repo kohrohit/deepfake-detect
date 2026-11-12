@@ -35,6 +35,7 @@ from typing import Any
 
 from corpora.face_pool import DetectFn
 from corpora.identity import embeddings_for_records
+from corpora.provenance import corpus_label
 from corpora.swap_corpus import build_swap_corpus
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
@@ -61,8 +62,26 @@ logger = logging.getLogger(__name__)
 #: fakes were composited from — out of this detector's own training set, and
 #: reported a worst-generator AUC of 0.923 on 2026-09-24. That is
 #: memorisation. Rebuilt at offset 10000 the same run gives 0.527.
+#:
+#: `0.1.0-probe-fairface2000`: `training/fit_gend.py` over the first 2,000
+#: photographs of the same directory, same selection rule. The contamination
+#: that gave `blend_seam` its fabricated 0.923 applies identically here and
+#: is WORSE: slot D's fakes are composited from those same photographs, and
+#: its self-blends are those photographs. The window is 2,000 rather than the
+#: 60,000 the plan proposed because 60,000 photographs is ~300,000 encoder
+#: forward passes, measured at ~0.6 images/second on this hardware — about
+#: 139 hours. 2,000 also sits inside `blend_seam`'s 10,000, so the existing
+#: "evaluate at offset >= 10000" discipline already covers both detectors
+#: and no second rule is needed.
 TRAINING_WINDOWS: dict[str, int] = {
     "0.2.0-fairface10k": 10000,
+    "0.1.0-probe-fairface2000": 2000,
+    # Phase 2's LayerNorm-tuned encoder and the head fitted jointly with it.
+    # Same 2,000 photographs as the frozen probe, so the same offset guard
+    # applies -- and it applies to the ENCODER now as well as to the head,
+    # which is the new thing: a frozen encoder could not memorise a corpus,
+    # and a tuned one can.
+    "0.2.0-lntuned-fairface2000": 2000,
 }
 
 #: The heading the scope block renders under, named so a test can assert the
@@ -153,6 +172,15 @@ def main(argv: Sequence[str] | None = None, *,
                              "corpora.swap_corpus.build_swap_corpus")
     parser.add_argument("--blend-weights", type=Path, default=None,
                         help="override the blend_seam weights path")
+    parser.add_argument("--gend-weights", type=Path, default=None,
+                        help="override slot D's HEAD path")
+    parser.add_argument("--gend-encoder", type=Path, default=None,
+                        help="override slot D's ENCODER path — this is how "
+                             "Phase 2's LayerNorm-tuned encoder is measured "
+                             "by the same protocol as the frozen one. The "
+                             "two are a PAIR: a tuned head over the frozen "
+                             "encoder loads clean and scores nonsense, so "
+                             "pass both or neither.")
     parser.add_argument("--identity", action="store_true",
                         help="embed every crop and certify the LOGO folds "
                              "identity-disjoint (acceptance criterion 2). "
@@ -165,9 +193,16 @@ def main(argv: Sequence[str] | None = None, *,
 
     logging.basicConfig(level=logging.INFO)
 
+    if (args.gend_weights is None) != (args.gend_encoder is None):
+        parser.error("--gend-weights and --gend-encoder go together: a head "
+                     "fitted jointly with a tuned encoder, read through the "
+                     "frozen one, produces a number that means nothing")
     if registry is None:
-        registry = (default_registry(blend_weights=args.blend_weights)
-                    if args.blend_weights is not None else default_registry())
+        overrides = {k: v for k, v in (
+            ("blend_weights", args.blend_weights),
+            ("gend_weights", args.gend_weights),
+            ("clip_weights", args.gend_encoder)) if v is not None}
+        registry = default_registry(**overrides)
 
     # BEFORE building the corpus, which takes minutes: a refusal that arrives
     # after the work is a refusal the caller learns to pass --allow past.
@@ -231,7 +266,7 @@ def main(argv: Sequence[str] | None = None, *,
     payload = _json_safe(dataclasses.asdict(record))
     assert isinstance(payload, dict)
     payload["corpus"] = {
-        "root": str(args.root),
+        "root": corpus_label(args.root),
         "records": len(records),
         "fakes": sum(r["label"] for r in records),
         "skipped": skipped,

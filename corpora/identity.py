@@ -26,7 +26,7 @@ import numpy as np
 import numpy.typing as npt
 
 from dfd.embed import Embedder, load_embedder
-from dfd.faces import clamp_roi, detect_faces
+from dfd.faces import clamp_roi, detect_faces, select_largest_face
 
 from .face_pool import DetectFn
 
@@ -76,7 +76,10 @@ def embeddings_for_records(
         if not boxes:
             drop("no_face")
             continue
-        box = max(boxes, key=lambda b: b.score)
+        # LARGEST, not most-confident: `dfd.faces.select_largest_face` is
+        # the serving path's rule, and this repo measured the cost of a
+        # second, disagreeing one at 0.821 against 0.954.
+        box = select_largest_face(boxes)
         if clamp_roi(frame.shape, box) is None:
             drop("degenerate_box")
             continue

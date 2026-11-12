@@ -38,6 +38,26 @@ assets:
     checked_by: "kohrohit@gmail.com"
     files:
       - "assets/models/face_recognition_sface_2021dec.onnx"
+  clip_vit_l14_visual:
+    # The CONVERTED vision tower (training/convert_clip.py), plus the archive
+    # it was converted from. One id covers both: they are the same weights in
+    # two containers, and splitting them would invite two different licence
+    # verdicts on one set of numbers.
+    source: "OpenAI CLIP ViT-L/14 — https://github.com/openai/CLIP, weights at https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt (sha256 is the URL segment, verified by ops/fetch-assets.sh)"
+    license: "MIT"
+    # Read at source 2026-11-10: github.com/openai/CLIP/blob/main/LICENSE is
+    # the MIT text, "Copyright (c) 2021 OpenAI", fetched and read rather than
+    # inferred from a badge. Attribution is the only real obligation and it
+    # travels with the product (see the spec's §9.1 conditions). NOT the GenD
+    # checkpoint, which is FF++-trained and is never fetched by anything in
+    # this repo.
+    commercial_use: true
+    evidence_url: "https://github.com/openai/CLIP/blob/main/LICENSE"
+    date_checked: "2026-11-10"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/ViT-L-14.pt"
+      - "assets/models/clip_vit_l14_visual.pt"
   dima806_vit_weights:
     source: "https://huggingface.co/dima806/deepfake_vs_real_image_detection"
     license: "Apache-2.0"
@@ -124,6 +144,72 @@ assets:
     evidence_url: "https://github.com/SCLBD/DeepfakeBench"
     date_checked: "2026-09-22"
     checked_by: "kohrohit@gmail.com"
+  gend_clip_weights:
+    source: "Fitted in this repo by training/fit_gend.py: a Linear(768, 2) over frozen OpenAI CLIP ViT-L/14 embeddings of self-blended and composited FairFace crops. No generator weight file, no licensed deepfake dataset, and nothing derived from FaceForensics++ contributes to them."
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship. The encoder they read is separately MIT (clip_vit_l14_visual)."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these coefficients: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/gend_clip.pt"
+  gend_clip_encoder_lntuned:
+    # Registered 2026-11-11 with Phase 2 (plan Task 13). DUAL PROVENANCE, and
+    # the stricter condition governs: the 304M weights are OpenAI's under MIT,
+    # and the 102,400 LayerNorm parameters inside them were refitted in this
+    # repo on FairFace-derived material, which is CC BY 4.0. MIT asks for
+    # attribution; CC BY 4.0 asks for attribution AND an indication that
+    # changes were made. Shipping this file therefore requires naming OpenAI,
+    # naming FairFace, and saying that the normalisation parameters were
+    # retuned here -- not whichever of the two is quoted first.
+    source: "training/fit_gend.py --tune-layernorms: OpenAI CLIP ViT-L/14's vision tower (clip_vit_l14_visual) with every LayerNorm weight and bias retuned jointly with the Linear(768, 2) head on self-blended and composited FairFace crops. Every other parameter is byte-identical to the MIT original; tests/test_fit_gend.py asserts that."
+    license: "MIT (OpenAI's weights) AND CC BY 4.0 (the retuned LayerNorms, inherited from fairface_corpus). Attribution to both is required, and CC BY 4.0's indicate-changes condition applies to the whole file."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these parameters: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError. The same open biometric-consent question that fairface_corpus records applies here and is NOT answered by CC BY 4.0."
+    evidence_url: "https://github.com/openai/CLIP/blob/main/LICENSE"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/clip_vit_l14_lntuned.pt"
+  gend_clip_lntuned_weights:
+    # The head fitted JOINTLY with gend_clip_encoder_lntuned, and a separate
+    # id from gend_clip_weights because it reads a different encoder's
+    # embeddings. Interchanging them loads clean and scores nonsense.
+    source: "Fitted in this repo by training/fit_gend.py --tune-layernorms: a Linear(768, 2) trained jointly with the encoder's LayerNorms on self-blended and composited FairFace crops. No generator weight file, no licensed deepfake dataset, and nothing derived from FaceForensics++ contributes to them."
+    license: "CC BY 4.0 (inherited from fairface_corpus) — attribution required wherever these coefficients ship. The encoder they read is gend_clip_encoder_lntuned, which carries MIT AND CC BY 4.0 together."
+    commercial_use: true
+    owner_attestation: "No capture-corpus material reaches these coefficients: training/fit_gend.py reads only the FairFace session directory, and corpora/sbi.py hard-refuses any swapped session with EvaluationOnlySessionError."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+    files:
+      - "assets/models/gend_clip_lntuned.pt"
+  vkyc_capture_corpus:
+    # IDENTIFIED BY SHAPE, NOT BY PATH (redacted 2026-11-12). Two v-CIP
+    # capture directories exist on the operator's machine and they are NOT
+    # the same corpus: one is 42 sessions / 142 frames, which is really 58
+    # distinct images and 19 genuine crops, and is what the slot D plan
+    # originally named; the other, below, is what every measurement since
+    # 2026-09-24 actually uses. The shape is what tells them apart, so the
+    # shape is what is recorded. Neither path is written down here: this
+    # repository is public, and an absolute path to a corpus of biometric
+    # recordings is operator layout nobody outside needs. The directory is
+    # supplied at run time by --captures.
+    source: "v-CIP session captures — 146 session folders, 554 frames, 140 sessions (218 genuine / 336 swapped). Supplied at run time; see corpora/provenance.py for why no path is recorded."
+    license: "UNRESOLVED — owner attests rights in the recordings; no legal review has addressed biometric processing. EVALUATION ONLY. Never a training input (spec §6.4)."
+    commercial_use: false
+    owner_attestation: "2026-09-21: the capture corpus is available with rights. Not independently verified. DPDP Act / GDPR Art. 9 treat biometric data as sensitive and a licence in the recording does not answer that."
+    evidence_url: "docs/EULA-ACCESS.md"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
+  vkyc_inswapper_swaps:
+    source: "inswapper_128 swaps of vkyc_capture_corpus frames, generated in this project"
+    license: "research-only — InsightFace's distributed models are non-commercial and inswapper_128 was withdrawn from distribution. EVALUATION ONLY; never distributed, and nothing fitted on them ships."
+    commercial_use: false
+    evidence_url: "assets/manifest.yaml: npr_capture_head"
+    date_checked: "2026-11-11"
+    checked_by: "rohit.kohli@scoreme.in"
   fairface_corpus:
     source: "https://github.com/joojs/fairface — 97,698 real faces, pre-cropped and aligned to 224x224, with age/gender/race labels. Mirrored as HuggingFaceM4/FairFace (ungated). Sampled from Yahoo's YFCC-100M Flickr set."
     # The only face supply this project has found that is BOTH commercially

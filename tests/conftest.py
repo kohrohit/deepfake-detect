@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures."""
 import csv
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,45 @@ def _write_dfeval_corpus(root: Path, rows: list[dict[str, Any]]) -> None:
                               "filename": row["filename"],
                               "label": row["label"],
                               "domain": row["domain"]})
+
+
+#: Two races x two genders in the synthetic FairFace sessions, so
+#: `corpora.swap_corpus`'s pairing finds a partner inside each stratum.
+_FIXTURE_RACES = ("East Asian", "White")
+
+
+def _write_fairface_sessions(root: Path, n: int) -> Path:
+    """A FairFace session directory in `training/export_fairface.py`'s shape.
+
+    One folder per photograph, holding `frame_00.jpg` and a `results.json`.
+    Names are zero-padded because every consumer selects with
+    `sorted(root.glob("*/results.json"))` and `--offset` is only meaningful
+    against a stable order.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        folder = root / f"ff-{i:04d}"
+        folder.mkdir()
+        img = np.random.default_rng(i).integers(40, 215, (200, 200, 3),
+                                                dtype=np.uint8)
+        cv2.imwrite(str(folder / "frame_00.jpg"), img)
+        (folder / "results.json").write_text(json.dumps({
+            "session_id": folder.name,
+            "swapped": False,
+            "dataset": "FairFace",
+            "license": "CC BY 4.0",
+            "url": "https://github.com/joojs/fairface",
+            "demographics": {"race": _FIXTURE_RACES[(i // 4) % 2],
+                             "gender": "Male" if i % 2 else "Female",
+                             "age": "20-29"},
+        }))
+    return root
+
+
+@pytest.fixture
+def tiny_fairface_root(tmp_path: Path) -> Path:
+    """Twelve synthetic photographs, enough for every stratum to pair."""
+    return _write_fairface_sessions(tmp_path / "fairface_sessions", 12)
 
 
 @pytest.fixture

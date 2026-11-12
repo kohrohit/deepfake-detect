@@ -31,6 +31,7 @@ import numpy as np
 from bench.metrics import auc, ece
 from corpora.df40 import load_df40_records
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label as corpus_id
 from dfd.calibration import Calibrator, save_calibrators
 from dfd.detectors.registry import default_registry
 from dfd.faces import detect_faces
@@ -59,6 +60,49 @@ def split_by_source(records: Sequence[dict[str, Any]], *,
     fit = [r for r in records if r["source_id"] not in holdout_ids]
     holdout = [r for r in records if r["source_id"] in holdout_ids]
     return fit, holdout
+
+
+#: Task 8's per-band table on the capture corpus — the only material in this
+#: project that looks like live v-CIP traffic, and so the only thing that can
+#: say which bands a shipped curve must cover.
+DEFAULT_IN_DOMAIN_BANDS = Path("bench/gend_vcip.json")
+
+
+def load_in_domain_bands(path: str | Path) -> dict[str, int]:
+    """Quality band -> capture frames, from Task 8's matched-encoder table.
+
+    `encoder_matched`, never `uncontrolled`: the uncontrolled half of that
+    report is the one a single JPEG header byte labels for 99.2% of rows,
+    and `bench/gend_vcip.json`'s own `how_to_read` says it is reported so
+    the shortcut is visible, not so it can be cited.
+    """
+    report = json.loads(Path(path).read_text())
+    table = report["encoder_matched"]["per_band_frames"]
+    return {band: int(row["n"]) for band, row in table.items()}
+
+
+def band_coverage(fitted: Sequence[str],
+                  frames_by_band: dict[str, int]) -> dict[str, Any]:
+    """What a curve fitted on these bands would and would not speak to.
+
+    A band with no curve returns `llr 0.0` and `uncalibrated_for_band` — the
+    honest answer, and also a detector that cannot move a verdict. Counting
+    the capture frames sitting in those bands is what turns that from a
+    footnote into a number a reader can weigh.
+    """
+    have = set(fitted)
+    covered = sorted(b for b in frames_by_band if b in have)
+    uncovered = sorted(b for b in frames_by_band if b not in have)
+    total = sum(frames_by_band.values())
+    n_covered = sum(frames_by_band[b] for b in covered)
+    return {
+        "covered_bands": covered,
+        "uncovered_bands": uncovered,
+        "capture_frames_covered": n_covered,
+        "capture_frames": total,
+        "fraction_covered": (n_covered / total) if total else None,
+        "uncovered_frames_by_band": {b: frames_by_band[b] for b in uncovered},
+    }
 
 
 def _observe(record: dict[str, Any]) -> Observation:
@@ -90,8 +134,32 @@ def _score(records: Sequence[dict[str, Any]], detector: Any
 def main(argv: Sequence[str] | None = None, *, registry: Any = None,
          detect: DetectFn = detect_faces) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", required=True, type=Path,
-                        help="directory holding fake/ and real/")
+    parser.add_argument("--corpus-kind", choices=("df40", "swaps"),
+                        default="df40",
+                        help="where the curve comes from. `df40` is the "
+                             "original source and remains the default so "
+                             "every existing invocation is unchanged — but "
+                             "this project has ruled that DF40 can neither "
+                             "support nor refute anything (every number on "
+                             "it sits inside its own permutation null), and "
+                             "a calibration curve is a claim about what a "
+                             "score MEANS. `swaps` builds the paired, "
+                             "identically-encoded FairFace corpus instead.")
+    parser.add_argument("--corpus", type=Path,
+                        help="df40 only: directory holding fake/ and real/")
+    parser.add_argument("--root", type=Path,
+                        help="swaps only: the FairFace session directory")
+    parser.add_argument("--offset", type=int, default=0,
+                        help="swaps only: photographs to skip. MUST be at or "
+                             "beyond the training window of any detector "
+                             "being calibrated (bench/eval_swaps.py: "
+                             "TRAINING_WINDOWS)")
+    parser.add_argument("--in-domain-bands", type=Path,
+                        default=DEFAULT_IN_DOMAIN_BANDS,
+                        help="Task 8's per-band capture table, against which "
+                             "every fitted curve's band coverage is reported. "
+                             "Absent, the report says so rather than passing "
+                             "an unchecked curve off as a checked one.")
     parser.add_argument("--out", default=Path("assets/models/calibration.json"),
                         type=Path)
     parser.add_argument("--report",
@@ -99,11 +167,70 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--holdout", type=float, default=DEFAULT_HOLDOUT)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--allow-training-window", action="store_true",
+                        help="fit even though --offset falls inside a "
+                             "declared training window. For FIXTURES and "
+                             "for deliberately measuring the contamination "
+                             "-- never for a curve that ships. Mirrors "
+                             "bench/eval_swaps.py's flag of the same name.")
+    parser.add_argument("--gend-weights", type=Path, default=None,
+                        help="override slot D's HEAD path")
+    parser.add_argument("--gend-encoder", type=Path, default=None,
+                        help="override slot D's ENCODER path, so Phase 2's "
+                             "tuned pair is calibrated by the same procedure "
+                             "as the frozen one. Pass both or neither.")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
 
-    records, skipped = load_df40_records(args.corpus, limit=args.limit,
-                                         seed=args.seed, detect=detect)
+    # BOTH refusals BEFORE the corpus is built, which takes minutes to hours
+    # including face detection over the whole session directory. A refusal
+    # that arrives after the work is a refusal the caller learns to route
+    # around -- `bench/eval_swaps.py` carries the same rule for the same
+    # reason.
+    if (args.gend_weights is None) != (args.gend_encoder is None):
+        parser.error("--gend-weights and --gend-encoder go together: a head "
+                     "fitted jointly with a tuned encoder, read through the "
+                     "frozen one, produces a curve that means nothing")
+
+    if args.corpus_kind == "swaps" and not args.allow_training_window:
+        # THE HELP TEXT SAID "MUST" AND NOTHING ENFORCED IT, and --offset
+        # defaults to 0. The default invocation therefore fitted slot D's
+        # score->LLR curve on photographs 0-1,999 -- precisely the window
+        # the shipped head 0.1.0-probe-fairface2000 was fitted on. A
+        # calibration curve is a claim about what a score MEANS, so one
+        # fitted on the model's own training data is over-confident exactly
+        # where it is trusted most. bench/eval_gend.py and bench/eval_swaps.py
+        # have both refused this since they were written; this did not.
+        from bench.eval_swaps import TRAINING_WINDOWS
+        window = max(TRAINING_WINDOWS.values())
+        if args.offset < window:
+            logger.error(
+                "--offset %d is inside a declared training window (the "
+                "largest is %d, see bench/eval_swaps.py: TRAINING_WINDOWS). "
+                "A curve fitted there has already seen its own exam. "
+                "Refusing.", args.offset, window)
+            return 1
+
+    if args.corpus_kind == "df40":
+        if args.corpus is None:
+            parser.error("--corpus is required with --corpus-kind df40")
+        records, skipped = load_df40_records(args.corpus, limit=args.limit,
+                                             seed=args.seed, detect=detect)
+        corpus_label = corpus_id(args.corpus)
+    else:
+        if args.root is None or args.limit is None:
+            parser.error("--root and --limit are required with "
+                         "--corpus-kind swaps")
+        # The same builder the fitter and the LOGO harness use, so the
+        # calibration corpus is paired and identically re-encoded like
+        # everything else. Its records already carry `image`, `source_id`
+        # and `label`, which is exactly what `_score`/`_observe` read.
+        from training.fit_gend import build_training_records
+        records, skipped = build_training_records(
+            args.root, limit=args.limit, offset=args.offset, seed=args.seed,
+            detect=detect)
+        corpus_label = (f"{corpus_id(args.root)} [offset {args.offset}, "
+                        f"limit {args.limit}]")
     labels = {r["label"] for r in records}
     if len(labels) < 2:
         # One label cannot fit a curve, and `LogisticRegression` would raise
@@ -118,13 +245,32 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
                 len(records), skipped or "nothing", len(fit), len(holdout),
                 len({r["source_id"] for r in records}))
 
-    registry = registry if registry is not None else default_registry()
+    if registry is None:
+        overrides = {k: v for k, v in (
+            ("gend_weights", args.gend_weights),
+            ("clip_weights", args.gend_encoder)) if v is not None}
+        registry = default_registry(**overrides)
     calibrators: dict[str, Calibrator] = {}
+    try:
+        in_domain = load_in_domain_bands(args.in_domain_bands)
+        in_domain_source = str(args.in_domain_bands)
+    except (OSError, KeyError, ValueError):
+        logger.warning("no in-domain band table at %s; band coverage against "
+                       "the capture corpus is NOT checked in this report",
+                       args.in_domain_bands)
+        in_domain, in_domain_source = {}, None
     report: dict[str, Any] = {
-        "corpus": str(args.corpus),
+        "corpus_kind": args.corpus_kind,
+        "corpus": corpus_label,
+        "skipped": skipped,
         "seed": args.seed,
         "split": {"fit_records": len(fit), "holdout_records": len(holdout),
                   "holdout_fraction": args.holdout},
+        "in_domain_bands": {
+            "source": in_domain_source,
+            "what": "encoder_matched.per_band_frames — the controlled half",
+            "capture_frames_by_band": in_domain or None,
+        },
         "detectors": {},
     }
 
@@ -160,7 +306,15 @@ def main(argv: Sequence[str] | None = None, *, registry: Any = None,
                             if measurable else None),
             "holdout_ece": (float(ece(np.array(h_scores), np.array(h_labels)))
                             if measurable else None),
-            "bands": sorted(set(f_bands)),
+            # Two lists, not one. `fit` drops a band under MIN_FIT_SAMPLES or
+            # with one class, so what the split SAW and what the curve HAS
+            # differ — and it is the second that decides whether the detector
+            # can speak at runtime. `bench/vcip_fit.json` names them the same
+            # way for the same reason.
+            "bands_fitted": cal.fitted_bands,
+            "bands_seen": sorted(set(f_bands)),
+            "in_domain_coverage": (band_coverage(cal.fitted_bands, in_domain)
+                                   if in_domain else None),
         }
         logger.info("%s: fitted on %d rows, holdout AUC %s", name,
                     len(f_scores), report["detectors"][name]["holdout_auc"])

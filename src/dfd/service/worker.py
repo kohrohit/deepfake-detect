@@ -100,15 +100,49 @@ class Worker:
         # persisting it would let a stale entry wave through a file that is
         # being written right now.
         self._seen: dict[str, tuple[int, int]] = {}
+        # ONE Worker is shared by every worker thread -- `Service.start`
+        # runs `self.worker.run_until_stopped` on all of them -- and `_seen`
+        # is the settle counter that keeps a file from being taken while it
+        # is still being copied.
+        #
+        # The lock closes the is_file()/`_take` window, where the loser of a
+        # race got a FileNotFoundError out of `shutil.move` that propagated
+        # out of scan_inbox and aborted the rest of that pass.
+        #
+        # It does NOT on its own protect the settle counter, and the counter
+        # is the part that matters: STABLE_SCANS=2 means "seen at the same
+        # size in two DIFFERENT polls". With N threads each scanning every
+        # poll, N observations accrue per interval and the window collapses
+        # to a single tick no matter how well serialised they are -- which
+        # is the truncated decode the counter exists to prevent. So only one
+        # thread ever scans; `_scanner` is claimed by the first caller and
+        # the rest go straight to draining the queue, which is what the
+        # extra threads were added for.
+        self._scan_lock = threading.Lock()
+        self._scanner: int | None = None
 
     def recover(self) -> int:
         """Requeue anything a previous process left running. Returns the count."""
         return self.store.requeue_running()
 
     def scan_inbox(self) -> int:
-        """Take every settled file in the inbox. Returns how many were taken."""
+        """Take every settled file in the inbox. Returns how many were taken.
+
+        Serialised across worker threads: see `_scan_lock`. Scanning is
+        cheap relative to scoring, and the threads exist to score in
+        parallel, not to walk one directory in parallel.
+        """
         if not self.inbox.is_dir():
             return 0
+        with self._scan_lock:
+            me = threading.get_ident()
+            if self._scanner is None:
+                self._scanner = me
+            if self._scanner != me:
+                return 0
+            return self._scan_inbox_locked()
+
+    def _scan_inbox_locked(self) -> int:
         taken = 0
         for path in sorted(self.inbox.iterdir()):
             if not path.is_file():

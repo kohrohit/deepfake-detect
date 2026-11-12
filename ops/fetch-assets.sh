@@ -33,7 +33,19 @@ DEST="$REPO/assets/models"
 ASSETS=(
   "yunet_face_detector|face_detection_yunet_2023mar.onnx|8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4|https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
   "sface_face_recogniser|face_recognition_sface_2021dec.onnx|0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79|https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx"
+  "clip_vit_l14_archive|ViT-L-14.pt|b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836|https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt"
 )
+
+# clip_vit_l14_archive is ~890MB and is the INPUT to a conversion, not a
+# runtime asset: `python3 -m training.convert_clip --archive
+# assets/models/ViT-L-14.pt --out assets/models/clip_vit_l14_visual.pt
+# --verify` turns it into the plain state_dict the service loads. The
+# archive may be deleted afterwards; the converted file may not.
+#
+# Its digest is not a hash we measured: it is the penultimate segment of
+# OpenAI's own download URL, which is what their clip/clip.py verifies the
+# file against. The pin and the URL therefore cannot drift apart without the
+# URL itself changing.
 
 mode="fetch"
 case "${1:-}" in
@@ -94,7 +106,7 @@ done
 if [[ $status -eq 0 ]]; then
   echo
   echo "All pinned assets present and verified in $DEST"
-  echo "Licences: assets/manifest.yaml (both are permissive and commercially cleared)"
+  echo "Licences: assets/manifest.yaml (all are permissive and commercially cleared)"
 else
   echo
   echo "One or more assets are missing or do not match. The pipeline will abstain" >&2

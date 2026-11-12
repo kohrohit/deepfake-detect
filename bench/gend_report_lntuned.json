@@ -1,0 +1,84 @@
+{
+  "cache_hits": 0,
+  "cache_misses": 9907,
+  "control_colour": {
+    "auc": 0.5301742261648733,
+    "ci95": [
+      0.5228822170138913,
+      0.5380368397808833
+    ],
+    "constant": false,
+    "note": "fitted and scored IN SAMPLE, which is the strongest form of this control: if even an in-sample shortcut model cannot reach the detector, the detector is not reading the shortcut."
+  },
+  "control_jpeg": {
+    "auc": 0.5,
+    "constant": true,
+    "note": "the feature is identical on every record, so there is nothing for a control to separate. Not a measured 0.5 -- a structural one."
+  },
+  "families": {
+    "real": 3989,
+    "sbi": 1997,
+    "swap_lowres_paste": 970,
+    "swap_mouth_patch": 994,
+    "swap_poisson": 984,
+    "swap_warp_hull": 973
+  },
+  "inside_null": false,
+  "kish_ess_fake": 4.4717871584654105,
+  "kish_ess_group": 996.4431009451872,
+  "limit": 2000,
+  "logo": {
+    "sbi": {
+      "auc": 0.9988720556445831,
+      "ci_hi": 0.999814098586018,
+      "ci_lo": 0.9971916332957895,
+      "n": 2988,
+      "n_fake": 997
+    },
+    "swap_lowres_paste": {
+      "auc": 0.999706323081968,
+      "ci_hi": 0.9999916691806705,
+      "ci_lo": 0.9991128078275633,
+      "n": 2475,
+      "n_fake": 484
+    },
+    "swap_mouth_patch": {
+      "auc": 0.9949672720791951,
+      "ci_hi": 0.9989973913908998,
+      "ci_lo": 0.9894300619265571,
+      "n": 2487,
+      "n_fake": 496
+    },
+    "swap_poisson": {
+      "auc": 0.9954213512742167,
+      "ci_hi": 0.9983814442703952,
+      "ci_lo": 0.9920003975312303,
+      "n": 2482,
+      "n_fake": 491
+    },
+    "swap_warp_hull": {
+      "auc": 0.9984205785539058,
+      "ci_hi": 0.9997202065600079,
+      "ci_lo": 0.9962615119504455,
+      "n": 2475,
+      "n_fake": 484
+    }
+  },
+  "measured_on": "2026-11-12",
+  "n_fake": 5918,
+  "n_photographs": 2000,
+  "n_records": 9907,
+  "n_shuffles": 12,
+  "n_subjects": 1001,
+  "null_hi": 0.7197104713144634,
+  "null_lo": 0.2927771747055297,
+  "offset": 10000,
+  "permutation_p": 0.07692307692307693,
+  "root": "fairface_sessions",
+  "seed": 0,
+  "skipped": {
+    "no_face": 69
+  },
+  "verdict": "**Outside the null and above the floor.** The worst fold 0.995 clears 0.75 and sits outside the null 0.293\u20130.720 (p = 0.08). Whether that becomes evidence is a separate, argued decision: this corpus is classical composites, not generator output.",
+  "worst_fold": "swap_mouth_patch"
+}

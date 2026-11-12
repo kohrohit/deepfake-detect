@@ -1,0 +1,71 @@
+{
+  "baseline_encoder": "clip_vit_l14_visual.pt",
+  "candidate_encoder": "clip_vit_l14_lntuned.pt",
+  "decision": {
+    "baseline_auc": 0.7380272409392921,
+    "candidate_auc": 0.9988720556445831,
+    "delta": 0.2608448147052911,
+    "delta_ci95": [
+      0.24794992950473688,
+      0.2732782880174216
+    ],
+    "improved": true,
+    "n_bootstrap": 1000,
+    "paired": true
+  },
+  "folds": {
+    "sbi": {
+      "baseline_auc": 0.7380272409392921,
+      "candidate_auc": 0.9988720556445831,
+      "delta": 0.2608448147052911,
+      "delta_ci_hi": 0.2732782880174216,
+      "delta_ci_lo": 0.24794992950473688,
+      "n": 2988,
+      "n_fake": 997,
+      "n_subjects": 500
+    },
+    "swap_lowres_paste": {
+      "baseline_auc": 0.9986353881723956,
+      "candidate_auc": 0.999706323081968,
+      "delta": 0.0010709349095724408,
+      "delta_ci_hi": 0.0022691412183524465,
+      "delta_ci_lo": 0.0001322669625181905,
+      "n": 2475,
+      "n_fake": 484,
+      "n_subjects": 500
+    },
+    "swap_mouth_patch": {
+      "baseline_auc": 0.9839398259911537,
+      "candidate_auc": 0.9949672720791951,
+      "delta": 0.011027446088041404,
+      "delta_ci_hi": 0.018236763366201586,
+      "delta_ci_lo": 0.0037675696068441345,
+      "n": 2487,
+      "n_fake": 496,
+      "n_subjects": 500
+    },
+    "swap_poisson": {
+      "baseline_auc": 0.9953783880824197,
+      "candidate_auc": 0.9954213512742167,
+      "delta": 4.2963191796974165e-05,
+      "delta_ci_hi": 0.0037004945505951345,
+      "delta_ci_lo": -0.0034072234214740705,
+      "n": 2482,
+      "n_fake": 491,
+      "n_subjects": 500
+    },
+    "swap_warp_hull": {
+      "baseline_auc": 0.9981694484685216,
+      "candidate_auc": 0.9984205785539058,
+      "delta": 0.0002511300853841325,
+      "delta_ci_hi": 0.0024678305508532444,
+      "delta_ci_lo": -0.002023621879457449,
+      "n": 2475,
+      "n_fake": 484,
+      "n_subjects": 500
+    }
+  },
+  "still_not": "Not a measurement against any generator: every fake in this corpus is a self-blend or a classical composite made in this repo. Not permission to decide either \u2014 the 0.75 evidence floor is a separate gate and this comparison does not address it.",
+  "worst_fold": "sbi",
+  "worst_fold_note": "the BASELINE's worst fold. The candidate does not get to nominate its own easiest one."
+}

@@ -27,7 +27,36 @@ class _Record:
     ood_score = 0.0
 
     def to_json(self) -> str:
-        return json.dumps({"verdict": "insufficient_evidence"})
+        # Shaped like a real record rather than a one-key stub: the `rd`
+        # projection reads `evidence`, `posterior` and `quality_band`, and a
+        # stub without them would let a contract that drops all three pass.
+        return json.dumps({
+            "verdict": "insufficient_evidence",
+            "llr_total": 0.0,
+            "posterior": 0.5,
+            "quality_band": "reject",
+            "schema_version": "2",
+            "evidence": [
+                {"detector": "blend_seam", "llr": 0.0, "raw_score": None,
+                 "abstained": True, "reason": "below_quality_floor"},
+                {"detector": "gend_clip", "llr": 0.0, "raw_score": 0.266,
+                 "abstained": True, "reason": "uncalibrated_for_band"},
+            ],
+        })
+
+
+def _jpeg_bytes() -> bytes:
+    """A small, genuinely decodable JPEG, built once for the upload tests."""
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(0)
+    img = rng.integers(60, 190, (64, 64, 3), dtype=np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    return bytes(buf)
+
+
+_JPEG_BYTES = _jpeg_bytes()
 
 
 @pytest.fixture()
@@ -65,7 +94,26 @@ def _get(server: Any, path: str) -> tuple[int, Any]:
 
 
 def _post(server: Any, path: str, data: bytes,
-          ctype: str = "application/octet-stream") -> tuple[int, Any]:
+          ctype: str = "application/octet-stream",
+          chunked: bool = False) -> tuple[int, Any]:
+    if chunked:
+        # urllib always sets Content-Length, so a chunked request has to be
+        # framed by hand. Shared rather than inlined: two routes refuse
+        # chunked and both must be shown to do it.
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1",
+                                          server.server_address[1], timeout=10)
+        conn.putrequest("POST", path)
+        conn.putheader("Transfer-Encoding", "chunked")
+        conn.endheaders()
+        conn.send(b"4\r\ntest\r\n0\r\n\r\n")
+        resp = conn.getresponse()
+        raw = resp.read()
+        conn.close()
+        try:
+            return resp.status, json.loads(raw)
+        except ValueError:
+            return resp.status, raw
     req = urllib.request.Request(server.base + path, data=data, method="POST",
                                  headers={"Content-Type": ctype})
     try:
@@ -365,3 +413,158 @@ def test_concurrent_requests_are_capped_rather_than_unbounded(tmp_path):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+def test_rd_format_is_served_for_a_scored_submission(server: Any) -> None:
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    server.worker.process_one()
+    status, body = _get(server, f"/api/submissions/{sid}?format=rd")
+    assert status == 200
+    assert set(body) >= {"verdict", "score", "models", "dissenting_models"}
+    assert body["verdict"] in {"AUTHENTIC", "MANIPULATED", "UNKNOWN"}
+
+
+def test_rd_format_keeps_the_abstentions_visible(server: Any) -> None:
+    # The point of the contract on THIS deployment: every detector is gated
+    # out of deciding, so the abstentions and their reasons are the answer.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    server.worker.process_one()
+    _, body = _get(server, f"/api/submissions/{sid}?format=rd")
+    assert {m["name"] for m in body["models"]} == {"blend_seam", "gend_clip"}
+    assert all(m["abstained"] for m in body["models"])
+    assert body["dissenting_models"] == []
+
+
+def test_the_plain_format_is_unchanged_by_the_new_parameter(server: Any) -> None:
+    # Everything already reading /api/submissions/<id> must keep seeing the
+    # audit record. A format parameter that quietly reshapes the default
+    # response is a breaking change wearing an opt-in's clothes.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    server.worker.process_one()
+    status, body = _get(server, f"/api/submissions/{sid}")
+    assert status == 200 and "record" in body and "models" not in body
+
+
+def test_an_unknown_format_is_refused_rather_than_silently_ignored(
+        server: Any) -> None:
+    # Ignoring it would answer `?format=rd2` with the audit record, which a
+    # caller would read as "this build serves rd2".
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    server.worker.process_one()
+    status, body = _get(server, f"/api/submissions/{sid}?format=nope")
+    assert status == 400
+    assert "format" in body["error"]
+
+
+def test_rd_format_on_an_unscored_submission_says_so_rather_than_guessing(
+        server: Any) -> None:
+    # A queued submission has no verdict. Returning UNKNOWN would be
+    # indistinguishable from "scored, and nothing could be concluded", which
+    # is a completely different statement about the same image.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    status, body = _get(server, f"/api/submissions/{sid}?format=rd")
+    assert status == 409
+    assert body["status"] == "queued"
+
+
+def test_rd_format_on_a_FAILED_submission_does_not_say_come_back_later(
+        server: Any) -> None:
+    # `Store.fail` writes `error` and leaves record_json NULL, so a branch
+    # testing record_json alone answered 409 "not scored yet" -- for ever --
+    # to a client whose image can never be scored. The synchronous
+    # /api/analyze path has always answered 422 with the reason; these now
+    # agree rather than contradicting each other about the same row.
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename="f.jpg", source="api")
+    # fail() only moves a RUNNING row, so claim it first — the same
+    # transition the worker makes before it tries to decode.
+    assert server.worker.store.claim_next() is not None
+    server.worker.store.fail(sid, "decode failed: not an image")
+    status, body = _get(server, f"/api/submissions/{sid}?format=rd")
+    assert status == 422
+    assert body["status"] == "failed"
+    assert "decode failed" in body["error"]
+
+
+def test_rd_format_on_an_unknown_id_is_still_a_404(server: Any) -> None:
+    status, _ = _get(server, "/api/submissions/nope?format=rd")
+    assert status == 404
+
+
+def test_analyze_scores_synchronously_and_returns_the_contract(
+        server: Any) -> None:
+    status, body = _post(server, "/api/analyze?filename=f.jpg", _JPEG_BYTES)
+    assert status == 200
+    assert set(body) >= {"verdict", "score", "models", "dissenting_models"}
+
+
+def test_analyze_leaves_the_same_audit_trail_as_scan(server: Any) -> None:
+    # Synchronous must not mean unrecorded. A decision a client received and
+    # the service cannot show you afterwards is the one kind this project
+    # cannot have.
+    _post(server, "/api/analyze?filename=f.jpg", _JPEG_BYTES)
+    rows = server.store.recent(limit=10)
+    assert len(rows) == 1 and rows[0].status == "done"
+
+
+def test_analyze_enforces_the_same_upload_limit_as_scan(tmp_path: Path) -> None:
+    # A dedicated 16-byte-limit server, exactly as the /api/scan size test
+    # does: the refusal happens from the Content-Length header before the
+    # body is read, so posting a default-sized over-limit body would have
+    # the server close mid-write and the client see a broken pipe instead
+    # of the 413 it actually sent.
+    store = Store(tmp_path / "db.sqlite3")
+    worker = Worker(store=store, decide=lambda p: _Record(),
+                    inbox=tmp_path / "inbox", workdir=tmp_path / "work")
+    httpd = make_server("127.0.0.1", 0, store=store, worker=worker,
+                        evidence_path=tmp_path / "e.json", max_upload_bytes=16)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    httpd.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        status, _ = _post(httpd, "/api/analyze?filename=f.jpg", b"x" * 17)
+        assert status == 413
+        assert store.recent() == []
+    finally:
+        httpd.shutdown(); httpd.server_close(); thread.join(timeout=5)
+
+
+def test_analyze_refuses_chunked_like_scan_does(server: Any) -> None:
+    # Reused, not re-derived: an /api/analyze that reads a chunked body as
+    # length 0 accepts an EMPTY submission and reports a decode failure about
+    # content the caller never finished sending.
+    status, _ = _post(server, "/api/analyze", b"", chunked=True)
+    assert status == 411
+
+
+def test_analyze_refuses_an_empty_upload(server: Any) -> None:
+    status, _ = _post(server, "/api/analyze?filename=f.jpg", b"")
+    assert status == 400
+
+
+def test_the_dashboard_escapes_every_value_it_interpolates(server: Any) -> None:
+    """A filename is chosen by whoever submits, and the dashboard renders it.
+
+    `POST /api/scan?filename=...` keeps `<`, `>` and quotes -- `api._post`
+    applies only `Path(...).name` -- and a file dropped in the watched inbox
+    reaches the same cell. Unescaped, one submission runs script in every
+    operator's dashboard, same-origin, with access to the full audit records
+    at /api/submissions/<id> and to /api/scan itself.
+    """
+    _, raw = _get(server, "/")
+    page = raw.decode("utf-8")
+    # The helper exists, and no row cell interpolates a server value raw.
+    assert "const esc = (v) =>" in page
+    for raw in ("${r.filename}", "${r.source}", "${r.status}",
+                "${d.corpus", "${d.note", "${n}</code>"):
+        assert raw not in page, f"unescaped interpolation still present: {raw}"
+
+
+def test_a_scripted_filename_survives_round_trip_as_data(server: Any) -> None:
+    # The payload reaches the store intact (it is a legal filename), which
+    # is exactly why rendering has to escape rather than rely on input
+    # filtering.
+    evil = '<img src=x onerror=alert(1)>.jpg'
+    sid = server.worker.submit_bytes(_JPEG_BYTES, filename=evil, source="api")
+    status, body = _get(server, f"/api/submissions/{sid}")
+    assert status == 200
+    assert body["filename"] == evil

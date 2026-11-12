@@ -43,7 +43,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from dfd.faces import align, clamp_roi, detect_faces
+from dfd.faces import align, clamp_roi, detect_faces, select_largest_face
 
 from .face_pool import DEGENERATE_BOX, DUPLICATE, NO_FACE, UNREADABLE, DetectFn
 
@@ -160,7 +160,10 @@ def load_sfhq_records(
             logger.debug("no face in %s", path)
             drop(NO_FACE)
             continue
-        box = max(boxes, key=lambda b: b.score)
+        # LARGEST, not most-confident: `dfd.faces.select_largest_face` is
+        # the serving path's rule, and this repo measured the cost of a
+        # second, disagreeing one at 0.821 against 0.954.
+        box = select_largest_face(boxes)
         if clamp_roi(frame.shape, box) is None:
             logger.debug("box misses the frame in %s", path)
             drop(DEGENERATE_BOX)

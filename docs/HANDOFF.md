@@ -125,6 +125,193 @@ where the correction lives until re-framing the spec becomes its own cycle.
 
 ---
 
+## Slot D — read this first (2026-11-11, after slot D was measured, calibrated and deployed)
+
+*Deliberately not numbered. Nineteen places in this document say "§0" meaning the
+2026-09-25 resume block below, and four say "§0a" meaning the one below that; renumbering
+to put this block at §0 would silently repoint every one of them. Everything predating
+slot D still lives in §0 and the owner-action list it carries.*
+
+**Slot D exists, is measured, and is not allowed to decide.** Branch `feat/slot-d-gend-clip`.
+A linear head over a frozen CLIP ViT-L/14 vision tower, fitted on 2,000 FairFace photographs.
+Tasks 0–12 of `docs/superpowers/plans/2026-11-10-slot-d-gend-clip.md` are done. 1,080 tests green,
+coverage 93.17% against an 85% gate, ruff and `mypy --strict` (38 files) clean.
+
+**The gate did not open, and that is the reported outcome, not a failure to finish.**
+`gated_detectors(load_card())` returns `[]`. The service deployed to the instance at 12:59 UTC
+today says so on every start, by name and number:
+
+    detector gend_clip: measured AUC 0.663 below the 0.75 floor, cannot decide
+
+**What it measured, per corpus.**
+
+| corpus | number | what it is |
+|---|---|---|
+| `vkyc_capture_corpus`, encoder-controlled | **session AUC 0.663** | the headline in `bench/evidence_card.json`. 125 sessions, 58 genuine / 67 swapped, 509 frames. TPR@0%FPR **0.015** |
+| FairFace swaps, leave-one-generator-out | **worst fold 0.738** (`sbi`), CI 0.726–0.751 | outside its own null; still 0.012 under the floor |
+| FairFace swaps, four compositing folds | 0.984–0.999 | **do not quote these.** Classical warp/mask/blend composites made in this repo |
+| in-dataset | 0.928 | memorisation. Named in the card only to be ruled out |
+
+**The null and the controls did their job.** The permutation null over 48 shuffles is 0.449–0.561
+and the worst fold sits outside it at p = 0.020 — so unlike every number this project ever measured
+on DF40, this one is not inside its own null. The colour shortcut control, fitted and scored **in
+sample** (the strongest form of it), reaches 0.530 (CI 0.523–0.538): the detector is not reading
+colour. The JPEG control is a structural 0.500 — the feature is identical on every record, so there
+is nothing there to separate.
+
+**The encoder shortcut is not what slot D reads.** This is the most useful thing the in-domain
+evaluation established. One JPEG header byte labels 99.2% of the capture corpus, and removing that
+shortcut moves slot D by **0.001** (uncontrolled 0.664 → controlled 0.663). Slot C behaves
+completely differently on the same corpus. Whatever slot D is weak at, it is not winning on the
+encoder.
+
+**The quality floor is `reject`, and it was measured rather than chosen.** It was provisionally
+`low` on the reasoning that an appearance read-out has no use for a blurred face. The per-band
+table on the capture corpus says otherwise, and the argument rests on the two denominator columns,
+not the AUC column:
+
+    band      n   genuine  swapped   frame AUC   TPR@0%FPR
+    reject   232      14       218     0.541       0.165
+    medium   238     139        99     0.573       0.000
+    low       12       2        10     0.700       0.400
+    high      27      27         0      none        none
+
+A floor above `reject` throws away 218 of 328 swapped frames (66.5%) against 14 of 182 genuine
+(7.7%) — two thirds of the attacks discarded before the detector runs. That is a security hole, not
+caution.
+
+**Calibration no longer comes from a corpus we cannot trust.** `training/fit_calibration.py` grew
+`--corpus-kind {df40,swaps}`; the shipped curves are fitted on paired, identically-encoded FairFace
+material at offset 12,000, clear of the head's 2,000-photograph training window. `gend_clip` has
+curves for `medium` and `reject`, covering **92.3%** of the capture corpus's frames. A first run on
+a stale remote checkout still carrying `min_quality_band = "low"` covered 46.8% and would have
+abstained on the band holding two thirds of the attacks; both runs exited 0 and neither artifact
+recorded which floor it used. **If you fit anything remotely, grep the remote file for the decision
+constant before trusting the result.**
+
+**A fitted curve is not permission to decide.** The service discards slot D's calibration at
+startup — *"discarded the calibration curve for gend_clip: it has not been measured above the
+evidence floor"* — so slot D scores a frame and still abstains with `uncalibrated_for_band`. That
+is the gate working. The calibration work is correct and inert, and goes live the moment a
+measurement clears 0.75, not before.
+
+**The product surface is up.** `POST /api/analyze` (synchronous) and `?format=rd` on
+`/api/submissions/<id>` return the RD-shaped contract. Measured on the instance today, one frame:
+
+    verdict UNKNOWN, score 0.5, quality_band reject, dissenting_models []
+    blend_seam  abstained  below_quality_floor     score null
+    effnet_b4   abstained  weights_absent          score null
+    gend_clip   abstained  uncalibrated_for_band   score 0.2664
+    npr         abstained  uncalibrated_for_band   score 0.9017
+
+All four abstentions appear deliberately. On this deployment they are the answer, not a footnote.
+
+**Latency, measured, not estimated.** CLIP ViT-L/14 forward at batch 1: **276 ms** per face on the
+instance (p95 277 ms), **1,637 ms** on the dev workstation — whose torch is a CUDA build running a
+CPU path, which is why the instance is ~6x faster. End-to-end `/api/analyze` for one frame on the
+instance: **2.12 s** wall clock, of which the encoder is ~13%; the rest is face detection and the
+other three detectors. Do not put `/api/analyze` behind a 2-second gateway timeout.
+
+**Phase 2 is runnable here and is NOT blocked on the GPU decision** (owner-action item 7). One
+epoch over the 9,887-record corpus is 2.3 hours of forward-equivalent work, so a 5-epoch LayerNorm
+tuning run is an overnight job on the instance. That is affordable only because the training window
+is 2,000 photographs; at the plan's original 60,000 it would have been 69 hours and genuinely
+blocked. See `bench/clip_latency.md` — and note its own caveat that the 3x forward→forward+backward
+factor is a rule of thumb, not a measured step.
+
+**What is NOT true.**
+
+- Slot D is not measured against a generator. Every fake it has seen is a self-blend or a
+  classical composite made in this repo. Transfer to FSGAN, InSwapper or any diffusion pipeline is
+  **unmeasured**, and the 0.984–0.999 compositing folds say nothing about it.
+- The 0.663 headline has **no confidence interval**. None was computed on the capture corpus, and
+  `auc_ci95` is null rather than filled with a bootstrap that would imply more than was measured.
+- No parity claim is made or implied against any commercial detector (spec §4.3).
+- **Owner-action item 6 — the data-protection opinion — is untouched by all of this.** FairFace's
+  CC BY licence settles copyright, not biometric consent, and the capture corpus still rests on an
+  owner attestation nobody with standing has reviewed. Nothing in Tasks 0–12 moves that, and
+  `assets/manifest.yaml` says so at each entry rather than proceeding quietly.
+
+**Slot D's own code has been reviewed (2026-11-11) and nine defects fixed** — `6406dad`. The
+one worth knowing about: `encoder_cache_id` keyed the embedding cache on the encoder's FILENAME,
+and `--tune-layernorms` writes one fixed path, so a re-tune at a different learning rate would
+have been scored with the PREVIOUS encoder's cached embeddings. `bench/compare_lntuned.py` would
+then have differenced two identical score vectors and reported a paired delta of exactly 0.000 —
+which reads as "the tuning did nothing" and is indistinguishable from the real finding it would
+be impersonating. The id now carries a content digest.
+
+Also fixed there: `--report` defaulted to `bench/gend_fit.json` for BOTH phases, so a
+default-argument tuning run overwrote the provenance `bench/evidence_card.json` cites by name and
+version; `training/fit_calibration.py --offset` said MUST and enforced nothing while defaulting
+to 0, so the default invocation fitted slot D's calibration curve on its own training window;
+`?format=rd` answered a permanently FAILED submission with 409 "not scored yet", for ever, while
+`/api/analyze` answered 422 on the same row.
+
+**That review covered slot D's 37 commits, NOT PR #3's 59.** It was pointed at the working tree,
+which is a different branch 37 commits further ahead; `training/fit_gend.py`, `bench/eval_gend.py`
+and `corpora/provenance.py` do not exist at PR #3's tip at all. Owner-action item 3 is therefore
+still open, and a correctly scoped review of that range is a separate piece of work.
+
+**Task 13 (Phase 2, LayerNorm tuning) is IN FLIGHT, not done.** Started 2026-11-11 18:12 UTC on
+the deployment instance: 5 epochs, lr 1e-4, batch 8, over the same 9,886 records and the same
+7,911 / 1,975 subject-disjoint split the frozen probe used, so the comparison is like for like.
+The fitter is committed and gated (`35e93bb`, `a428878`); only the measurement is outstanding.
+
+- **Watch it:** `ssh -i key.pem ubuntu@<host> 'tail -5 ~/dfd/lntune.log'`. One line per epoch,
+  carrying train loss and holdout AUC. ETA ~03:30 UTC; the follow-on chain finishes ~05:00.
+- **The chain is already armed.** `~/dfd/lntune_chain.sh` waits on the fit's pid and then re-runs
+  Tasks 7, 8 and 9 against the tuned pair, into `bench/gend_report_lntuned.{json,md}`,
+  `bench/gend_vcip_lntuned.json` and `bench/calibration_report_lntuned.json`. Progress is in
+  `~/dfd/lntune_chain.log`. **Nothing it writes overwrites a Phase 1 artefact**, including
+  `assets/models/calibration.json`. **The chain is now ~2 hours, not ~1.5**: keying the
+  feature cache on the encoder's CONTENTS rather than its filename (a review finding — a re-tune
+  overwrites the same path, and the stale cache would have reported delta 0.000, "the tuning did
+  nothing") invalidated the warm frozen cache, so both eval legs recompute 9,907 embeddings at
+  276 ms. Correct and cold beats fast and wrong; ETA ~06:00 UTC.
+- **The number that decides it** is the **worst LOGO fold**, tuned against frozen — not the mean,
+  not the in-dataset AUC, and not the 0.984–0.999 compositing folds. Frozen's worst fold is
+  **0.738** (`sbi`, CI 0.726–0.751). If tuned does not beat that, Phase 1's weights stay shipped
+  and the result is recorded as measured. Either way the floor is still 0.75 and the gate is still
+  shut until something clears it.
+- **A real tuning step was measured before the run** (617 ms/image, 26% under the 3x rule of
+  thumb) and `bench/clip_latency.md` now carries it.
+- **The whole chain was rehearsed end to end before it fires** (2026-11-12, local, 24 photographs
+  instead of 2,000): all five steps exit 0 with no traceback — frozen eval, tuned eval, the paired
+  comparison, the capture-corpus eval against a tuned pair, and the calibration with
+  `--gend-weights`/`--gend-encoder`. It also demonstrated the cache fix working: the two encoders
+  produced **0 of 40 identical scores** on the deciding fold. The bug's signature would have been
+  all 40 identical and a delta of exactly 0.000 with a zero-width interval; what the rehearsal
+  reports is +0.000 with CI [-0.008, +0.041] — a real comparison of two models that happen to
+  perform alike. That is the difference between "no effect" and "we measured the same model
+  twice", and it is now distinguishable.
+- **The decision rule is now CODE, and it runs itself.** `bench/phase2_verdict.py` reads the
+  three artefacts, answers the four pre-registered questions and writes `bench/phase2_verdict.md`.
+  A third watcher on the instance (`~/dfd/verdict_watch.sh`, waiting on the chain's pid) fires it
+  when the chain exits, so the whole sequence — fit, then measurement chain, then verdict — is
+  autonomous. **Read `bench/phase2_verdict.md` first when you come back.** A missing artefact
+  answers `—`, never "no": an incomplete run must not read as a clean negative.
+- **The decision rule was written down before the numbers existed** — four questions, each with
+  its artefact, in the plan's Task 13 section. Read it before reading the results, not after.
+- **The deployment path already reads a tuned pair.** Checked by hand 2026-11-11 against the
+  smoke-test artefacts: `GendClipDetector(weights_path=<tuned head>, encoder_path=<tuned
+  encoder>)` scores a FairFace frame without abstaining and reports the tuned version string, so
+  nothing in the service needs changing to serve Phase 2 if Phase 2 wins.
+- **When the chain finishes, fetch the artefacts:**
+
+      H=ubuntu@<host>
+      for f in gend_report_frozen.json gend_report_frozen.md gend_report_frozen.scores.json \
+               gend_report_lntuned.json gend_report_lntuned.md gend_report_lntuned.scores.json \
+               lntuned_vs_frozen.json lntuned_vs_frozen.md gend_vcip_lntuned.json \
+               gend_fit_lntuned.json calibration_report_lntuned.json; do
+        scp -i key.pem $H:~/dfd/bench/$f bench/$f
+      done
+
+  The **weights stay on the instance** until the decision rule says they ship: `assets/models/`
+  is gitignored, the tuned encoder is 1.2 GB, and `gend_clip_encoder_lntuned` is registered in
+  the manifest for the day it does.
+
+The branch is not merged.
+
 ## 0. Resume here (last touched 2026-09-25, after the v-CIP fit was controlled)
 
 `main` is at `50ab737` — the merge of `feat/sbi-corpus-and-blend-detector` (the SBI corpus builder,
@@ -141,11 +328,27 @@ what it costs and what it buys, so none of them needs re-deriving before it can 
 |---|---|---|---|
 | 1 | ~~**Create a Kaggle account and accept SFHQ's terms**~~ **STRUCK 2026-09-24 — blocked upstream AND not needed.** SFHQ part 3 is already downloaded, and no installable Kaggle client can read the access token Kaggle now issues (`docs/EULA-ACCESS.md` §4a item 1) | — | nothing; it is off the critical path |
 | 2 | **Send the PI outreach note** (drafted verbatim, `docs/EULA-ACCESS.md` §3). **Now item 1 in practice**, and DF40's own form turns out to sit downstream of it rather than beside it (§4b) | one email, weeks of lead time, may fail | FF++ / Celeb-DF / full DF40 — the only route to a per-technique **evaluation** corpus |
-| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, 12 commits ahead of `main`) | a review | everything downstream lands on `main` rather than a branch |
+| 3 | **Review and merge PR #3** (`fix/corpus-duplicate-crops`, ~~12~~ **59 commits** ahead of `main`, 0 behind, MERGEABLE, open since 2026-09-22 with no review) | a review, and it is no longer a small one | everything downstream lands on `main` rather than a branch. **This is now the critical path, not a tidy-up** — see the note below the table |
 | 4 | **Rule on criterion 4 / Reality Defender** — re-submit known-label captures, or record the criterion unmeetable | RD quota (`cache/quota.json`), or nothing | closes the last open P0 criterion honestly either way (§0) |
 | 5 | **Say whose fraud-loss and friction numbers calibrate `Policy`** — the spec says "ScoreMe to supply" and this is no longer ScoreMe's product (§1 correction 1) | a decision | the operating threshold can be frozen; until then every threshold is a placeholder |
 | 6 | **Get a data-protection opinion** on the capture corpus (v-CIP recordings training an unrelated product) and on FairFace (CC BY settles copyright, not biometric consent) | external | whether either corpus may lawfully be used at all — currently resting on an owner attestation nobody with standing has reviewed |
 | 7 | **Decide GPU or no GPU** | money | the detector class. CPU-only is why the path is handcrafted features rather than a trained CNN (§1 correction 3) |
+
+**Item 3 has grown, measured 2026-11-11.** The "12 commits" above was true when it was written
+and is not true now. `git rev-list --left-right --count main...fix/corpus-duplicate-crops` reports
+**0 59**: fifty-nine commits ahead, none behind. `gh pr view 3` agrees — 59 commits, MERGEABLE,
+opened 2026-09-22, `reviewDecision` empty. In a document whose bar is measured output over
+paraphrase, a checkable number that has gone stale undercuts every uncheckable claim beside it,
+which is why this is corrected in place rather than left to be rediscovered.
+
+**And the work stacks on it.** `feat/slot-d-gend-clip` is not a sibling of that branch, it
+CONTAINS it: `git merge-base --is-ancestor fix/corpus-duplicate-crops feat/slot-d-gend-clip`
+succeeds, and slot D is **96 commits ahead of `main`** — the 59 of PR #3 plus 37 of its own.
+`main` has been frozen at `50ab737` since 2026-09-25 while every measurement this project has
+made since has accumulated on one unmerged line. Nothing is lost — the commits exist and are
+pushed — but the consequence is worth stating plainly: there is no reviewed baseline to fall back
+to, and a merge of PR #3 now is a review of two months of work rather than of a duplicate-crop
+fix. Whoever reviews it should know that before opening it.
 
 **Item 1, everything checkable without an account, checked 2026-09-23.** The Kaggle API answers
 dataset *listing* unauthenticated, so the slug, size and declared licence are confirmed rather than
@@ -194,6 +397,25 @@ though what it buys arrives later.
 **Nothing on this list is engineering.** The engineering that does not depend on it is listed in §5.
 
 ### Slot C on the v-CIP capture corpus: the first number here that survives its control. 2026-09-25.
+
+**Corrected 2026-11-12: every `0.957` in this repository predates a fixed leak, and the honest
+number is `0.956`.** `training/fit_vcip.py` and `bench/vcip_controls.py` both fitted the feature
+standardiser ONCE over every row, before the `GroupKFold(5)` loop — so each fold's "held-out"
+score came from a pipeline whose preprocessing had already seen the test sessions. Found by a
+code review of PR #3, fixed in `352a15b` (refitted inside each fold, in both files, because a
+control is only comparable with a headline computed the same way), and then **re-measured rather
+than assumed**: session AUC **0.9570 → 0.9563**, TPR@0%FPR **0.456 → 0.441** (one session of 68).
+The leak was real and immaterial, which is a thing worth knowing exactly rather than arguing
+about. The shipped `npr.pt` weights are unaffected — the production standardiser is still fitted
+on every row, which is correct; only the reporting of held-out performance changed.
+The controlled pair — the one this document says to quote — moves the same way: **0.949 → 0.948**
+at 30.9%. Every control in `bench/vcip_controls.json` shifted by the same small amount in the same
+direction, which is what removing one uniform leak looks like; the `aligned` control's TPR@0%FPR
+went 0.0147 → 0.0000, so the native-versus-aligned gap this project built its slot-C preprocessing
+on is, if anything, slightly wider than recorded. `bench/vcip_fit.json` and
+`bench/vcip_controls.json` are regenerated. The older `0.957` figures
+left in docstrings and comparison tables are kept as the measurement records they were at the
+time; this block is the correction, and it applies to all of them.
 
 **The headline, and it is the controlled one.** `training/fit_vcip.py` fits slot C on 506 capture
 frames from 106 sessions — genuine v-CIP frames against real `inswapper_128` swaps of those same

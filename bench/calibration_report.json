@@ -1,0 +1,129 @@
+{
+  "corpus": "fairface_sessions [offset 12000, limit 1000]",
+  "corpus_kind": "swaps",
+  "detectors": {
+    "blend_seam": {
+      "bands_fitted": [
+        "medium"
+      ],
+      "bands_seen": [
+        "medium"
+      ],
+      "fit_rows": 1471,
+      "fitted_on": "fit split",
+      "holdout_auc": 0.7363168182843395,
+      "holdout_ece": 0.18010739628363606,
+      "holdout_rows": 659,
+      "in_domain_coverage": {
+        "capture_frames": 509,
+        "capture_frames_covered": 238,
+        "covered_bands": [
+          "medium"
+        ],
+        "fraction_covered": 0.4675834970530452,
+        "uncovered_bands": [
+          "high",
+          "low",
+          "reject"
+        ],
+        "uncovered_frames_by_band": {
+          "high": 27,
+          "low": 12,
+          "reject": 232
+        }
+      }
+    },
+    "effnet_b4": {
+      "fit_rows": 0,
+      "fitted_on": null,
+      "holdout_auc": null,
+      "holdout_ece": null,
+      "note": "abstained on everything, or only one label reached it"
+    },
+    "gend_clip": {
+      "bands_fitted": [
+        "medium",
+        "reject"
+      ],
+      "bands_seen": [
+        "low",
+        "medium",
+        "reject"
+      ],
+      "fit_rows": 3448,
+      "fitted_on": "fit split",
+      "holdout_auc": 0.927933653992976,
+      "holdout_ece": 0.04618097847536791,
+      "holdout_rows": 1478,
+      "in_domain_coverage": {
+        "capture_frames": 509,
+        "capture_frames_covered": 470,
+        "covered_bands": [
+          "medium",
+          "reject"
+        ],
+        "fraction_covered": 0.9233791748526523,
+        "uncovered_bands": [
+          "high",
+          "low"
+        ],
+        "uncovered_frames_by_band": {
+          "high": 27,
+          "low": 12
+        }
+      }
+    },
+    "npr": {
+      "bands_fitted": [
+        "medium",
+        "reject"
+      ],
+      "bands_seen": [
+        "low",
+        "medium",
+        "reject"
+      ],
+      "fit_rows": 3448,
+      "fitted_on": "fit split",
+      "holdout_auc": 0.5462923728813559,
+      "holdout_ece": 0.29704750137094904,
+      "holdout_rows": 1478,
+      "in_domain_coverage": {
+        "capture_frames": 509,
+        "capture_frames_covered": 470,
+        "covered_bands": [
+          "medium",
+          "reject"
+        ],
+        "fraction_covered": 0.9233791748526523,
+        "uncovered_bands": [
+          "high",
+          "low"
+        ],
+        "uncovered_frames_by_band": {
+          "high": 27,
+          "low": 12
+        }
+      }
+    }
+  },
+  "in_domain_bands": {
+    "capture_frames_by_band": {
+      "high": 27,
+      "low": 12,
+      "medium": 238,
+      "reject": 232
+    },
+    "source": "bench/gend_vcip.json",
+    "what": "encoder_matched.per_band_frames \u2014 the controlled half"
+  },
+  "seed": 0,
+  "skipped": {
+    "no_face": 38
+  },
+  "split": {
+    "fit_records": 3448,
+    "holdout_fraction": 0.3,
+    "holdout_records": 1478
+  }
+}

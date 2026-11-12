@@ -81,14 +81,15 @@ def test_stdout_is_exactly_one_json_object(png, capsys):
 
 def test_the_record_carries_one_evidence_row_per_default_detector(png, capsys):
     """The CLI's registry is `default_registry()`, whose composition nothing
-    asserted. Three detectors in, three evidence rows out — dropping any
+    asserted. Four detectors in, four evidence rows out — dropping any
     `register(...)` call silently shrinks the evidence the product consults,
     and `insufficient_evidence` looks identical either way."""
     main(["score", str(png), "--face-model", MISSING_FACE_MODEL])
     record = json.loads(capsys.readouterr().out)
     assert [row["detector"] for row in record["evidence"]] == [
-        "blend_seam", "effnet_b4", "npr"]
-    assert sorted(record["model_versions"]) == ["blend_seam", "effnet_b4", "npr"]
+        "blend_seam", "effnet_b4", "gend_clip", "npr"]
+    assert sorted(record["model_versions"]) == ["blend_seam", "effnet_b4",
+                                                "gend_clip", "npr"]
 
 
 def test_the_human_summary_goes_to_stderr_not_stdout(png, capsys):

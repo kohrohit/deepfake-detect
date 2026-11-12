@@ -42,6 +42,20 @@
       "trained_on": null,
       "weights": "absent"
     },
+    "gend_clip": {
+      "auc": 0.663,
+      "auc_ci95": [
+        null,
+        null
+      ],
+      "corpus": "vkyc_capture_corpus",
+      "trained_on": "fairface_corpus",
+      "trained_on_note": "self-blended (corpora/sbi.py) and composited (corpora/swaps.py) FairFace crops; photographs 0-1,999 (bench/gend_fit.json, version 0.1.0-probe-fairface2000). No capture-corpus material reaches these coefficients and spec 6.4 forbids one that does.",
+      "evidence": "bench/gend_report.md, bench/gend_report.json, bench/gend_vcip.json",
+      "measured_on": "2026-11-11",
+      "weights": "Linear(768, 2) over frozen CLIP ViT-L/14; encoder MIT, head CC BY 4.0",
+      "note": "BELOW THE FLOOR, AND NOT INSIDE ITS NULL. Two measurements, both under 0.75, so slot D does not open the gate; which of them is quoted does not change that.\n\nHEADLINE (the `auc` above), controlled in-domain, 2026-11-11: session AUC 0.663 over 125 sessions (58 genuine / 67 swapped, 509 frames) of vkyc_capture_corpus, genuine half re-encoded at quality 95 \u2014 the one quality reproducing the swapped half's luma table exactly, so one JPEG header byte can no longer label 99.2% of the corpus. TPR@0%FPR is 0.015, which is the number a reviewer would actually feel. Frames are not independent: Kish ESS is 106.9 over 509 frames, so sessions are the unit. No CI is quoted because none was computed on this corpus; `auc_ci95` is null rather than filled with a bootstrap that would imply more than was measured.\n\nTHE ENCODER SHORTCUT IS NOT WHAT THIS DETECTOR READS: uncontrolled session AUC is 0.664 against the controlled 0.663. Removing the shortcut moves slot D by 0.001. That is the opposite of slot C's behaviour on the same corpus and is the main thing this evaluation established.\n\nLEAVE-ONE-GENERATOR-OUT, 2026-11-10 (bench/gend_report.json): worst fold is `sbi` at 0.738, 95% CI 0.726-0.751, n=2,988. It sits OUTSIDE the permutation null 0.449-0.561 (48 shuffles, p = 0.020), so there is signal here and this is not a number inside its own null. It is still 0.012 under the floor. Kish ESS 996.4 by group; 4.47 on the fake side, so fake-side intervals are resampled over families.\n\nDISTRUST THE BEST FOLDS. The four compositing folds read 0.984-0.999 and must not be quoted as slot D's performance: they are classical warp/mask/blend composites generated in this repo, and a detector that beats a hard-blended boundary has not been shown to beat FSGAN, InSwapper or any diffusion pipeline. `sbi` is the worst fold precisely because self-blends are the only fold without a visible composite seam, which is why it is the one reported.\n\nSHORTCUT CONTROLS. Colour: a logistic model on Lab colour means alone, fitted and scored IN SAMPLE (the strongest form of the control), reaches 0.530 (CI 0.523-0.538) \u2014 the detector is not reading colour. JPEG: the feature is identical on every record, so the control is a structural 0.500, not a measured one.\n\nIN-DATASET 0.928 (bench/gend_fit.json) MEASURES MEMORISATION and appears here only to be ruled out as the headline."
+    },
     "npr": {
       "auc": null,
       "corpus": null,

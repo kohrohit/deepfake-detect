@@ -258,3 +258,50 @@ def test_a_queued_submission_is_never_pruned_out_from_under_the_worker(
     _age(Path(w.store.get(sid).path), days=400)
     assert w.prune_workdir(retain_days=1) == 0
     assert w.process_one() is True
+
+
+def test_only_one_thread_ever_scans_the_inbox(tmp_path):
+    """`Service.start` runs every worker thread on ONE shared Worker.
+
+    STABLE_SCANS=2 means "seen at the same size in two DIFFERENT polls".
+    With N threads each scanning every poll, N observations accrue per
+    interval and the settle window collapses to a single tick -- the
+    truncated decode the counter exists to prevent. Serialising the scans
+    does not fix that; only one scanner does.
+    """
+    import threading
+
+    w = _worker(tmp_path)
+    (w.inbox / "a.jpg").write_bytes(b"x" * 10)
+
+    barrier = threading.Barrier(4)
+    results = []
+
+    def scan():
+        barrier.wait()
+        results.append(w.scan_inbox())
+
+    threads = [threading.Thread(target=scan) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Four threads, one observation: the file is not yet settled and the
+    # three non-scanners contributed nothing to its counter.
+    assert sum(results) == 0
+    assert w._seen["a.jpg"] == (10, 1)
+    assert (w.inbox / "a.jpg").exists()
+
+    # The same thread scanning again is the second observation, and only
+    # then is the file taken.
+    assert w.scan_inbox() == 0       # a different thread (the test's own)
+    scanner = [None]
+
+    def scan_again():
+        scanner[0] = w.scan_inbox()
+
+    t = threading.Thread(target=scan_again)
+    t.start()
+    t.join()
+    assert scanner[0] == 0           # also not the elected scanner

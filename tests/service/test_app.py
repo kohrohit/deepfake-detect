@@ -32,9 +32,10 @@ def test_building_creates_the_inbox_and_workdir(tmp_path: Path) -> None:
     service.close()
 
 
-def test_the_registry_carries_the_three_declared_slots(tmp_path: Path) -> None:
+def test_the_registry_carries_the_four_declared_slots(tmp_path: Path) -> None:
     service = build_service(_config(tmp_path))
-    assert sorted(service.registry.names()) == ["blend_seam", "effnet_b4", "npr"]
+    assert sorted(service.registry.names()) == ["blend_seam", "effnet_b4",
+                                                "gend_clip", "npr"]
     service.close()
 
 

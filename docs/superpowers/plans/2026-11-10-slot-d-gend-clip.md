@@ -132,7 +132,7 @@ git commit -m "docs: the spec's scope list still named the corpus its own §6 fo
 
 ---
 
-### Task 1: The CLIP ViT-L/14 vision tower, in this repo
+### Task 1: The CLIP ViT-L/14 vision tower, in this repo — **DONE 2026-11-10** (`ae3a518`)
 
 **Ruling, recorded here because it will be questioned:** the tower is reimplemented rather than
 imported. `open_clip_torch` and `transformers` would each add a dependency tree (huggingface_hub,
@@ -171,7 +171,7 @@ substituting `nn.GELU` produces plausible-looking embeddings that are wrong.
     in, `(1, 3, size, size)` normalised float32 out. Bicubic resize, CLIP's mean/std.
   - `PREPROCESS_VERSION: str = "clip-224-bicubic-v1"` — travels into the feature cache key.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """The CLIP ViT-L/14 vision tower. Tests run on `tiny()`; the 1.2 GB file is never needed here."""
@@ -270,12 +270,12 @@ def test_preprocess_version_is_declared():
     assert PREPROCESS_VERSION
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_clip_vit.py -q`
 Expected: collection error, `ModuleNotFoundError: No module named 'dfd.detectors.clip_vit'`.
 
-- [ ] **Step 3: Write the tower**
+- [x] **Step 3: Write the tower**
 
 ```python
 """OpenAI CLIP's ViT vision tower, reimplemented so this repo owns the architecture.
@@ -444,28 +444,52 @@ def preprocess(crop: npt.NDArray[np.uint8], size: int = 224) -> torch.Tensor:
     return torch.from_numpy(x).permute(2, 0, 1)[None].contiguous()
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_clip_vit.py -q`
 Expected: 8 passed.
 
-- [ ] **Step 5: Run the gates**
+- [x] **Step 5: Run the gates**
 
 Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean. `mypy --strict` will complain about `self.transformer.resblocks` assignment on a
 bare `nn.Module`; if the `type: ignore[assignment]` above is not the right code, use whatever mypy
 names — do not widen to a bare `type: ignore`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dfd/detectors/clip_vit.py tests/test_clip_vit.py
 git commit -m "feat: CLIP's vision tower, owned here so it can load securely"
 ```
 
+**One deviation from the code above, applied 2026-11-10.** Step 5 predicted mypy would object to
+`self.transformer.resblocks` and told the executor to use whatever error code mypy names. It names
+a different problem than the plan expected: the `# type: ignore[assignment]` is reported *unused*,
+and the error lands on the **call** instead — `"Tensor" not callable`, because
+`nn.Module.__getattr__` reads an attribute assigned onto a bare `nn.Module` back as
+`Tensor | Module`. Silencing that at the call site would have put an ignore on the hot path of
+every forward pass. Instead a four-line `_Transformer(nn.Module)` holder declares
+`resblocks: nn.Sequential`, which produces **the identical `transformer.resblocks.*` state_dict
+key path** — the thing Task 2's converter depends on, and what
+`test_state_dict_keys_mirror_openai_clip_visual_names` pins. Three further `no-any-return` errors
+(the MLP call, the `@ proj` read-out, the block-stack call) are fixed with annotated locals, which
+is the idiom `dfd/detectors/npr.py:302` already uses. No ignore comment survives in the file.
+
+**And a trap for the next task.** `mypy --config-file mypy.ini` run by hand reported *Success*
+while `tests/test_ci_gates.py::test_mypy_strict_actually_passes` failed on the same tree — the
+hand run was serving a stale incremental cache. The test shells out fresh and is the authority.
+Run `rm -rf .mypy_cache` before believing a hand-run clean.
+
+**Measured after Step 6:** 1,001 tests pass (993 before this task, +8), coverage 93.03% against the
+85% gate, `ruff check src bench corpora training` clean, `mypy --config-file mypy.ini` clean from a
+cold cache. The asset gate fails locally on `npr_capture_head` — that is its designed fail-closed
+behaviour on a box that has the gitignored weight files, it is identical with this task's files
+stashed, and CI discovers zero assets and passes.
+
 ---
 
-### Task 2: Convert and pin the encoder, and register it
+### Task 2: Convert and pin the encoder, and register it — **DONE 2026-11-10** (`1efbfbf`)
 
 OpenAI distributes ViT-L/14 as a TorchScript archive at a URL whose penultimate path segment **is**
 the file's SHA-256 — their own `clip/clip.py` verifies exactly that, so the hash is published
@@ -490,7 +514,7 @@ Converted output: `assets/models/clip_vit_l14_visual.pt`, a plain `state_dict` o
     `CLIPVisualTower.vit_l14().state_dict()`.
   - `def main(argv: Sequence[str] | None = None) -> int` — `--archive`, `--out`, `--verify`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """The converter's job is to be total. These tests run on `tiny()`."""
@@ -553,12 +577,12 @@ def test_a_shape_mismatch_is_refused(monkeypatch):
         visual_state_dict(full)
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_convert_clip.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.convert_clip'`.
 
-- [ ] **Step 3: Write the converter**
+- [x] **Step 3: Write the converter**
 
 ```python
 """OpenAI's distributed CLIP archive -> a plain state_dict this repo can load securely.
@@ -711,12 +735,12 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_convert_clip.py -q`
 Expected: 5 passed.
 
-- [ ] **Step 5: Pin the archive in `ops/fetch-assets.sh`**
+- [x] **Step 5: Pin the archive in `ops/fetch-assets.sh`**
 
 Add to the `ASSETS` array, keeping the `id|path|sha256|url` shape. The digest is the URL's
 penultimate segment, which is how OpenAI's own client verifies it:
@@ -735,7 +759,7 @@ And below the array, a comment the next reader needs:
 # archive may be deleted afterwards; the converted file may not.
 ```
 
-- [ ] **Step 6: Verify the pin against the real file**
+- [x] **Step 6: Verify the pin against the real file**
 
 Run:
 ```bash
@@ -747,7 +771,7 @@ and only if that happens, is HuggingFace `openai/clip-vit-large-patch14`'s `pyto
 (a plain state_dict, so `torch.load(weights_only=True)` reads it and `--verify` is unavailable),
 pinned to a hash measured locally and recorded as measured-here rather than published.
 
-- [ ] **Step 7: Convert and verify**
+- [x] **Step 7: Convert and verify**
 
 Run:
 ```bash
@@ -760,7 +784,7 @@ this plan's Task 1 actually holds, measured, so a different number means a diffe
 architecture and not a rounding difference.
 **If verification fails, Task 1 is wrong and must be fixed before anything else proceeds.**
 
-- [ ] **Step 8: Register both files in `assets/manifest.yaml`**
+- [x] **Step 8: Register both files in `assets/manifest.yaml`**
 
 ```yaml
   clip_vit_l14_visual:
@@ -784,22 +808,64 @@ architecture and not a rounding difference.
       - "assets/models/clip_vit_l14_visual.pt"
 ```
 
-- [ ] **Step 9: Run the asset gate and the full suite**
+- [x] **Step 9: Run the asset gate and the full suite**
 
 Run: `python3 -m pytest -q && python3 -c "from dfd.asset_scan import *; print(discover_assets('.'))"`
 Expected: the two new paths appear and the gate is green. (Use whatever invocation
 `tests/test_asset_scan.py` uses for the release check.)
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add training/convert_clip.py tests/test_convert_clip.py ops/fetch-assets.sh assets/manifest.yaml
 git commit -m "feat: the encoder is pinned to OpenAI's own digest, and verified against their module"
 ```
 
+**TASK 1 IS VERIFIED.** `--verify` reports **max abs difference 2.116e-06** between
+`CLIPVisualTower.vit_l14()` and OpenAI's own module on the same two inputs, against a 1e-4
+tolerance, cosine similarity 1.0 on both. QuickGELU, the pre-norm residual order and the
+`ln_post / proj` read-out are right. The written file holds **303,966,208 parameters in 296
+tensors** — the exact figure Step 7 predicted, so the architecture is the one the plan costed and
+not merely one that runs. `ops/fetch-assets.sh` reports `OK clip_vit_l14_archive` and
+`sha256sum` returns `b8cca3fd...a03836`, identical to the URL's penultimate segment. The MIT
+licence was fetched and read at `raw.githubusercontent.com/openai/CLIP/main/LICENSE` before
+`commercial_use: true` was written, not inferred.
+
+**One deviation, and it was necessary.** Step 3's `_reference_embedding` — `torch.jit.load(...,
+map_location="cpu")` then `encode_image` — **cannot work on this box, or on the deployment**.
+OpenAI traced the archive on a GPU in float16, so `torch.device("cuda:0")` and `dtype=5` (half)
+are frozen into the graph as *constants*, which `map_location` does not touch. The first run
+raised `RuntimeError: Found no NVIDIA driver` from inside the TorchScript interpreter; patching
+past that alone then raised `Input type (torch.FloatTensor) and weight type (torch.HalfTensor)`
+from the first convolution. Routing around it via `model.visual` does not help — that graph
+carries its own `cuda:0` constant for the class-token broadcast.
+
+The fix is the one OpenAI's own `clip/clip.py` applies on a CPU load, and is now
+`load_reference`: trace a one-line holder to obtain a CPU device constant and a float32 dtype
+constant, then `copyAttributes` them over every `prim::Constant` whose value starts with `cuda`
+and every `aten::to` whose dtype argument is 5. It rewrites the graph and never the weights.
+`main` now reads the 890 MB archive **once** and uses the same object for both the state_dict and
+the oracle, rather than loading it twice.
+
+**Two tests were added beyond the plan's five** (`test_convert_clip.py`, 7 total). The float patch
+is asserted on the **graph constant**, not on an output dtype: a toy trace carries a `Half(...)`
+annotation on its output value that the interpreter honours regardless of the constant, so a dtype
+assertion passes on the real archive and fails on a toy. The device patch cannot be exercised at
+all without a CUDA box — a `cuda` constant is untraceable here — so its test asserts only that the
+walk is safe on a graph with nothing to patch, and says so in its own comment. `--verify` against
+the real file is the only thing that proves either rewrite, and it has now run.
+
+**Also changed, unlisted:** `ops/fetch-assets.sh`'s closing line said "both are permissive and
+commercially cleared" when two assets were pinned. Three are now. It says "all".
+
+**Measured after Step 10:** 1,008 tests pass (1,001 before this task, +7), coverage 93.03%, ruff
+clean, `mypy --config-file mypy.ini` clean from a cold cache. The asset gate discovers both new
+paths, registers and clears both, and still fails locally on `npr_capture_head` alone — unchanged,
+pre-existing, and by that entry's own design.
+
 ---
 
-### Task 3: Slot D, and the registry it joins
+### Task 3: Slot D, and the registry it joins — **DONE 2026-11-10** (`c5287f6`)
 
 **Files:**
 - Create: `src/dfd/detectors/gend.py`
@@ -825,7 +891,7 @@ git commit -m "feat: the encoder is pinned to OpenAI's own digest, and verified 
     detector cannot drift apart.
   - `NO_ROI: str = "roi_absent"`, `ENCODER_ABSENT: str = "encoder_absent"`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 """Slot D. Every test uses a tiny tower; none needs the 1.2 GB encoder."""
@@ -980,13 +1046,13 @@ def test_gend_clip_abstains_when_its_weights_are_absent(tmp_path) -> None:
     assert raw.abstained
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_gend.py tests/test_registry.py -q`
 Expected: `ModuleNotFoundError: No module named 'dfd.detectors.gend'`, and the two registry tests
 fail on the three-detector assertions.
 
-- [ ] **Step 3: Write the detector**
+- [x] **Step 3: Write the detector**
 
 ```python
 """Slot D — learned appearance read from a general-purpose encoder (spec §5.1).
@@ -1225,7 +1291,7 @@ class GendClipDetector:
                        "max_score": float(probs.max())})
 ```
 
-- [ ] **Step 4: Wire it into `src/dfd/detectors/registry.py`**
+- [x] **Step 4: Wire it into `src/dfd/detectors/registry.py`**
 
 ```python
 DEFAULT_GEND_WEIGHTS = Path("assets/models/gend_clip.pt")
@@ -1245,7 +1311,7 @@ Add the two keyword arguments to `default_registry` and, after the three existin
 
 Update the docstring: "Three distinct physics" becomes four, and name slot D's.
 
-- [ ] **Step 5: Add the paths to `ServiceConfig` in `src/dfd/service/app.py`**
+- [x] **Step 5: Add the paths to `ServiceConfig` in `src/dfd/service/app.py`**
 
 ```python
     gend_weights: Path = Path(DEFAULT_GEND_WEIGHTS)
@@ -1254,17 +1320,17 @@ Update the docstring: "Three distinct physics" becomes four, and name slot D's.
 
 and pass them through wherever `default_registry` is called there.
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `python3 -m pytest tests/test_gend.py tests/test_registry.py tests/service -q`
 Expected: all pass.
 
-- [ ] **Step 7: Run the gates**
+- [x] **Step 7: Run the gates**
 
 Run: `ruff check src bench corpora training && mypy --config-file mypy.ini && python3 -m pytest -q`
 Expected: clean, test count up by ~14.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/dfd/detectors/gend.py src/dfd/detectors/registry.py src/dfd/service/app.py \
@@ -1272,9 +1338,53 @@ git add src/dfd/detectors/gend.py src/dfd/detectors/registry.py src/dfd/service/
 git commit -m "feat: slot D exists, abstains honestly, and says which of its two files is missing"
 ```
 
+**Three things the plan's file list missed, all of them gates doing their job.** Step 1 named
+`tests/test_registry.py` as the only test to update. Three others assert the registry's
+composition and all three went red on a four-detector registry:
+
+1. `tests/service/test_app.py::test_the_registry_carries_the_three_declared_slots` — renamed to
+   `..._four_...` and updated.
+2. `tests/test_cli.py::test_the_record_carries_one_evidence_row_per_default_detector` — the CLI
+   emits one evidence row per registered detector, so four rows now.
+3. `tests/service/test_evidence.py::test_the_committed_card_covers_every_detector_in_the_registry`
+   — **the important one**. It refuses a detector that is in the registry and absent from
+   `bench/evidence_card.json`, which is exactly slot D's position. A `gend_clip` entry was added
+   in the shape `effnet_b4` and `npr` already use for an unmeasured detector: every numeric field
+   `null`, and a note recording that the encoder is present and verified, that the head is not
+   fitted, that the detector therefore abstains with `weights_absent`, and that **Task 7** is what
+   fills this in. `test_no_detector_currently_clears_the_floor` still passes, which is the
+   assertion that slot D has not quietly started deciding anything.
+
+**Two deviations in the code.**
+
+*The test fixture could not reach the code it was testing.* Step 1's `_obs` built a flat grey
+patch and derived its quality with `measure_quality`, which returns `blur_var=0.0` and band
+`reject` on a constant image. Against slot D's `min_quality_band="low"` that abstains with
+`below_quality_floor` before any crop, so two tests — the ROI refusal and the only scoring test —
+asserted nothing about slot D. The fixture now STATES its `Quality`, which is the idiom
+`tests/test_npr.py` already uses for exactly this reason. The detector's floor was not weakened to
+make a test pass; it is still the provisional `"low"` that Task 8 must measure.
+
+*The detector could not be constructed against a tiny tower.* Step 3 hardcoded
+`model_factory=CLIPVisualTower.vit_l14` and `GendHead`, while Step 1's fixtures write a `tiny()`
+encoder and an 8-dim head — so the one test that loads both files failed on 296 shape mismatches.
+`encoder_factory` and `head_factory` are now dataclass fields defaulting to the shipped pair,
+which is what `NPRDetector.model_factory` already does and what `loading.load_model`'s secure path
+wants anyway. Phase 2's tuned encoder gets a seam to enter through at no extra cost.
+
+Also: `embed` reads `tower.image_size` through `getattr(..., 224)` rather than attribute access,
+since its parameter is typed `nn.Module`; and two `no-any-return` errors needed annotated locals,
+the same idiom as Tasks 1 and 2.
+
+**Measured after Step 8:** 1,021 tests pass (1,008 before this task, +13 — twelve in
+`test_gend.py` and one new registry test), coverage 93.15%, ruff clean, mypy clean from a cold
+cache. `default_registry().names()` is now
+`["blend_seam", "effnet_b4", "gend_clip", "npr"]` across slots A, C, D, E, and slot D abstains
+with `weights_absent` on this machine because the head does not exist yet.
+
 ---
 
-### Task 4: The feature cache, which is what makes the measurement affordable
+### Task 4: The feature cache, which is what makes the measurement affordable — **DONE 2026-11-11** (`2cc88c8`)
 
 One ViT-L/14 forward pass is ~81 GFLOPs. Every number spec §7 demands — a permutation null (12
 refits), a grouped bootstrap (1000 resamples), a per-fold-refit LOGO (6 folds) — would re-run the
@@ -1297,7 +1407,7 @@ matrix that is already in memory, and the whole validation suite costs one pass 
       — `(N, 768)`, cached rows served from disk, the rest computed and stored.
     - `stats: dict[str, int]` — `{"hits": .., "misses": ..}`, reported by every caller.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -1358,12 +1468,12 @@ def test_batching_does_not_change_the_vectors(tmp_path):
     assert np.allclose(one, many, atol=1e-5)
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_clip_features.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.clip_features'`.
 
-- [ ] **Step 3: Write the cache**
+- [x] **Step 3: Write the cache**
 
 Write `training/clip_features.py` implementing exactly the interface above. Required properties,
 each of which a test above pins:
@@ -1381,21 +1491,56 @@ cache directory belongs **outside** the repo — `~/Desktop/agents/datasets/clip
 other corpus here — because a few hundred thousand `.npy` files inside a git worktree is a mistake
 nobody undoes.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_clip_features.py -q`
 Expected: 5 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add training/clip_features.py tests/test_clip_features.py
 git commit -m "feat: embed once, measure many times"
 ```
 
+**The module as the plan specified it did not do the thing its own docstring claims.** Step 3
+requires the docstring to say that content addressing is why 979 byte-identical copies cost one
+forward pass. With `embed_all` written as a flat list of pending indices, that is only true
+ACROSS calls: inside one call all 979 are misses on disk, so all 979 are embedded, and the cache
+helps on the second run only. `pending` is now a `dict[key, list[int]]`, one forward pass per
+DISTINCT image, copied to every position that asked for it.
+
+**And duplicates were not even returning equal rows.** Two byte-identical images embedded in the
+same batch disagreed by ~6e-08 depending on where in the batch each sat — a batched matmul
+reassociates differently per row position. Harmless as a number, but it meant the on-disk entry
+for a repeated image was whichever copy happened to be written last, so a first pass and a second
+pass over the same corpus returned slightly different matrices. Deduplicating removes the
+ambiguity: one vector per distinct image, written once, identical everywhere it appears.
+
+**Two tests added beyond the plan's five** (7 total), covering the two ways this module can
+silently corrupt a measurement rather than fail:
+
+- `test_a_half_cached_list_keeps_its_order` — misses are computed in batches and written back by
+  index. A version that appended results instead would return the computed rows followed by the
+  cached ones. Every caller zips this matrix against a label vector, and a matrix permuted against
+  its labels fits beautifully and means nothing.
+- `test_duplicate_images_each_get_their_own_row` — one cache ENTRY for 979 copies is the point;
+  one ROW would be a bug, because the caller's labels have an entry per observation.
+
+`embed_all` also now refuses to return a matrix shorter than its input rather than filtering the
+unfilled rows away, for the same reason.
+
+**One clarification, recorded because the number will be read:** `stats["misses"]` counts INPUTS
+not served from disk, not forward passes. A call holding 979 copies reports 979 misses and runs
+the encoder once. The plan's tests assert `stats` by exact dict equality, so a third counter could
+not be added without rewriting them; the docstring says it instead.
+
+**Measured after Step 5:** 1,028 tests pass (1,021 before this task, +7), coverage 93.15%, ruff
+clean, `mypy --config-file mypy.ini` clean from a cold cache.
+
 ---
 
-### Task 5: Fit the head
+### Task 5: Fit the head — **DONE 2026-11-11** (`5c2cbb0`)
 
 **The corpus, concretely.** Reals and fakes both come from the FairFace session directory that
 `training/export_fairface.py` writes (one folder per photograph, `frame_00.jpg` plus a
@@ -1435,7 +1580,7 @@ capture corpus; a detector handed reals at one encode and fakes at another learn
   - `def main(argv=None, *, detect=detect_faces) -> int` — flags `--root`, `--limit`, `--offset`,
     `--cache`, `--encoder`, `--out`, `--report`, `--seed`, `--holdout`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -1542,12 +1687,12 @@ the pattern already in `tests/corpora/test_swap_corpus.py` and `tests/test_fit_v
 than inventing a third. **Put both in `tests/conftest.py`**, not in this test module: Task 9 uses
 the same two, and a fixture copied into a second file is a fixture that drifts.
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/test_fit_gend.py -q`
 Expected: `ModuleNotFoundError: No module named 'training.fit_gend'`.
 
-- [ ] **Step 3: Write the fitter**
+- [x] **Step 3: Write the fitter**
 
 Key implementation points, each load-bearing:
 
@@ -1616,12 +1761,12 @@ def fit_head(features, labels, *, version: str) -> GendHead:
    and the version string. Reuse `_json_safe` from `training/fit_blend.py` (import it rather than
    copying it — a third copy of that function is one too many).
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/test_fit_gend.py -q`
 Expected: 10 passed.
 
-- [ ] **Step 5: Declare the training window in `bench/eval_swaps.py`**
+- [x] **Step 5: Declare the training window in `bench/eval_swaps.py`**
 
 ```python
 #: `0.1.0-probe-fairface60000`: `training/fit_gend.py` over the first 60,000
@@ -1638,7 +1783,7 @@ TRAINING_WINDOWS = {
 Use whatever photograph count the run actually consumed. **The number in the version string, the
 number in this map and the number in the report must be the same number.**
 
-- [ ] **Step 6: Fit for real**
+- [x] **Step 6: Fit for real**
 
 Run:
 ```bash
@@ -1657,7 +1802,7 @@ Expected: a held-out AUC printed, `assets/models/gend_clip.pt` written (~8 KB),
 `bench/gend_fit.json` written. **An in-domain held-out AUC is not a result** — it is a smoke test
 that the pipeline is wired. Do not put it in the evidence card and do not quote it anywhere.
 
-- [ ] **Step 7: Register the fitted weights in `assets/manifest.yaml`**
+- [x] **Step 7: Register the fitted weights in `assets/manifest.yaml`**
 
 ```yaml
   gend_clip_weights:
@@ -1672,7 +1817,7 @@ that the pipeline is wired. Do not put it in the evidence card and do not quote 
       - "assets/models/gend_clip.pt"
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add training/fit_gend.py tests/test_fit_gend.py bench/eval_swaps.py \
@@ -1680,9 +1825,59 @@ git add training/fit_gend.py tests/test_fit_gend.py bench/eval_swaps.py \
 git commit -m "feat: slot D has coefficients, and a declared training window that can refuse a corpus"
 ```
 
+**`--limit 60000` is not reachable and the window is 2,000 instead.** Measured before committing
+any hours: one ViT-L/14 forward pass is ~0.6 images/second on the development workstation, and the
+corpus is ~5 records per photograph, so 60,000 photographs is ~300,000 forward passes — about
+**139 hours**. 2,000 was chosen for three reasons, in order: it fits one run; it sits INSIDE
+`blend_seam`'s 10,000-photograph window, so the standing "evaluate at offset >= 10000" rule
+already covers slot D and no second discipline is needed; and a 768-parameter linear probe over
+~8,000 training rows is well determined — this project's own SFHQ finding (500 images reach what
+204,716 reach) is the evidence that more data saturates fast.
+
+**The fit was moved to the deployment instance, and that is the lesson.** Started locally, it ran
+at ~0.4 images/second and projected to ~7 hours. The same job on the 8-vCPU EC2 box took **35
+minutes** — the workstation's torch is a CUDA build running a CPU path and is ~6x slower (Task 6
+measured this: 1,637 ms/image local against 276 ms on the instance). Every long job in this plan
+belongs there.
+
+**Measured corpus:** 9,886 records, 5,903 fake, 1,001 couples, 78 photographs skipped `no_face`.
+Families: real 3,983 / sbi 1,995 / swap_mouth_patch 991 / swap_poisson 979 / swap_warp_hull 969 /
+swap_lowres_paste 969. In-domain held-out AUC **0.928** over 1,975 rows — which is a SMOKE TEST
+that the pipeline is wired and is recorded as such in `bench/gend_fit.json`; it is not in the
+evidence card and is not slot D's performance.
+
+**Task 4's cache earned its place here:** 9,886 records produced only **7,895 forward passes**,
+because each photograph's self-blend-real and its couple-real are byte-identical after `reencode`
+and address the same cache entry.
+
+**Three deviations.**
+
+*Subject ids are couple ids for the self-blends too.* `corpora.sbi` files a sample under the
+photograph; `corpora.swap_corpus` files one under the COUPLE. Left alone, one photograph carries
+two different `subject_id`s and a subject-disjoint split will happily put its self-blend pair in
+train and its couple in test — the same face, at the same alignment, on both sides. That is the
+contamination this project has already paid for once. Couples are disjoint, so
+`build_training_records` adopts the couple id for both families and an unpaired photograph becomes
+`solo/<id>`.
+
+*`_split_by_subject` is local to this module* rather than reusing `fit_blend.split_by_subject`,
+which takes `Sample` objects and not bench-runner records. `_json_safe` IS imported from
+`fit_blend`, as Step 3 requires.
+
+*A cross-environment difference worth recording:* the instance's OpenCV 5.0 skips **78**
+photographs for `no_face` where the workstation's OpenCV 4.x skips **77**. One record. The corpus
+is therefore not bit-reproducible across the two boxes, and the number that ships is the
+instance's.
+
+**Measured after Step 8:** 1,045 tests pass, coverage 93.15%, ruff and mypy clean. The head loads
+strictly into a default `GendHead` (1,538 parameters, version `0.1.0-probe-fairface2000`), the
+asset gate clears `gend_clip_weights`, and the CLI now reports slot D as
+`uncalibrated_for_band` rather than `weights_absent` — it scores; it has no calibration yet, which
+is Task 9.
+
 ---
 
-### Task 6: Measure the forward pass on the deployment's own hardware
+### Task 6: Measure the forward pass on the deployment's own hardware — **DONE 2026-11-11** (`47a4f41`)
 
 Spec §8: "CLIP ViT-L/14 forward cost on that box is **unmeasured and must be benchmarked before
 any latency claim**." This task produces that number, and it also decides Phase 2: LayerNorm
@@ -1700,7 +1895,7 @@ nobody has done yet.
   returning `{"n", "batch_size", "mean_ms", "p50_ms", "p95_ms", "warmup_ms", "threads"}` — all
   per-image milliseconds except `n`, `batch_size` and `threads`; `def main(argv=None) -> int`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 from dfd.detectors.clip_vit import CLIPVisualTower
@@ -1726,12 +1921,12 @@ def test_the_first_pass_is_reported_separately_not_averaged_in():
     assert out["p50_ms"] <= out["p95_ms"]
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `python3 -m pytest tests/bench/test_clip_latency.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench.clip_latency'`.
 
-- [ ] **Step 3: Write it**
+- [x] **Step 3: Write it**
 
 `measure` runs one discarded warm-up batch, then `n` timed forwards under `torch.no_grad()`,
 reporting mean/p50/p95 per image and `torch.get_num_threads()`. `main` adds `--encoder`,
@@ -1740,7 +1935,7 @@ reporting mean/p50/p95 per image and `torch.get_num_threads()`. `main` adds `--e
 is ~86M parameters and ~17.6 GFLOPs at 224px, ViT-L/14 is ~304M and ~81 GFLOPs — about 3.5x the
 parameters and 4.5x the compute.
 
-- [ ] **Step 4: Run the tests, then measure on the EC2 instance**
+- [x] **Step 4: Run the tests, then measure on the EC2 instance**
 
 ```bash
 python3 -m pytest tests/bench/test_clip_latency.py -q
@@ -1751,7 +1946,7 @@ python3 -m bench.clip_latency --encoder assets/models/clip_vit_l14_visual.pt \
     --n 32 --batch-size 1 --quantize --out bench/clip_latency_int8.json
 ```
 
-- [ ] **Step 5: Do the Phase 2 arithmetic and write it down**
+- [x] **Step 5: Do the Phase 2 arithmetic and write it down**
 
 In `bench/clip_latency.json`'s accompanying note, record:
 
@@ -1766,16 +1961,52 @@ Then state the ruling plainly: whether Phase 2 (Task 13) is an overnight CPU job
 corpus, or is blocked on the GPU decision that is item 7 of `docs/HANDOFF.md`'s owner-action list.
 **Do not guess this in advance** — the whole point of the task is that the number decides.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add bench/clip_latency.py tests/bench/test_clip_latency.py bench/clip_latency*.json
 git commit -m "feat: the encoder's CPU cost is measured, and it decides whether Phase 2 can run here"
 ```
 
+**Measured on the deployment instance itself**, not extrapolated: 8 vCPU, 15 GB, no GPU, torch
+2.15.0+cpu, Python 3.14.4, `torch.get_num_threads() == 4`, `n=32`, batch 1.
+
+```
+forward, fp32, batch 1:            276 ms/image   (p50 276, p95 277, cold start 281)
+forward, dynamic INT8, batch 1:    177 ms/image   (p50 177, p95 177, cold start 181)
+implied LN-tuning step (~3x fwd):  829 ms/image   NOT MEASURED - rule of thumb
+one epoch over 9,886 images:       2.3 hours
+```
+
+INT8 is **1.57x**, within a hair of the 1.52x the spec recorded for ViT-Base — the speedup
+survives the 3.5x parameter jump. The full write-up, including what the number does NOT say, is
+`bench/clip_latency.md`.
+
+**The ruling the plan said not to guess: Phase 2 IS runnable here, and is NOT blocked on the GPU
+decision** — at the corpus size slot D is actually fitted on. One epoch over 9,886 records is 2.3
+hours, so a 5-epoch run is an overnight job. The condition is the whole finding: at the plan's
+original 60,000-photograph window (~300,000 records) one epoch is **69 hours** and Phase 2 would
+have been blocked on hardware this project does not have. It is affordable only because the
+window is small.
+
+**A finding that changes how everything after this runs.** The same harness on the development
+workstation (12 vCPU, torch 2.4.1+cu121) reports **1,637 ms/image** — roughly **6x slower than
+the 8-vCPU deployment**, because the local build is a CUDA build running a CPU path. Every long
+job in this plan therefore belongs on the instance, not here. Task 5's fit was started locally,
+measured at ~0.4 images/second, and moved; see that task's note.
+
+**Two deviations.** `torch.ao.quantization.quantize_dynamic`, not the `torch.quantization` alias
+the plan wrote — the alias is deprecated and the deployment runs a newer torch than this
+workstation. And `bench/clip_latency.md` was added beside the JSON, because Step 5 asks for an
+arithmetic note and a `.json` is the wrong container for a ruling.
+
+**Worth knowing before trusting INT8 later:** torch now warns that
+`torch.quantize_per_tensor` and the other quantized tensor creation functions "are deprecated and
+will be removed in a future PyTorch release". The 1.57x is a measurement, not a plan.
+
 ---
 
-### Task 7: The measurement — honest LOGO, a null beside it, and a control that survives it
+### Task 7: The measurement — honest LOGO, a null beside it, and a control that survives it — **DONE 2026-11-11** (`70bc99b`)
 
 **This is the task the whole plan exists for.** Everything before it is plumbing.
 
@@ -1816,7 +2047,7 @@ plus the reals, score the held-out family, report that fold.
     coefficients, the statistic that labels 99.2% of the capture corpus.
   - `def main(argv=None, *, detect=detect_faces) -> int`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -1910,13 +2141,13 @@ def test_the_colour_control_is_blind_to_a_corpus_with_no_colour_shortcut():
     assert 0.3 < auc(probs, y) < 0.7
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend.py -q`
 Expected: `ModuleNotFoundError: No module named 'bench.eval_gend'` and
 `ImportError: cannot import name 'kish_ess'`.
 
-- [ ] **Step 3: Add `kish_ess` to `bench/metrics.py`**
+- [x] **Step 3: Add `kish_ess` to `bench/metrics.py`**
 
 ```python
 def kish_ess(counts: Sequence[int] | np.ndarray) -> float:
@@ -1940,7 +2171,7 @@ def kish_ess(counts: Sequence[int] | np.ndarray) -> float:
 
 With two tests in `tests/bench/test_metrics.py` mirroring the two above.
 
-- [ ] **Step 4: Write `bench/eval_gend.py`**
+- [x] **Step 4: Write `bench/eval_gend.py`**
 
 Module docstring states what the corpus can and cannot show, in the style of
 `bench/eval_swaps.py`'s `_SCOPE` block — in particular that these are **classical composites, not
@@ -1962,12 +2193,12 @@ LOGO table with the worst fold as the headline and a sentence distrusting the be
 the permutation null range and the two-sided p; and the scope block. A card that records only good
 news is not a report card.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend.py tests/bench/test_metrics.py -q`
 Expected: all pass.
 
-- [ ] **Step 6: Run the measurement**
+- [x] **Step 6: Run the measurement**
 
 ```bash
 python3 -m bench.eval_gend \
@@ -1982,7 +2213,7 @@ python3 -m bench.eval_gend \
 The offset **must** be at or beyond the training window Task 5 recorded. A run at a smaller offset
 is the mistake that produced a fabricated 0.923 once already.
 
-- [ ] **Step 7: Read the result before believing it**
+- [x] **Step 7: Read the result before believing it**
 
 Check, in this order, and stop at the first failure:
 1. Is the worst LOGO fold's AUC outside the permutation null, with p below 0.08 at n=12? If not,
@@ -1992,7 +2223,7 @@ Check, in this order, and stop at the first failure:
 3. Is the Kish ESS large enough that the interval means anything?
 4. Only then: is the worst fold at or above 0.75?
 
-- [ ] **Step 8: Commit, whatever the answer**
+- [x] **Step 8: Commit, whatever the answer**
 
 ```bash
 git add bench/eval_gend.py bench/metrics.py tests/bench/test_eval_gend.py \
@@ -2003,9 +2234,59 @@ git commit -m "feat: slot D gets a leave-one-generator-out number, and the null 
 A negative result is committed with the same message discipline as a positive one. This project
 has retracted a headline before, and the retraction is in the history where it belongs.
 
+## THE RESULT
+
+Measured on the deployment instance over photographs 10,000–11,999 — outside every declared
+training window — 9,907 records, 5,918 fake, 1,001 couples, 69 skipped `no_face`.
+
+| held-out generator | AUC | 95% CI (by couple) | n | n fake |
+|---|---|---|---|---|
+| **sbi** | **0.738** | 0.726–0.751 | 2,988 | 997 |
+| swap_mouth_patch | 0.984 | 0.977–0.991 | 2,487 | 496 |
+| swap_poisson | 0.995 | 0.992–0.998 | 2,482 | 491 |
+| swap_warp_hull | 0.998 | 0.996–0.999 | 2,475 | 484 |
+| swap_lowres_paste | 0.999 | 0.997–1.000 | 2,475 | 484 |
+
+**Headline: the worst fold, `sbi`, at 0.738.** Permutation null over 48 shuffles of the TRAINING
+labels: **0.449–0.561**, two-sided **p = 0.02**.
+
+Step 7's checklist, in its order:
+
+1. **Outside the null?** Yes. 0.738 against 0.449–0.561. At the plan's 12 shuffles p was 0.0769,
+   which is the resolution FLOOR at n=12 and says only "none of 12 came close" — so the null was
+   re-run at 48, which the cache made cost 1m57s (9,907 hits, 0 misses). p = **0.02**. There is
+   signal.
+2. **Does either control reach it?** No. Colour (Lab means and stds, fitted and scored IN SAMPLE,
+   the strongest form) reaches **0.530**. The JPEG quantisation control is **0.500 and structural,
+   not measured** — every record passes through one encoder at q95, which is exactly what
+   `reencode` exists to arrange, so there is nothing for it to separate. Reported as structural
+   rather than dressed up as a searched-for-and-not-found 0.5.
+3. **Is the Kish ESS large enough?** Yes, and this is the first corpus in this project where it
+   is: **4.47 of 5** fake families, **996.44 of 1,001** couples. Compare DF40's 2.4. The intervals
+   mean what they appear to.
+4. **Is the worst fold at or above 0.75?** **No — 0.738, and its CI 0.726–0.751 barely touches
+   the floor.** Slot D does not open the evidence gate.
+
+**So: a real but insufficient result.** Signal that survives a null, clean controls, honest
+intervals, and a headline **0.012 under the floor it had to clear**. The four swap folds at
+0.984–0.999 are explicitly distrusted and are not the headline: holding out one of four nearly
+identical OpenCV compositing techniques still leaves three of them in the fit, so those folds
+describe the corpus's internal similarity, not transfer. `sbi` is the only family unlike the
+others, and it is the only fold that tests anything.
+
+**One deviation, in the plan's favour.** Step 3 asks for `kish_ess` to be added to
+`bench/metrics.py`; it was already there, with four tests, from the benchmark-harness plan. The
+three duplicate tests Step 1 listed were NOT written, and `tests/bench/test_eval_gend.py` says so
+at the top.
+
+**One design point the plan left implicit, and it matters.** Holding out a generator does not hold
+out the REALS — every couple contributes its reals to every family's fold. So each fold is split
+by couple as well, and is scored only on couples the fit never saw. Without that, every fold tests
+on its own training reals and reads stronger than it is.
+
 ---
 
-### Task 8: The in-domain evaluation, and the quality floor it decides
+### Task 8: The in-domain evaluation, and the quality floor it decides — **DONE 2026-11-11** (`19f4eac`)
 
 The capture corpus is the only material that looks like live v-CIP traffic, and a detector trained
 on Flickr photographs faces a real domain shift towards it. **Evaluation only**: this module fits
@@ -2030,7 +2311,7 @@ nothing, and the biometric-consent question (spec §9.1) stays open regardless o
   - `def main(argv=None, *, detect=detect_faces) -> int` — `--captures`, `--encoder`,
     `--weights`, `--out`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 from __future__ import annotations
@@ -2126,11 +2407,11 @@ def test_the_encoder_shortcut_control_runs_and_is_reported(capture_pair_fixture)
 encoder and head on `tmp_path`, in the shape `tests/test_fit_vcip.py` already uses. Do not invent
 a second fixture style for the same corpus.
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `python3 -m pytest tests/bench/test_eval_gend_vcip.py -q`
 
-- [ ] **Step 3: Write it**
+- [x] **Step 3: Write it**
 
 Reuse, do not reimplement: `training.fit_vcip._frames` and `select_face` for frame selection
 (the largest-face rule — getting this wrong is what made every slot C number stale once), and
@@ -2140,7 +2421,7 @@ Report: session-level AUC (sessions, never frames — frames of one session shar
 at a zero false-alarm budget, the per-band table with denominators, and the same numbers after the
 encoder shortcut is removed. **Quote the controlled pair.**
 
-- [ ] **Step 4: Run it**
+- [x] **Step 4: Run it**
 
 ```bash
 python3 -m bench.eval_gend_vcip --captures ~/Desktop/agents/fraud_gff/deepfake_detection/captures \
@@ -2148,7 +2429,7 @@ python3 -m bench.eval_gend_vcip --captures ~/Desktop/agents/fraud_gff/deepfake_d
     --weights assets/models/gend_clip.pt --out bench/gend_vcip.json
 ```
 
-- [ ] **Step 5: Set the quality floor from the table, not from taste**
+- [x] **Step 5: Set the quality floor from the table, not from taste**
 
 Replace slot D's provisional `min_quality_band` with the measured value and paste the per-band
 table into the attribute's comment, in the form `NPRDetector.min_quality_band` already uses —
@@ -2156,7 +2437,7 @@ including the denominators and an explicit sentence about which columns the argu
 the table says a floor above `reject` discards a large share of swapped frames, the floor goes
 down, whatever the per-band AUCs say.
 
-- [ ] **Step 6: Register the two evaluation corpora**
+- [x] **Step 6: Register the two evaluation corpora**
 
 ```yaml
   vkyc_capture_corpus:
@@ -2176,7 +2457,7 @@ down, whatever the per-band AUCs say.
     checked_by: "rohit.kohli@scoreme.in"
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add bench/eval_gend_vcip.py tests/bench/test_eval_gend_vcip.py \
@@ -2184,9 +2465,68 @@ git add bench/eval_gend_vcip.py tests/bench/test_eval_gend_vcip.py \
 git commit -m "feat: slot D meets the traffic it is for, and its quality floor stops being a guess"
 ```
 
+**Step 4's `--captures` path is the wrong corpus, and it matters.** The plan names
+`~/Desktop/agents/fraud_gff/deepfake_detection/captures`: 42 sessions, 142 frames, and really 58
+distinct images with 19 genuine crops. The corpus every measurement since 2026-09-24 actually uses
+is `/home/rohit/Desktop/vkyc-server/captures` — **146 session folders, 554 frames, 140 sessions,
+218 genuine / 336 swapped**. Both exist on this machine. The run used the second, and
+`assets/manifest.yaml: vkyc_capture_corpus` now records which one it is and why, so the next
+reader does not have to rediscover it.
+
+## THE RESULT
+
+509 frames scored over 125 sessions (58 genuine / 67 swapped), 45 frames skipped `no_face`. Kish
+ESS of frames by session: **106.9** of 125.
+
+| | frame AUC | session AUC | session TPR @ 0% FPR |
+|---|---|---|---|
+| uncontrolled | 0.678 | 0.664 | 0.000 |
+| **encoder-matched (q95)** | **0.674** | **0.663** | **0.015** |
+
+**The encoder shortcut is not what slot D is reading, and that is the finding.** The two rows are
+the same number — 0.664 against 0.663. One JPEG header byte labels 99.2% of this corpus, and slot
+C's uncontrolled figures were inflated by exactly that. Slot D's survives the control untouched.
+It is a weak number honestly, rather than a strong number dishonestly.
+
+**0.663 is well under the 0.75 floor**, and the TPR at a zero false-alarm budget is 1.5% — slot D
+catches essentially nothing on live-shaped traffic at an operationally usable threshold. Together
+with Task 7's 0.738 worst fold, slot D does not open the evidence gate on either corpus.
+
+## Step 5: the floor is `reject`, and the table says so
+
+| band | n | genuine | swapped | frame AUC | TPR@0%FPR |
+|---|---|---|---|---|---|
+| reject | 232 | 14 | 218 | 0.541 | 0.165 |
+| medium | 238 | 139 | 99 | 0.573 | 0.000 |
+| low | 12 | 2 | 10 | 0.700 | 0.400 |
+| high | 27 | 27 | 0 | none | none |
+
+**The argument rests on the denominator columns, not the AUC column.** A floor above `reject`
+discards **218 of 328 swapped frames (66.5%)** against 14 of 182 genuine (7.7%) — two thirds of
+the attacks thrown away before the detector runs, and almost none of the honest traffic. That is a
+security hole, not caution. The provisional `"low"` is replaced by `"reject"`, which is also slot
+C's floor, measured from the same corpus and for the same reason. `high` has no swapped frame at
+all so it has no AUC; `low`'s 0.700 is the best cell in the table and rests on 12 frames.
+
+**One fix the run forced.** YuNet reports face boxes that run off the edge of a frame, and
+`dfd.quality.measure_quality` crops without clamping — so the first real run died on
+`cv2.error: (-215:Assertion failed) !_src.empty()` out of `cvtColor`. `_clamped_roi` clips the box
+to the frame and counts a frame with nothing left under `roi_outside_frame`. One unmeasurable
+frame is a skip with a reason, not a failed evaluation of the other 553. (`GendClipDetector`
+already clamps its own crop; `measure_quality` is called before it and does not.)
+
+**Two small deviations.** `matched_encoder` in `bench/vcip_controls.py` could not be reused whole —
+it is slot-C specific, building `NPRStatsNet` features — so this module reuses its MECHANICS
+(`quant_table`, `find_matching_quality`, `_encode`) and scores through `GendClipDetector.score`,
+which is what Step 3 asks for: the measured path is the deployed path. And `main` takes
+`encoder_factory`/`head_factory` so the test can drive the whole entry point on a tiny tower.
+
+**Measured after Step 7:** 1,051 tests pass (1,045 before, +6), coverage 93.19%, ruff and mypy
+clean from a cold cache.
+
 ---
 
-### Task 9: Calibration, from a corpus that is not DF40
+### Task 9: Calibration, from a corpus that is not DF40 — **DONE 2026-11-11** (`f5bf68e`)
 
 A detector with no calibrator returns `llr 0.0` and `uncalibrated_for_band` — the honest answer to
 "I was never calibrated in this regime", and also a detector that cannot move a verdict no matter
@@ -2197,7 +2537,7 @@ project has ruled can neither support nor refute anything.
 - Modify: `training/fit_calibration.py`
 - Modify: `tests/test_fit_calibration.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import json
@@ -2237,11 +2577,11 @@ def test_an_unknown_corpus_kind_is_refused_by_the_parser():
         main(["--corpus-kind", "df40-but-ok", "--corpus", "x"])
 ```
 
-- [ ] **Step 2: Run and watch fail**
+- [x] **Step 2: Run and watch fail**
 
 Run: `python3 -m pytest tests/test_fit_calibration.py -q`
 
-- [ ] **Step 3: Add the second source**
+- [x] **Step 3: Add the second source**
 
 Add `--corpus-kind {df40,swaps}` (default `df40`, so every existing invocation is unchanged).
 `swaps` takes `--root/--offset/--limit` and loads via `training.fit_gend.build_training_records`,
@@ -2249,7 +2589,7 @@ mapping each record to the `{image, source_id, label}` shape `_score`/`_observe`
 `split_by_source` is unchanged and still splits whole sources onto one side. Record the corpus kind
 in the report so a reader knows which curve they are looking at.
 
-- [ ] **Step 4: Fit on the held-out window and check band coverage**
+- [x] **Step 4: Fit on the held-out window and check band coverage**
 
 ```bash
 python3 -m training.fit_calibration --corpus-kind swaps \
@@ -2261,7 +2601,7 @@ Then read `report["detectors"]["gend_clip"]["bands"]`. **If the fitted bands do 
 the capture corpus actually produces** (Task 8's table says what those are), say so in the report
 rather than shipping a curve that abstains at runtime on the only band that matters.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add training/fit_calibration.py tests/test_fit_calibration.py \
@@ -2269,9 +2609,34 @@ git add training/fit_calibration.py tests/test_fit_calibration.py \
 git commit -m "feat: a calibration curve that does not come from the corpus we cannot trust"
 ```
 
+**What Step 4 decided.** `gend_clip`'s fitted bands are `medium` and `reject`, covering 470 of the
+509 capture frames Task 8 measured — 92.3%. `reject` alone carries 218 of that corpus's 328 swapped
+frames, and it is covered only because this run used the floor Task 8 measured. The first run, on
+an EC2 checkout still carrying the provisional `min_quality_band = "low"`, fitted `medium` only and
+covered 46.8% — a curve that would have abstained with `uncalibrated_for_band` on nearly half of
+live-shaped traffic, and on the half where the attacks are. The stale-floor artefacts were deleted
+rather than kept beside the good ones.
+
+Uncovered: `high` (27 capture frames, no swapped one — it could not be fitted on any corpus) and
+`low` (12 frames; the fit split held 13 rows there, under `MIN_FIT_SAMPLES`). Both return `llr 0.0`,
+which is the honest answer and is visible in the report rather than inferred.
+
+**A defect this task found in the reporting, not in the curve.** The report carried a single `bands`
+field built from `sorted(set(f_bands))` — the bands the fit split *saw*. `Calibrator.fit` drops a
+band under `MIN_FIT_SAMPLES` or with one class, so that field claimed curves that do not exist, on
+the exact field this step tells a reader to consult. `bands_fitted` and `bands_seen` are now
+separate, and `Calibrator.fitted_bands` is the source for the first.
+
+**`npr`'s curve changed corpus.** `assets/models/calibration.json` previously held an `npr` curve
+fitted by `training/fit_vcip.py` on the capture corpus, conditioned on a 66.4% base rate that file
+itself warns about. It is now the swaps-fitted one (holdout AUC 0.546, ECE 0.297). The weaker
+coefficients are the honest ones: a curve fitted where the detector cannot separate should produce
+small llrs, and the capture-fitted curve's confidence came from a corpus one JPEG header byte
+labels for 99.2% of rows.
+
 ---
 
-### Task 10: The evidence card, and watching the gate open (or not)
+### Task 10: The evidence card, and watching the gate open (or not) — **DONE 2026-11-11** (`bcfe62d`)
 
 The gate needs four things true before slot D may decide: a measured `auc` at or above 0.75, a
 `trained_on` that is not the `corpus`, and **both** names present as ids in `assets/manifest.yaml`.
@@ -2280,7 +2645,7 @@ The gate needs four things true before slot D may decide: a measured `auc` at or
 - Modify: `bench/evidence_card.json`
 - Modify: `tests/service/test_evidence.py`
 
-- [ ] **Step 1: Write the entry**
+- [x] **Step 1: Write the entry**
 
 Fill it from Task 7's and Task 8's reports. Headline AUC is the **worst LOGO fold** or the
 controlled in-domain number — never the in-dataset figure, which measures memorisation.
@@ -2299,7 +2664,7 @@ controlled in-domain number — never the in-dataset figure, which measures memo
     }
 ```
 
-- [ ] **Step 2: Add a test that the card and the manifest agree**
+- [x] **Step 2: Add a test that the card and the manifest agree**
 
 ```python
 def test_every_corpus_name_in_the_card_is_a_manifest_id():
@@ -2314,7 +2679,7 @@ def test_every_corpus_name_in_the_card_is_a_manifest_id():
                 assert entry[field] in known, f"{name}.{field}"
 ```
 
-- [ ] **Step 3: Check what the gate now does**
+- [x] **Step 3: Check what the gate now does**
 
 ```bash
 python3 - <<'PY'
@@ -2327,7 +2692,7 @@ Expected: `['gend_clip']` if the measurement cleared the floor, `[]` otherwise. 
 outcomes of this plan.** If it is `[]`, the service keeps abstaining, which spec §9.2 says ships
 safely, and the honest product is a human-review flagger.
 
-- [ ] **Step 4: Start the service and read a real verdict**
+- [x] **Step 4: Start the service and read a real verdict**
 
 ```bash
 python3 -m dfd.service --evidence bench/evidence_card.json \
@@ -2340,16 +2705,41 @@ Expected: the startup WARN lines for slots A, C and E remain (correct — they a
 below the floor), and slot D either appears in the record with a non-zero `llr` or carries an
 explicit abstention reason. **Paste the actual output into the commit message.**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bench/evidence_card.json tests/service/test_evidence.py
 git commit -m "feat: the card records slot D, and the gate decides without being asked twice"
 ```
 
+**The gate stayed shut, which this plan says is a correct outcome.** `gated_detectors(load_card())`
+returns `[]`. Slot D's headline is the controlled in-domain number — 0.663 session AUC over 125
+capture sessions — because that is the number measured on `vkyc_capture_corpus`, the corpus the
+card names. The worst LOGO fold, 0.738, sits in the note beside its permutation null (0.449–0.561,
+48 shuffles, p = 0.020): outside the null, so there is real signal, and still 0.012 under the
+floor. Both numbers are below 0.75, so the choice of headline does not change the verdict. The
+in-dataset 0.928 appears only to be ruled out.
+
+**Step 2 added no test.** `tests/service/test_evidence.py` already carries
+`test_the_committed_card_names_only_registered_assets`, which asserts exactly what this step's
+snippet asserts, over the same two fields with the same `None` skip. A second copy would be
+duplication, not coverage.
+
+**What Step 4 showed that the gate alone did not.** Slot D *ran*: encoder and head loaded, a face
+was found, and it produced `raw_score 0.266`. It then abstained with `uncalibrated_for_band` on a
+`reject`-band frame — not because Task 9 failed to fit that band, which it did fit, but because the
+service discarded the curve at startup: *"discarded the calibration curve for gend_clip: it has
+not been measured above the evidence floor."* A fitted curve is not permission to speak; permission
+comes from measured cross-corpus AUC. Task 9's work is therefore correct and currently inert, and
+it becomes live the moment a measurement clears the floor — not before.
+
+On the same frame `blend_seam` abstained with `below_quality_floor` where slot D ran. That is
+Task 8's measured floor visible in production: slot D's floor is `reject` because anything higher
+discards two thirds of the swapped frames.
+
 ---
 
-### Task 11: The product surface — the RD-shaped contract
+### Task 11: The product surface — the RD-shaped contract — **DONE 2026-11-11** (`f0632a6`)
 
 Spec §5.3: an upload endpoint returning overall verdict and score **plus the per-detector list**,
 with slots A, C and E present as abstentions carrying their raw scores. A single number is weaker
@@ -2368,7 +2758,7 @@ than a number plus the four opinions behind it, and `fuse` already escalates har
   "score", "abstained", "reason"}], "dissenting_models": [str], "quality_band": str,
   "schema_version": str}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_maps_the_three_verdicts_onto_the_product_vocabulary():
@@ -2469,11 +2859,11 @@ def test_analyze_refuses_chunked_like_scan_does(server):
 face-like array); `_post` is the existing helper's POST sibling — add it beside `_get` rather than
 inlining `urllib` calls in seven tests.
 
-- [ ] **Step 2: Run and watch fail**
+- [x] **Step 2: Run and watch fail**
 
 Run: `python3 -m pytest tests/service -q`
 
-- [ ] **Step 3: Write `contract.py` and wire the routes**
+- [x] **Step 3: Write `contract.py` and wire the routes**
 
 `rd_response` is a pure function over `AuditRecord` — no I/O, no registry, no clock — so it is
 testable without a service. `dissenting_models` are the non-abstaining detectors whose per-detector
@@ -2487,11 +2877,11 @@ concurrency slot. Document in the module docstring that `/api/analyze` holds a w
 duration of a CPU forward pass through a 304M-parameter encoder, with Task 6's measured number, so
 nobody deploys it behind a 2-second timeout by accident.
 
-- [ ] **Step 4: Run the tests and gates**
+- [x] **Step 4: Run the tests and gates**
 
 Run: `python3 -m pytest -q && ruff check src bench corpora training && mypy --config-file mypy.ini`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/dfd/service/contract.py src/dfd/service/api.py \
@@ -2499,9 +2889,33 @@ git add src/dfd/service/contract.py src/dfd/service/api.py \
 git commit -m "feat: the product contract, with the three abstentions still visible in it"
 ```
 
+**What the contract actually says on this deployment.** Live, `POST /api/analyze` with a real
+FairFace frame: `verdict UNKNOWN`, `score 0.5`, `quality_band reject`, `dissenting_models []`, and
+four models all abstaining — `blend_seam` `below_quality_floor`, `effnet_b4` `weights_absent`,
+`gend_clip` `uncalibrated_for_band` carrying `raw_score 0.2558`, `npr` the same carrying `0.8964`.
+The abstentions are not padding around the answer; they *are* the answer, which is why they carry
+their raw scores.
+
+**Two judgement calls the plan left open.**
+- A fused `llr_total` of exactly 0.0 has no sign, so the dissent test cannot be applied. Where that
+  zero was *made of* non-zero opinions (+2 and −2 cancelling), it is not consensus — it is the most
+  conflicted record this system can produce, and every contributor is named. An all-silent record
+  still reports no dissenters, because silence is not disagreement.
+- `?format=` with an unrecognised value is a 400 rather than an ignored parameter. Answering
+  `?format=rd2` with the audit record would read to a caller as "this build serves rd2".
+
+**One correction to the plan's interface.** It specifies `rd_response(record: AuditRecord)`, but the
+route serving it reads finished records back out of SQLite as JSON and never reconstructs the
+dataclass. A dataclass-only signature would have passed every test in this task and failed the one
+route it exists for, so it accepts both forms and a test pins that they agree.
+
+**Measured cost of the synchronous route**: 6.3 s end to end for a single frame on this
+workstation. `api.py`'s docstring now carries Task 6's per-face numbers (276 ms on the deployment
+instance, 1,637 ms here) so nobody puts `/api/analyze` behind a 2-second gateway timeout.
+
 ---
 
-### Task 12: Deploy, and write down what the next person needs
+### Task 12: Deploy, and write down what the next person needs — **DONE 2026-11-11** (`3ed1600`)
 
 **Files:**
 - Modify: `ops/deploy-ec2.sh`
@@ -2509,7 +2923,7 @@ git commit -m "feat: the product contract, with the three abstentions still visi
 - Modify: `docs/HANDOFF.md` (a new §0 block)
 - Modify: `README.md`
 
-- [ ] **Step 1: Teach the deploy script about the new weights**
+- [x] **Step 1: Teach the deploy script about the new weights**
 
 `assets/models/clip_vit_l14_visual.pt` is ~1.2 GB, which dwarfs everything the script currently
 ships and inverts its own stated reasoning about `dima806` (328 MB "would be 89% of the transfer
@@ -2519,7 +2933,7 @@ not, and a fresh instance should prefer `ops/fetch-assets.sh` plus `training/con
 **on the instance** over pushing 1.2 GB up a home uplink. Add a `--fetch-remote` path that does
 exactly that, and keep the rsync route for an instance with no outbound access.
 
-- [ ] **Step 2: Deploy and verify end to end**
+- [x] **Step 2: Deploy and verify end to end**
 
 ```bash
 ./ops/deploy-ec2.sh --host <host> --key key.pem --dry-run
@@ -2532,7 +2946,7 @@ curl -sS -X POST --data-binary @face.jpg 'http://127.0.0.1:8077/api/analyze?file
 Expected: the contract shape from Task 11, with a real per-model list. **Record the wall-clock
 latency of that call** and check it against Task 6's measurement on the same box.
 
-- [ ] **Step 3: Write the §0 resume block in `docs/HANDOFF.md`**
+- [x] **Step 3: Write the §0 resume block in `docs/HANDOFF.md`**
 
 Following the house style — headline first, the number and its control, then what is NOT true.
 It must say: what slot D measured on each corpus; whether the gate opened; what the permutation
@@ -2540,21 +2954,193 @@ null and the two shortcut controls did; what the quality-floor table said; the m
 latency; whether Phase 2 is runnable here or blocked on the GPU decision; and that the
 biometric-consent blocker (owner-action item 6) is untouched by all of it.
 
-- [ ] **Step 4: Update `docs/SERVICE.md` and `README.md`**
+- [x] **Step 4: Update `docs/SERVICE.md` and `README.md`**
 
 The endpoint list gains `/api/analyze` and `?format=rd`. The README's evidence-card paragraph
 gains slot D. **No parity claim appears in either** (spec §4.3).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ops/deploy-ec2.sh docs/SERVICE.md docs/HANDOFF.md README.md
 git commit -m "feat: slot D reaches the instance, and the handoff says what it actually did"
 ```
 
+**Deployed and verified.** `uptime_s` went 108,887.4 → 21.2, which is the only check worth making
+here: this service answers HTTP 200 from whatever process is already running, so a stale deploy and
+a good one are indistinguishable from outside. `/api/analyze` on the instance, one real FairFace
+frame, returned the Task 11 contract with all four detectors abstaining and **2.119 s** wall clock.
+Against Task 6's 276 ms for the encoder alone, the CLIP forward is ~13% of that call and face
+detection plus the other three detectors are the rest — consistent, not a contradiction.
+`gend_clip`'s raw score was byte-identical to the local run on the same file.
+
+**`--fetch-remote` added.** It excludes the 1.2 GB encoder and the 890 MB OpenAI archive from the
+rsync and runs `ops/fetch-assets.sh` + `training/convert_clip.py --verify` on the instance instead.
+Both steps skip when their output already exists, so a redeploy does not re-download. The rsync
+route stays the default for an instance with no outbound access. `--delete-excluded` remains
+deliberately absent, so an encoder already on the instance survives an excluded sync — which this
+deploy confirmed.
+
+**The not-shipped block was carrying arithmetic the tree had outgrown.** It argued dima806's 328 MB
+"would be 89% of the transfer for a detector that contributes nothing". With slot D's encoder
+present that share is closer to 10%. Both statements were true when written; the block now says so
+rather than quietly keeping the stale one.
+
+**The handoff block is deliberately NOT numbered §0.** Nineteen places in `docs/HANDOFF.md` say
+"§0" meaning the 2026-09-25 resume block, and four say "§0a" meaning the one below it. Renumbering
+to put the new block at §0 silently repoints every one of them — I did it, caught the breakage by
+chasing one quoted line (`§0a`'s "7 positives is not a training set", which lives in the block that
+would have moved), and reverted the whole cascade. The diff to that file is now purely additive:
+109 insertions, 0 deletions, every existing anchor intact. A document this size has its section
+numbers as load-bearing references, not as ordering.
+
 ---
 
-### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning
+### Task 13 (Phase 2, gated on Task 6): LayerNorm tuning — **IN FLIGHT 2026-11-11**
+
+**Gate check: Task 6 said run it.** `bench/clip_latency.md`'s ruling is "Phase 2 IS runnable here
+and is NOT blocked on the GPU decision", so this task is not blocked on owner-action item 7.
+
+**Status.** Steps 1–4 are done and committed (`35e93bb`, `a428878`); Step 5 — re-measure and
+re-report — is waiting on a 5-epoch run live on the deployment instance since 18:12 UTC. Eight
+tests cover the fitter, and the 102,400-parameter / 0.034% claim is verified against the real
+ViT-L/14, not only against the tiny test tower. A chain script on the instance
+(`~/dfd/lntune_chain.sh`) fires Tasks 7, 8 and 9 against the tuned pair the moment the fit exits,
+writing `bench/gend_report_lntuned.{json,md}`, `bench/gend_vcip_lntuned.json` and
+`bench/calibration_report_lntuned.json`. **No Phase 1 artefact is overwritten by any of it** —
+including `assets/models/calibration.json`, whose default the chain redirects.
+
+**The 3x rule of thumb was measured before the run, as this plan's own Task 6 write-up asked.**
+A real step — forward, cross-entropy, backward, AdamW, LayerNorms only — is **617 ms/image** at
+batch 8 on the instance, 26% under the 829 ms that forward-times-three implied, because only
+102,400 of 303,966,208 parameters carry a weight gradient. One epoch is **1.70 h**, not 2.3 h, so
+the 5-epoch run is ~9.3 h including per-epoch holdout scoring. 8 threads buys 2% and was declined
+to keep the run in the configuration every other number in `bench/clip_latency.md` was measured
+under.
+
+**Three deviations from the reference code below, each because transcribing it faithfully would
+have shipped a defect** (the same lesson as Task 9's):
+
+1. `tune_layernorms` returns a third value, a `TuningTrace`. The 2-tuple below loses the per-epoch
+   holdout curve, which is the only evidence that early stopping did anything; a 9-hour run whose
+   shape cannot be inspected afterwards is a run somebody repeats.
+2. `ENCODER_ID_LNTUNED` is derived from a shared `encoder_cache_id()` helper rather than being the
+   bare string `"clip-l14-lntuned"`. The id scheme already in the code is `"clip-l14:<filename>"`,
+   and the constant below would have been a second, conflicting authority for the same key.
+3. `--out` no longer defaults to the SHIPPED head. Under `--tune-layernorms` it defaults to
+   `assets/models/gend_clip_lntuned.pt`, because one overnight run finishing with the old default
+   would have overwritten the only slot D artefact that is currently measured.
+
+**The decision rule, written down before the numbers exist (2026-11-11, while the run is still
+in epoch 1).** Recorded here rather than decided on sight of the result, because a rule chosen
+after the fact is a rule chosen to fit the fact. Four questions, each with its artefact:
+
+| # | Question | Artefact | Answer that favours Phase 2 |
+|---|---|---|---|
+| 1 | Did tuning move the **worst LOGO fold**? | `bench/lntuned_vs_frozen.json` | paired delta on the BASELINE's worst fold is positive AND its 95% interval clears zero |
+| 2 | Is the tuned run still **outside its own permutation null**? | `bench/gend_report_lntuned.json` | `inside_null: false` |
+| 3 | Did the tuning buy a **shortcut** instead of a detector? | same file, `control_colour` / `control_jpeg` | colour stays near 0.5 (frozen: 0.530); JPEG stays structurally 0.5 |
+| 4 | Does slot D now **clear the evidence floor**? | `bench/gend_vcip_lntuned.json` | capture-corpus **session** AUC ≥ 0.75 |
+
+**Question 4 is a different number from question 1 and this is the thing most likely to be
+misread.** The evidence gate (`src/dfd/service/evidence.py: gated_detectors`) reads the card's
+`auc` field, which is the capture-corpus session AUC — 0.663 for the frozen probe — not the LOGO
+fold. A tuned worst fold above 0.75 would mean the tuning worked and would still **not** open the
+gate. Only question 4 opens the gate, and it opens it only together with the card's existing
+cross-corpus checks (`trained_on` ≠ `corpus`, both ids in the manifest).
+
+**A FLAW IN QUESTION 1, FOUND 2026-11-12 BEFORE ANY QUESTION-1 NUMBER EXISTED.**
+Leave-one-generator-out holds a family out of the HEAD's refit. For the FROZEN encoder that is a
+true transfer measurement — the encoder never saw a fake of any kind. For the TUNED encoder it is
+not: `--tune-layernorms` tuned the LayerNorms on all five families at once (`bench/gend_fit.json`
+records `sbi`, `swap_lowres_paste`, `swap_mouth_patch`, `swap_poisson`, `swap_warp_hull`), so when
+the fold holds `sbi` out of the head, **the encoder has already been tuned to separate `sbi`**.
+The fold is generator-disjoint at the head and contaminated at the encoder.
+
+So question 1 compares a clean number (frozen) against a contaminated one (tuned) and will favour
+tuning for a reason that is not generalisation. Fixing it properly means re-tuning one encoder per
+fold — five runs at ~9 hours each on the deployment box — which is why this is **recorded rather
+than fixed**, and recorded here while the run was still in epoch 4 so it cannot be mistaken for an
+excuse invented after an unwelcome result.
+
+**THE NULL CONFIRMED IT, 2026-11-12 03:24.** The contamination above was predicted from the
+training recipe before any Phase 2 number existed. The permutation null then measured it:
+
+| run | worst fold | permutation null | colour control |
+|---|---|---|---|
+| frozen (re-run, 12 shuffles) | `sbi` **0.738** | **0.449–0.554** | 0.5302 |
+| tuned (12 shuffles) | `swap_mouth_patch` **0.995** | **0.293–0.720** | 0.5302 |
+
+The null is what a head fitted on SHUFFLED labels reaches. For a frozen encoder, shuffling
+destroys the signal and the null sits tight around chance. For the tuned encoder a head fitted on
+RANDOM LABELS reaches **0.720** — because the encoder already separates the two classes, so any
+labelling recovers much of it. A null that wide is the contamination, measured. It also means the
+tuned worst fold of 0.995 is being compared against a null that a learnt-nothing model can push to
+0.72, which is not the comparison the frozen 0.738-against-0.449–0.554 was.
+
+Two things that did NOT go wrong, worth saying because they were the other candidates: the colour
+control is **0.5302 on both runs**, identical to four decimal places, so the tuning bought no
+colour shortcut; and the frozen re-run reproduced **0.7380** exactly, so the `logo_refit`
+refactor changed nothing.
+
+Both chain runs used the DEFAULT 12 shuffles where the published frozen run used 48, so
+`p = 0.0769` is the smallest p reachable in both and is a floor, not a measurement.
+
+**Question 5, added at the same time, is the unbiased comparison.** The capture corpus is the one
+evaluation the tuned encoder cannot have contaminated: it never saw a capture frame, and that
+corpus's fakes are `inswapper_128` output — a generator family absent from training entirely,
+where every family in question 1 was present. Frozen scores session AUC **0.663** there. If
+questions 1 and 5 disagree, believe 5.
+
+**The shipping rule is NOT changed by this** — questions 1, 2 and 3 still decide, exactly as
+registered — because moving a bar after seeing four epochs is the thing pre-registration exists to
+prevent. What changes is how question 1 must be READ: as an upper bound on the tuned arm, never as
+a transfer number. `bench/phase2_verdict.py` prints that warning above every verdict it renders.
+
+**What ships:**
+
+- **Tuned replaces frozen as slot D only if 1, 2 and 3 all hold.** Question 4 is not required to
+  ship it — a better detector that still abstains is still better — but it IS required before
+  anything decides.
+- **If 1 fails, Phase 1's weights stay shipped and the result is recorded as measured.** That is
+  the plan's own rule and it is not renegotiated by a near miss: a positive delta whose interval
+  straddles zero is a run that cannot be distinguished from noise.
+- **If 2 fails, nothing is reported at all** beyond the fact that it failed. A number inside its
+  own null is what this project ruled every DF40 measurement to be.
+- **If 3 fails, the tuned encoder is discarded even if 1 passed.** A detector that gained by
+  learning colour is the failure mode slots A, C and E have each been caught on here.
+
+**One honest wrinkle in the running job's own artefact.** `bench/gend_fit_lntuned.json`'s
+`held_out_auc_note` will carry the PRE-FIX wording, because the fit loaded `training/fit_gend.py`
+at 18:42 UTC and the note was corrected at 18:58. The correction says the thing that matters: a
+tuned run's "held-out" AUC is **not held out** — the epoch that produced the weights was selected
+by that very number on those very rows, so it is a selection statistic biased upward by however
+many epochs were compared. The run was NOT restarted for a prose change; the substantive part,
+the per-epoch holdout curve under `tuning`, is in the artefact either way and is how you see how
+much was selected over. Any future run carries the corrected note.
+
+**What would void the run outright:** a holdout curve that never rises above ~0.5, a `nan` train
+loss, or a tuned encoder differing from the frozen one anywhere outside
+`layernorm_parameter_names()`. The first two read as "the optimiser did nothing"; the third means
+the freeze leaked, and `tests/test_fit_gend.py` asserts against it on both the tiny tower and —
+checked by hand on 2026-11-11 — the real ViT-L/14.
+
+**What would NOT void it, stated now so it is not mistaken for failure later.** Phase 1's
+in-domain held-out AUC is **0.928**, and that number came from a CONVERGED logistic regression
+over frozen embeddings. Phase 2 trains its head from scratch with AdamW for five epochs, so a
+per-epoch holdout AUC below 0.928 — even on the last epoch — is not evidence that LayerNorm
+tuning failed; it may only mean the read-out has not converged the way `fit_head`'s solver does
+in one step. Neither number decides anything in any case: both are in-domain, and the tuned one
+is additionally a selection statistic. **The only comparison that decides Phase 2 is the paired
+LOGO delta at an offset beyond the training window**, which is question 1 above. Do not read the
+epoch log as a result.
+
+**And one defect this task's own work surfaced, now gated.** A `logger.info` here carried seven
+format placeholders and six arguments. `logging` catches that `TypeError` itself and prints a
+traceback to stderr **without raising**, so the run continued, every test passed, and the only
+symptom was a log line that never appeared. `PLE1205`/`PLE1206` joined the ruff gate; both were
+clean across `src`, `bench`, `corpora`, `training` and `tests` when added.
+
 
 **Do not start this task until Task 6's arithmetic is written down and says it can run.** If it
 says otherwise, this task is blocked on owner-action item 7 ("Decide GPU or no GPU") and the plan

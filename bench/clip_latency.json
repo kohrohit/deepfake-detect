@@ -1,0 +1,17 @@
+{
+  "batch_size": 1,
+  "encoder": "assets/models/clip_vit_l14_visual.pt",
+  "implied_ln_tuning_step_ms": 828.9412959370566,
+  "implied_ln_tuning_step_note": "forward x 3, the usual rule of thumb for forward+backward. NOT measured. SUPERSEDED 2026-11-11 by measured_ln_tuning_step_ms below, which is 26% cheaper than this estimate: the rule of thumb overcharges because only 102,400 parameters carry a gradient.",
+  "mean_ms": 276.3137653123522,
+  "measured_ln_tuning_batch_size": 8,
+  "measured_ln_tuning_step_ms": 617.0,
+  "measured_ln_tuning_step_note": "MEASURED 2026-11-11 on the deployment instance, not implied: a real training step -- forward, cross-entropy, backward, AdamW -- over the actual LayerNorm-only parameter set at batch 8, one warm-up step discarded, n=2 timed steps (16 images). 604 ms/image at 8 threads, so the run was left at the measured 4-thread configuration. One epoch over 9,886 records is 1.70 h, not the 2.3 h implied above.",
+  "measured_ln_tuning_threads": 4,
+  "n": 32,
+  "p50_ms": 276.3559134982643,
+  "p95_ms": 277.0138423460594,
+  "quantized": false,
+  "threads": 4,
+  "warmup_ms": 280.6927729980089
+}

@@ -122,6 +122,16 @@ class Calibrator:
 
         return self
 
+    @property
+    def fitted_bands(self) -> list[str]:
+        """The bands that actually carry a curve, sorted.
+
+        Not the bands `fit` was handed: the guards above drop a band with
+        too few samples or one class, and a caller reporting what it passed
+        in would be claiming curves that were refused.
+        """
+        return sorted(self._models)
+
     def to_evidence(self, raw: RawScore, band: str) -> Evidence:
         """Convert a raw score to calibrated evidence on a given band.
 

@@ -79,6 +79,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.calibration import Calibrator, save_calibrators
 from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
 from dfd.faces import FaceBox, clamp_roi, detect_faces, select_largest_face
@@ -164,6 +165,19 @@ def select_face(boxes: Sequence[FaceBox]) -> FaceBox | None:
     keeps its name and this docstring, which is the measurement record.
     """
     return select_largest_face(boxes)
+
+
+def _standardiser(features: npt.NDArray[np.float64],
+                  ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Per-feature mean and spread, with a constant feature made harmless.
+
+    Dividing by a zero spread yields inf, which reaches the linear layer and
+    survives as a confident score.
+    """
+    mean = features.mean(axis=0)
+    scale = features.std(axis=0)
+    scale[scale < 1e-9] = 1.0
+    return mean, scale
 
 
 def features_for(path: Path, *, detect: DetectFn, net: NPRStatsNet,
@@ -313,11 +327,7 @@ def main(argv: Sequence[str] | None = None, *,
                 "skipped %s", len(y), int((y == 0).sum()), int((y == 1).sum()),
                 len(set(g)), dict(skipped) or "nothing")
 
-    mean = features.mean(axis=0)
-    # Guard a constant feature: dividing by its zero spread yields inf, which
-    # reaches the linear layer and leaves it as a confident score.
-    scale = features.std(axis=0)
-    scale[scale < 1e-9] = 1.0
+    mean, scale = _standardiser(features)
     standardised = (features - mean) / scale
 
     held_out: dict[str, Any] = {"measured": False}
@@ -327,10 +337,25 @@ def main(argv: Sequence[str] | None = None, *,
         for train, test in GroupKFold(n_splits=5).split(standardised, y, g):
             if len(np.unique(y[train])) < 2:
                 continue
+            # THE STANDARDISER IS REFITTED INSIDE THE FOLD. It used to be
+            # fitted once over every row, so each fold's "held-out" score
+            # came from a pipeline whose preprocessing had already seen the
+            # test sessions. The leak is small, but the number it touches is
+            # the one this repo quotes everywhere -- and every control in
+            # bench/vcip_controls.json derives from these same out-of-fold
+            # scores, so a reader comparing a control against the headline
+            # was comparing two equally-leaked numbers instead of two clean
+            # ones. The shipped mean/scale above still come from all rows,
+            # which is correct: that is the production standardiser, fitted
+            # on everything available, and it is not what any held-out
+            # number may be computed with.
+            f_mean, f_scale = _standardiser(features[train])
+            tr = (features[train] - f_mean) / f_scale
+            te = (features[test] - f_mean) / f_scale
             fold = LogisticRegression(max_iter=5000, C=args.c,
                                       random_state=args.seed)
-            fold.fit(standardised[train], y[train])
-            oof[test] = fold.predict_proba(standardised[test])[:, 1]
+            fold.fit(tr, y[train])
+            oof[test] = fold.predict_proba(te)[:, 1]
         held_out = {"measured": True, "folds": "GroupKFold(5) on session",
                     **_session_metrics(oof, y, g)}
         logger.info("held-out (session folds): AUC %s, caught %.1f%% at a "
@@ -391,7 +416,7 @@ def main(argv: Sequence[str] | None = None, *,
 
     report = {
         "fitter": "training.fit_vcip",
-        "captures": str(args.captures),
+        "captures": corpus_label(args.captures),
         "preprocessing": "native ROI crop (dfd.detectors.npr."
                          "_crop_to_roi_native); NO resize",
         "n_features": int(NPRStatsNet.N_FEATURES),

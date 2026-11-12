@@ -65,6 +65,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
 from corpora.face_pool import DetectFn
+from corpora.provenance import corpus_label
 from dfd.detectors.npr import NPRStatsNet, _crop_to_roi_native, npr_feature
 from dfd.faces import align, clamp_roi, detect_faces
 from training.fit_vcip import (
@@ -72,6 +73,7 @@ from training.fit_vcip import (
     _frames,
     _session_metrics,
     _shapes_in_both_classes,
+    _standardiser,
     select_face,
 )
 
@@ -166,19 +168,22 @@ def held_out_scores(features: npt.NDArray[np.float64],
     """Out-of-fold probabilities under `GroupKFold(5)` on session.
 
     Identical to `training.fit_vcip`'s own loop, standardiser included, so a
-    control here is comparable with the headline it is controlling.
+    control here is comparable with the headline it is controlling -- which
+    is why the standardiser is REFITTED PER FOLD here too. Both files used
+    to fit it once over every row, so the test sessions had already been
+    seen by the preprocessing. Changing one and not the other would be
+    worse than leaving both: a control is only meaningful against a headline
+    computed the same way.
     """
-    mean = features.mean(axis=0)
-    scale = features.std(axis=0)
-    scale[scale < 1e-9] = 1.0
-    standardised = (features - mean) / scale
     out = np.full(len(labels), np.nan)
-    for train, test in GroupKFold(n_splits=5).split(standardised, labels, groups):
+    for train, test in GroupKFold(n_splits=5).split(features, labels, groups):
         if len(np.unique(labels[train])) < 2:
             continue
+        mean, scale = _standardiser(features[train])
         fold = LogisticRegression(max_iter=5000, C=c, random_state=seed)
-        fold.fit(standardised[train], labels[train])
-        out[test] = fold.predict_proba(standardised[test])[:, 1]
+        fold.fit((features[train] - mean) / scale, labels[train])
+        out[test] = fold.predict_proba(
+            (features[test] - mean) / scale)[:, 1]
     return out
 
 
@@ -479,7 +484,7 @@ def main(argv: Sequence[str] | None = None, *,
 
     report: dict[str, Any] = {
         "controls": "bench.vcip_controls",
-        "captures": str(args.captures),
+        "captures": corpus_label(args.captures),
         "encoder_shortcut": encoder_shortcut(args.captures),
         "matched_encoder": matched_encoder(args.captures, detect=detect),
         "preprocessing_and_blocks": preprocessing_and_blocks(
