@@ -12,7 +12,7 @@ from dfd.detectors.base import (
     NO_QUALITY,
     WEIGHTS_ABSENT,
 )
-from dfd.detectors.npr import NPRDetector, npr_feature
+from dfd.detectors.npr import NPRDetector, NPRStatsNet, npr_feature
 from dfd.types import Modality, Observation, Quality
 
 
@@ -548,3 +548,375 @@ def test_detector_abstains_quality_not_measured_secure_path(tiny_weights, tiny_m
     r = d.score(obs)
 
     assert r.abstained and r.reason == NO_QUALITY
+
+
+# --- Slot C's actual architecture (added 2026-09-23) -----------------------
+#
+# Until now `npr` shipped a feature function and no model, so the slot
+# abstained with `weights_absent` on every input this project has ever
+# scored. `NPRStatsNet` is the light head the CPU-only ruling calls for
+# (docs/HANDOFF.md §1, correction 3): handcrafted statistics of the
+# upsampling residual feeding a linear layer, fitted by
+# `training/fit_npr.py`.
+
+def test_the_residual_is_identically_zero_on_the_even_phase():
+    """Not a bug — the definition. Nearest-neighbour upsampling REPLICATES
+    the sampled pixel, so `up[2i, 2j] == x[2i, 2j]` for every image, real or
+    generated. Any statistic computed over that phase is a constant 0 and
+    carries no information, which is why `NPRStatsNet` reads the other three.
+    """
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    r = npr_feature(img)
+    assert np.abs(r[0::2, 0::2]).max() == 0.0
+    assert np.abs(r[1::2, 1::2]).max() > 0.0
+
+
+def test_stats_net_emits_two_logits_per_sample():
+    net = NPRStatsNet()
+    out = net(torch.zeros(4, 3, 32, 32))
+    assert out.shape == (4, 2)
+
+
+def test_stats_are_finite_on_a_flat_image():
+    """A constant image has a zero residual in every phase, so every ratio is
+    0/0. A NaN here would poison the linear layer silently."""
+    net = NPRStatsNet()
+    f = net.features(torch.zeros(1, 3, 32, 32))
+    assert f.shape == (1, NPRStatsNet.N_FEATURES)
+    assert torch.isfinite(f).all()
+
+
+def test_an_image_too_small_to_have_every_phase_is_still_finite():
+    """A 1x1 crop leaves all three informative phases EMPTY.
+
+    Without the guard, `mean` over an empty tensor is nan, and torch does
+    not raise — the nan reaches the linear layer and every logit becomes
+    nan. The detector's quality floor should keep crops this small out, but
+    "should" is not a guard, and a nan that only appears on degenerate input
+    is the kind that reaches production.
+    """
+    net = NPRStatsNet()
+    f = net.features(torch.zeros(1, 3, 1, 1))
+    assert f.shape == (1, NPRStatsNet.N_FEATURES)
+    assert torch.isfinite(f).all()
+
+
+def test_stats_separate_upsampled_content_from_natural_content():
+    """The physics the slot exists for, asserted rather than assumed.
+
+    Upsampled content reconstructs almost exactly under downsample-then-
+    upsample, so its residual is small; natural high-frequency content does
+    not, so its residual is large.
+    """
+    rng = np.random.default_rng(1)
+    natural = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    small = rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)
+    upsampled = np.repeat(np.repeat(small, 2, axis=0), 2, axis=1)
+    net = NPRStatsNet()
+    def energy(img):
+        r = torch.from_numpy(npr_feature(img)).permute(2, 0, 1)[None]
+        return float(net.features(r)[0, :9].abs().mean())
+    assert energy(upsampled) < energy(natural) / 2
+
+
+def test_the_normalisation_buffers_are_applied():
+    """They travel in the state_dict, so a fitted model that ignored them
+    would load clean and score as though it had never been standardised."""
+    net = NPRStatsNet()
+    rng = np.random.default_rng(2)
+    x = torch.from_numpy(rng.normal(0, 0.2, (2, 3, 32, 32)).astype(np.float32))
+    before = net(x).clone()
+    with torch.no_grad():
+        net.feature_mean.add_(1.0)
+        net.feature_scale.mul_(3.0)
+    assert not torch.allclose(before, net(x))
+
+
+def test_a_fitted_state_dict_loads_through_the_secure_path(tmp_path):
+    """End to end: what `training/fit_npr.py` writes is what the registry's
+    `model_factory` can load with weights_only=True."""
+    net = NPRStatsNet()
+    with torch.no_grad():
+        net.linear.weight.copy_(torch.randn(2, NPRStatsNet.N_FEATURES))
+    p = tmp_path / "npr.pt"
+    torch.save(net.state_dict(), p)
+    d = NPRDetector(weights_path=p, model_factory=NPRStatsNet)
+    rng = np.random.default_rng(3)
+    img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    score = d.score([_obs(img)])
+    assert not score.abstained
+    assert 0.0 <= score.score <= 1.0
+
+
+def test_the_registry_wires_the_factory_so_npr_never_needs_unsafe_loading():
+    """Without this the slot could only load a full pickle, which is the
+    path `loading.load_model` logs a warning for on every call."""
+    from dfd.detectors.registry import default_registry
+    npr = default_registry().get("npr")
+    assert npr.model_factory is NPRStatsNet
+    assert npr.allow_unsafe_load is False
+
+
+# --- Magnitude features, added 2026-09-24 ------------------------------
+#
+# Measured on 506 frames of the v-CIP capture corpus (106 sessions, real
+# `inswapper_128` swaps of genuine capture frames): the 27 phase features
+# alone reach AUC 0.861 but catch only 4.4% of swapped sessions at a ZERO
+# false-alarm budget, which is the operating point the product needs. Adding
+# per-channel magnitude moments and a coarse spectral profile takes the same
+# crops to 45.6% at the same budget (AUC 0.957).
+#
+# Re-measured 2026-09-25 by `bench.vcip_controls.preprocessing_and_blocks`;
+# this comment read 0.869/7.4% and 92.6% until then, from a run made before
+# `training.fit_vcip.select_face` was corrected to the pipeline's rule.
+#
+# The phase features are KEPT rather than replaced: they read a scale-free
+# property (how residual energy distributes across sampling phases) that the
+# magnitude features cannot express, and the combination beat either alone.
+
+def test_feature_vector_has_the_declared_length():
+    """`N_FEATURES` is what a fitted state_dict is tied to. A mismatch here
+    loads clean and scores nonsense."""
+    import torch
+
+    from dfd.detectors.npr import NPRStatsNet
+    net = NPRStatsNet()
+    r = torch.randn(4, 3, 64, 64)
+    assert net.features(r).shape == (4, NPRStatsNet.N_FEATURES)
+
+
+def test_the_spectral_block_reads_something_the_phase_block_cannot():
+    """The capability being added, as an exact case rather than an argument.
+
+    Shuffling the pixels WITHIN each sampling phase is a permutation of that
+    phase's values, so every per-phase mean, std and ratio is bit-identical
+    afterwards — the 27 phase features cannot see it at all. The spatial
+    structure, and therefore the spectrum, is destroyed.
+
+    That is exactly the distinction that matters in the field: an upsampled
+    generator patch is smooth where sensor noise is not, while both can carry
+    the same per-phase magnitude. On the capture corpus the phase block alone
+    caught 4.4% of swapped sessions at a zero false-alarm budget and the full
+    vector caught 45.6%, which is why the layout changed.
+    """
+    import torch
+
+    from dfd.detectors.npr import NPRStatsNet
+    net = NPRStatsNet()
+    g = torch.Generator().manual_seed(0)
+    r = torch.randn(1, 3, 64, 64, generator=g)
+
+    shuffled = r.clone()
+    for dy in (0, 1):
+        for dx in (0, 1):
+            block = shuffled[:, :, dy::2, dx::2]
+            flat = block.reshape(block.shape[0], block.shape[1], -1)
+            perm = torch.randperm(flat.shape[-1], generator=g)
+            shuffled[:, :, dy::2, dx::2] = flat[:, :, perm].reshape(block.shape)
+
+    a, b = net.features(r), net.features(shuffled)
+    n_phase = NPRStatsNet.N_PHASE_FEATURES
+
+    # The premise: the phase block genuinely cannot see this.
+    assert torch.allclose(a[:, :n_phase], b[:, :n_phase], atol=1e-4), (
+        "the within-phase shuffle changed the phase block, so this test is "
+        "not measuring what it claims")
+
+    assert NPRStatsNet.N_FEATURES > n_phase, (
+        "no spectral block exists; the layout reads phase statistics only")
+    assert not torch.allclose(a[:, n_phase:], b[:, n_phase:], atol=1e-3), (
+        "the spectral block did not move when the spectrum was destroyed "
+        "and every phase statistic held constant; it is not reading "
+        "frequency")
+
+
+def test_features_are_finite_on_a_flat_field_and_a_tiny_image():
+    """A flat field divides by zero in every ratio, and an image smaller
+    than the stride leaves a phase empty. Both must give numbers, because a
+    nan reaches the linear layer and comes out as a confident score."""
+    import torch
+
+    from dfd.detectors.npr import NPRStatsNet
+    net = NPRStatsNet()
+    for r in (torch.zeros(1, 3, 32, 32), torch.zeros(1, 3, 1, 1),
+              torch.ones(1, 3, 8, 8)):
+        assert torch.isfinite(net.features(r)).all(), f"non-finite on {tuple(r.shape)}"
+
+
+# --- The detector must read the FACE, at its native resolution ---------
+#
+# Added 2026-09-24. `score` computed `npr_feature(o.payload)` — the WHOLE
+# frame — while every measurement that justified this slot was made on the
+# face crop. On the v-CIP capture corpus (720x1280 frames, median face 237px)
+# that difference is the whole result: resizing the face to a 224 square
+# DOWNSAMPLES the median face and low-pass filters away the upsampling
+# fingerprint, taking the zero-false-alarm catch rate from 45.6% to 1.5%
+# (re-measured 2026-09-25; this line read 89.7% to 51.5% until then).
+#
+# So this detector crops to the ROI and does NOT resize, which is the
+# opposite of `dfd.detectors.blend._crop_to_roi`. The reason they differ:
+# seam features normalise annulus GEOMETRY and need a fixed scale, while the
+# NPR residual IS a scale-dependent quantity and normalising it away is the
+# defect. Whatever the fitter does here, the detector must match exactly.
+
+def _roi_obs(payload, roi):
+    """Like `_obs`, but with an explicit ROI — including None."""
+    q = Quality(inter_ocular_px=100, blur_var=200, yaw_deg=0, pitch_deg=0,
+                exposure=0.5, band="high")
+    return Observation(t=0.0, payload=payload, roi=roi, quality=q,
+                       source_id="s0")
+
+
+def test_score_reads_only_the_roi_pixels(tiny_weights, tiny_model_factory):
+    """Scoring a face inside a large frame must equal scoring that crop
+    alone. If the whole frame is read, surrounding pixels move the score."""
+    import numpy as np
+
+    from dfd.detectors.npr import NPRDetector
+    rng = np.random.default_rng(0)
+    face = rng.integers(0, 255, (96, 96, 3), dtype=np.uint8)
+
+    frame = rng.integers(0, 255, (480, 640, 3), dtype=np.uint8)
+    frame[100:196, 200:296] = face
+
+    d = NPRDetector(weights_path=tiny_weights,
+                    model_factory=tiny_model_factory, min_quality_band="low")
+    in_frame = d.score([_roi_obs(frame, (200, 100, 96, 96))])
+    alone = d.score([_roi_obs(face, (0, 0, 96, 96))])
+
+    assert not in_frame.abstained and not alone.abstained
+    assert in_frame.score == pytest.approx(alone.score, abs=1e-6)
+
+
+def test_the_crop_keeps_the_rois_own_dimensions():
+    """The contract the fitter must match, asserted directly.
+
+    `blend._crop_to_roi` resizes every crop to a 224 square because seam
+    features need a fixed scale. This one must NOT, because the NPR residual
+    is the difference between an image and its own stride-2 reconstruction —
+    a scale-dependent quantity that resampling rewrites.
+
+    Tested on the helper rather than through `score`, because an untrained
+    linear layer saturates softmax and hides the difference at the output
+    even when the features differ.
+    """
+    import numpy as np
+
+    from dfd.detectors.npr import _crop_to_roi_native
+    frame = np.random.default_rng(3).integers(0, 255, (480, 640, 3),
+                                              dtype=np.uint8)
+    for w, h in ((64, 64), (237, 190), (400, 300)):
+        crop = _crop_to_roi_native(frame, (10, 20, w, h))
+        assert crop is not None
+        assert crop.shape[:2] == (h, w), (
+            f"ROI {w}x{h} produced a {crop.shape[1]}x{crop.shape[0]} crop; "
+            f"the crop was resampled")
+
+
+def test_the_crop_is_a_view_of_the_requested_region():
+    """Right size, wrong pixels is the failure this catches — an off-by-one
+    or a transposed (x, y) would still pass a shape assertion."""
+    import numpy as np
+
+    from dfd.detectors.npr import _crop_to_roi_native
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    frame[30:70, 50:120] = 255
+    crop = _crop_to_roi_native(frame, (50, 30, 70, 40))
+    assert crop is not None
+    assert (crop == 255).all(), "the crop is not the region that was asked for"
+
+
+def test_the_crop_is_clamped_to_the_frame():
+    """A detector may hand back a box hanging off the frame edge, which is
+    routine on a tightly framed face. An unclamped negative origin slices
+    from the FAR END of the array and yields the wrong pixels silently."""
+    import numpy as np
+
+    from dfd.detectors.npr import _crop_to_roi_native
+    frame = np.random.default_rng(4).integers(0, 255, (100, 100, 3),
+                                              dtype=np.uint8)
+    crop = _crop_to_roi_native(frame, (-20, -20, 60, 60))
+    assert crop is not None
+    assert crop.shape[:2] == (40, 40)
+    assert np.array_equal(crop, frame[0:40, 0:40])
+    assert _crop_to_roi_native(frame, (99, 99, 1, 1)) is None
+
+
+def test_score_abstains_when_there_is_no_roi(tiny_weights, tiny_model_factory):
+    """No ROI means the detector does not know which pixels are the face.
+    Scoring the whole frame instead is how it silently reads background."""
+    import numpy as np
+
+    from dfd.detectors.npr import NPRDetector, NO_ROI
+    d = NPRDetector(weights_path=tiny_weights,
+                    model_factory=tiny_model_factory, min_quality_band="low")
+    frame = np.random.default_rng(2).integers(0, 255, (128, 128, 3),
+                                              dtype=np.uint8)
+    out = d.score([_roi_obs(frame, None)])
+    assert out.abstained
+    assert out.reason == NO_ROI
+
+
+def test_the_quality_floor_does_not_discard_the_reject_band():
+    """Slot C must score blurred faces, not refuse them.
+
+    Measured on the v-CIP capture corpus, per band, held-out scores from
+    folds split on session (`bench.vcip_controls.per_band`, re-measured
+    2026-09-25):
+
+        band      n    genuine  swapped   AUC    caught at zero false alarms
+        reject   240        14      226   0.803   26.5%
+        medium   244       140      104   0.947   85.6%
+        low        8         2        6   1.000  100.0%
+        high      14        14        0     —       —
+
+    And the floor at `low` was discarding the `reject` band entirely — 226
+    of 336 swapped frames (67.3%) against 14 of 170 genuine.
+
+    **The composition columns are the argument, not the AUC columns**, which
+    is why this default survived their re-measurement unchanged. The table
+    here until 2026-09-25 read 0.992/94.2% for `reject` and 0.957/29.8% for
+    `medium` — very nearly the other way round — from a run made before
+    `training.fit_vcip.select_face` was corrected to the pipeline's rule.
+    The n, genuine and swapped columns are identical in both.
+
+    The asymmetry has a mechanism rather than being a quirk: `inswapper_128`
+    emits a 128x128 face pasted back upscaled, so a swap BLURS, and a
+    sharpness-based floor reads blur as a bad capture. For every other
+    detector low quality means low reliability; for this one it is positively
+    correlated with the artefact being looked for. A floor above `reject`
+    therefore discards the most detectable attacks before the detector runs,
+    which is a security hole rather than caution.
+
+    Reduced reliability at low quality is still real, and it is expressed
+    where it belongs — the per-band calibration curve (`dfd.calibration`),
+    which is exactly what per-band calibration is for.
+
+    READ THE DENOMINATORS: the reject band holds 14 genuine frames and the
+    low band holds 2, so their false-alarm columns rest on 14 and 2
+    negatives; `low`'s 1.000 over eight frames means nothing at all, and
+    `high` holds no swapped frame so it has no AUC. What the re-measured
+    table does show clearly is the reliability drop — `reject` is now the
+    worst band rather than the best — which is the thing per-band
+    calibration exists to carry.
+    """
+    from dfd.detectors.npr import NPRDetector
+    assert NPRDetector(weights_path="unused.pt").min_quality_band == "reject"
+
+
+def test_a_reject_band_observation_is_scored_not_refused(
+        tiny_weights, tiny_model_factory):
+    """The behaviour the floor change exists to produce."""
+    import numpy as np
+
+    from dfd.detectors.npr import NPRDetector
+    q = Quality(inter_ocular_px=10, blur_var=1.0, yaw_deg=0, pitch_deg=0,
+                exposure=0.5, band="reject")
+    img = np.random.default_rng(5).integers(0, 255, (64, 64, 3),
+                                            dtype=np.uint8)
+    obs = Observation(t=0.0, payload=img, roi=(0, 0, 64, 64), quality=q,
+                      source_id="s0")
+    out = NPRDetector(weights_path=tiny_weights,
+                      model_factory=tiny_model_factory).score([obs])
+    assert not out.abstained, f"refused a reject-band frame: {out.reason}"

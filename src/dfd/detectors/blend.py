@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -308,6 +310,35 @@ def _crop_to_roi(
                       interpolation=cv2.INTER_AREA).astype(np.uint8)
 
 
+#: The version reported when there are no weights to read one from. It
+#: describes the CODE — the feature set and the scoring path — and is a
+#: deliberate fallback, never the answer when a weights file exists.
+CODE_VERSION = "0.1.0"
+
+
+@lru_cache(maxsize=16)
+def _weights_version(path: str, fingerprint: tuple[int, int]) -> str:
+    """The version string stored inside the npz at `path`.
+
+    `fingerprint` is (mtime_ns, size) and is not read: it is in the cache key
+    so that refitting the weights invalidates the entry. Caching on the path
+    alone would pin the first version ever read for the life of the process,
+    and `training.fit_blend` writes to a FIXED path — so the stale value
+    would be the normal case, not an edge one.
+
+    Never raises: this is read on the abstention path too, where the file may
+    be absent or truncated, and a detector that cannot say what version it is
+    must still be able to say why it abstained.
+    """
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            return str(data["version"])
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        logger.warning("cannot read a version from %s (%s); reporting the "
+                       "code version %s instead", path, exc, CODE_VERSION)
+        return CODE_VERSION
+
+
 def load_blend_model(path: str | Path) -> BlendModel:
     """Read a model file, refusing one that does not match this code.
 
@@ -368,10 +399,26 @@ class BlendDetector:
 
     name: str = "blend_seam"
     slot: str = "A"
-    version: str = "0.1.0"
     modalities: frozenset[Modality] = field(
         default_factory=lambda: frozenset({Modality.IMAGE, Modality.VIDEO}))
     min_quality_band: Literal["low", "medium", "high"] = "medium"
+
+    @property
+    def version(self) -> str:
+        """The version of the WEIGHTS this detector will score with.
+
+        `bench.runner` writes this into the run record's `model_versions`,
+        which is what a reader consults to ask which model produced a given
+        AUC. Reporting a hardcoded code version there would answer that
+        question wrongly every time the weights are refitted — and these are
+        the one detector's weights this project refits itself.
+        """
+        path = Path(self.weights_path)
+        try:
+            stat = path.stat()
+        except OSError:
+            return CODE_VERSION
+        return _weights_version(str(path), (stat.st_mtime_ns, stat.st_size))
 
     def score(self, obs: Sequence[Observation]) -> RawScore:
         """Score observations by their mean seam probability.

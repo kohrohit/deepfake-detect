@@ -8,9 +8,11 @@ never calibrated in this regime" is 'no information', not an extrapolation.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -189,3 +191,94 @@ class Calibrator:
             reason="ok",
             artifacts=dict(raw.artifacts)
         )
+
+
+#: Bumped when the on-disk shape changes. A reader that does not recognise it
+#: refuses rather than guessing which fields mean what.
+CALIBRATION_FORMAT_VERSION = 1
+
+
+def save_calibrators(calibrators: Mapping[str, Calibrator],
+                     path: str | Path) -> None:
+    """Write fitted calibrators as plain JSON.
+
+    Deliberately not a pickle, for the same reason `BlendModel` is not:
+    `pickle.load` executes arbitrary code from the file it reads, and a
+    calibration file is exactly the artefact an attacker would swap to move
+    every verdict a few nats in their favour. What is written is four numbers
+    per band — the logistic coefficient, the intercept, the fitted prior, and
+    the clip — and numbers cannot execute.
+
+    Bands that were never fitted are simply absent, so a round trip cannot
+    invent a curve where `fit` refused to make one.
+
+    Args:
+        calibrators: detector name -> fitted calibrator.
+        path: destination; parent directories are created.
+    """
+    out: dict[str, object] = {"format_version": CALIBRATION_FORMAT_VERSION}
+    detectors: dict[str, object] = {}
+    for name, cal in calibrators.items():
+        bands: dict[str, object] = {}
+        for band, model in cal._models.items():
+            bands[band] = {
+                "coef": float(model.coef_[0][0]),
+                "intercept": float(model.intercept_[0]),
+                "prior": float(cal._priors[band]),
+            }
+        detectors[name] = {"max_abs_llr": float(cal.max_abs_llr),
+                           "bands": bands}
+    out["detectors"] = detectors
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # allow_nan=False: a NaN coefficient would serialise as the bare token
+    # `NaN`, which is not JSON, and would silently make every llr NaN on the
+    # way back in.
+    p.write_text(json.dumps(out, indent=2, sort_keys=True, allow_nan=False))
+    logger.info("wrote %d calibrator(s) to %s", len(detectors), p)
+
+
+def load_calibrators(path: str | Path) -> dict[str, Calibrator]:
+    """Read calibrators written by `save_calibrators`.
+
+    Args:
+        path: file to read.
+
+    Returns:
+        detector name -> calibrator, ready for `decide(calibrators=...)`.
+
+    Raises:
+        ValueError: if the file declares a format version this code does not
+            implement. Reading it anyway would mean guessing what its fields
+            mean, and the failure would show up as a subtly wrong llr rather
+            than as an error.
+        FileNotFoundError: if the file is absent. Callers that treat missing
+            calibration as "no calibration" must say so explicitly; silently
+            returning {} here would make a deployment with a mistyped path
+            indistinguishable from one that was never calibrated.
+    """
+    data = json.loads(Path(path).read_text())
+    version = data.get("format_version")
+    if version != CALIBRATION_FORMAT_VERSION:
+        raise ValueError(
+            f"calibration file {path} declares format_version {version!r}; "
+            f"this code implements {CALIBRATION_FORMAT_VERSION}")
+
+    out: dict[str, Calibrator] = {}
+    for name, entry in data["detectors"].items():
+        cal = Calibrator(name, max_abs_llr=float(entry["max_abs_llr"]))
+        for band, params in entry["bands"].items():
+            # Reconstructing the estimator by assignment rather than by
+            # re-fitting: `decision_function` needs only coef_, intercept_
+            # and classes_, and re-fitting would need the training data the
+            # whole point of this file is to avoid shipping.
+            lr = LogisticRegression()
+            lr.coef_ = np.array([[float(params["coef"])]], dtype=float)
+            lr.intercept_ = np.array([float(params["intercept"])], dtype=float)
+            lr.classes_ = np.array([0, 1])
+            lr.n_features_in_ = 1
+            cal._models[band] = lr
+            cal._priors[band] = float(params["prior"])
+        out[name] = cal
+    logger.info("loaded %d calibrator(s) from %s", len(out), path)
+    return out

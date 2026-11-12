@@ -1,0 +1,57 @@
+{
+  "auc_floor": 0.75,
+  "corpus": {
+    "df40_eval_subset": {
+      "caveat": "Guard-waived: one unlabelled compression level, one unknown generator. Not a leave-one-generator-out result. SHORTCUT, measured 2026-09-23: Lab colour means alone separate this corpus's real and fake halves at AUC 0.843 on a val-fit/test-report split. Its halves come from different upstream sources, so any in-distribution number here measures source identification at least as much as forensics. EFFECTIVE SAMPLE SIZE, measured 2026-09-23: the 1601 fakes fall into 45 filename families, the largest holding 999 of them (62%), for a Kish effective n of 2.4. Intervals over this corpus are resampled over families (corpora.df40.source_group), not rows; every interval reported before this date was roughly 26x too narrow on the fake side. Matching native resolution and container format does not remove the colour shortcut: it raises separation from 0.800 to 0.904. PERMUTATION NULL, measured 2026-09-23: fitting a model on SHUFFLED training labels and reporting it here yields 0.229-0.780 across four training pairs, so a model that learnt NOTHING lands as far from chance as any this project has fitted. Every AUC recorded against this corpus, this card's included, is inside that null; the 0.316 reported on 2026-09-23 as a resolved negative result is retracted (p=0.33). RULING: this corpus can neither support NOR refute a detector. A bootstrap interval here is not evidence without a permutation null beside it (bench.metrics.permutation_null). IDENTITY, measured 2026-09-23 with dfd.embed (SFace): the 125 declared subjects hold 419 of 7,750 subject pairs at cosine >= 0.363 (5.41%, max 0.9908) against a 0.21% unrelated-face rate -- 26x the null. subject_id here is a filename family, not an identity, so ANY split partitioned on it leaks. That is a third independent reason this corpus cannot measure a detector, alongside the colour shortcut and the permutation null.",
+      "fakes": 1601,
+      "records": 3207,
+      "source": "DF40 test split, ungated repackaging; see assets/manifest.yaml"
+    }
+  },
+  "detectors": {
+    "blend_seam": {
+      "auc": 0.289,
+      "auc_ci95": [
+        0.23,
+        0.67
+      ],
+      "corpus": "df40_eval_subset",
+      "evidence": "bench/df40_report.md",
+      "measured_on": "2026-09-22",
+      "note": "INVERTED as a point estimate, but the honest 95% CI is 0.230-0.670 and contains 0.500: this corpus cannot establish 'inverted rather than weak' (see corpus.caveat). It ranks real frames as more fake than fakes. Refitting on the eval corpus's own reals gives 0.344, so it is not domain shift. Slot A finds composite boundaries; three quarters of DF40 has none. Refitting the SAME features on DF40 val reaches 0.800 on DF40 test, so the features are not blind \u2014 the self-blend training target was wrong. That number is in-distribution and mostly the colour shortcut above; it cannot pass this gate, by design. RETRACTED FRAMING, 2026-09-23: not merely 'cannot establish inverted rather than weak' \u2014 cannot establish anything. 0.289 is inside this corpus's permutation null (see corpus.caveat), as is every other number measured on it.",
+      "trained_on": "fairface_corpus",
+      "trained_on_note": "self-blended (corpora/sbi.py) from FairFace crops",
+      "weights": "fitted on 9974 FairFace crops, 19948 self-blended samples"
+    },
+    "dima806_vit": {
+      "auc": 0.5214,
+      "corpus": "df40_eval_subset",
+      "evidence": "docs/HANDOFF.md \u00a70",
+      "measured_on": "2026-09-23",
+      "note": "Measured at chance and saturated: mean P(fake) 0.961 on reals against 0.952 on fakes. NOT WIRED into the registry, deliberately \u2014 a detector at chance adds a dependency and no information.",
+      "trained_on": null,
+      "trained_on_note": "unknown \u2014 the HuggingFace model card does not say. Unknown cannot pass the gate.",
+      "weights": "assets/models/dima806 (Apache-2.0, on disk)"
+    },
+    "effnet_b4": {
+      "auc": null,
+      "corpus": null,
+      "evidence": null,
+      "measured_on": null,
+      "note": "No weights on this deployment. Abstains with weights_absent. The obtainable weights (SBI, DeepfakeBench) are NonCommercial and FF++-derived; see assets/manifest.yaml.",
+      "trained_on": null,
+      "weights": "absent"
+    },
+    "npr": {
+      "auc": null,
+      "corpus": null,
+      "evidence": null,
+      "measured_on": null,
+      "note": "No weights on this deployment. Abstains with weights_absent.",
+      "trained_on": null,
+      "weights": "absent"
+    }
+  },
+  "format_version": 1,
+  "generated_at": "2026-09-23T00:00:00Z"
+}

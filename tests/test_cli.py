@@ -203,3 +203,67 @@ def test_max_frames_below_one_is_a_usage_error_not_a_corrupt_file(png, capsys):
     err = capsys.readouterr().err
     assert "--max-frames" in err and "must be >= 1" in err
     assert "could not decode" not in err
+
+
+# --- Calibration on the CLI, added 2026-09-24 -------------------------
+#
+# `decide` takes `calibrators` and the CLI never passed them, so every
+# detector abstained with `uncalibrated_for_band` and `python3 -m dfd score`
+# could not produce a verdict on any input, ever — however good the fitted
+# head was. The service passed them; the CLI did not.
+
+def test_score_loads_calibration_when_the_default_file_exists(tmp_path, monkeypatch):
+    """A calibration file on disk must reach `decide`."""
+    import json as _json
+
+    from dfd import cli
+
+    calib = tmp_path / "calibration.json"
+    # The shape `save_calibrators` actually writes — bands nested under a
+    # "bands" key, with `max_abs_llr` beside them, not alongside each band.
+    calib.write_text(_json.dumps({
+        "format_version": 1,
+        "detectors": {"npr": {
+            "bands": {"medium": {"coef": 4.0, "intercept": -2.0,
+                                 "prior": 0.5}},
+            "max_abs_llr": 6.0,
+        }},
+    }))
+
+    seen = {}
+
+    def _fake_decide(path, **kwargs):
+        seen["calibrators"] = kwargs.get("calibrators")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "decide", _fake_decide)
+    img = tmp_path / "x.png"
+    img.write_bytes(b"not really an image")
+    with pytest.raises(SystemExit):
+        cli.main(["score", str(img), "--calibration", str(calib)])
+
+    assert seen["calibrators"] is not None, (
+        "the CLI dropped the calibration file; every detector would abstain "
+        "with uncalibrated_for_band")
+    assert "npr" in seen["calibrators"]
+
+
+def test_score_runs_without_calibration_and_says_nothing_was_loaded(
+        tmp_path, monkeypatch):
+    """An absent calibration file must not be an error — it is the state of
+    a fresh checkout, and the detectors then abstain honestly."""
+    from dfd import cli
+
+    seen = {}
+
+    def _fake_decide(path, **kwargs):
+        seen["calibrators"] = kwargs.get("calibrators")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli, "decide", _fake_decide)
+    img = tmp_path / "x.png"
+    img.write_bytes(b"not really an image")
+    with pytest.raises(SystemExit):
+        cli.main(["score", str(img),
+                  "--calibration", str(tmp_path / "missing.json")])
+    assert not seen["calibrators"]

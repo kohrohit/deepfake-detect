@@ -3,6 +3,16 @@
 Five of these sessions are swapped=true and approved=true. They are the actual
 fraud, and any candidate system must be measured against them specifically —
 aggregate accuracy over 442 sessions would hide all five.
+
+COUNT THE IMAGES, NOT THE SESSIONS. 442 is a count of session folders. Measured
+2026-09-22, by hashing every frame: those folders hold 1088 frame files but only
+58 DISTINCT images, because 979 of the files are byte-identical to a single demo
+asset replayed as the captured frame across 368 of the sessions. The genuine
+face pool `corpora.face_pool.build_face_pool` extracts from the 435 non-swapped
+sessions is 19 crops, not 435. Nothing in this module deduplicates — it reports
+sessions, faithfully — so any caller sizing a corpus from `len(...)` of its
+result is sizing it from a number that does not mean what it looks like. See
+docs/HANDOFF.md §0.
 """
 from __future__ import annotations
 

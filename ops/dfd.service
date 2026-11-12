@@ -1,0 +1,43 @@
+# systemd user unit for the dfd detection service.
+#
+# Installed by ops/install.sh into ~/.config/systemd/user/, so it needs no
+# root and starts with the user's session. `loginctl enable-linger $USER`
+# (which install.sh offers) is what makes it survive logout and come back
+# after a reboot without anyone logging in.
+#
+# WorkingDirectory matters: the default --evidence and --blend-weights paths
+# are relative to the repository, and a service started from / would find
+# neither and run with no weights and no report card.
+
+[Unit]
+Description=dfd deepfake detection service
+Documentation=file://%h/Desktop/agents/deepfake/docs/SERVICE.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__PYTHON__ -m dfd.service \
+    --host 127.0.0.1 --port 8077 \
+    --root %h/.local/share/dfd \
+    --evidence __REPO__/bench/evidence_card.json \
+    --blend-weights __REPO__/assets/models/blend_seam.npz \
+    --face-model __REPO__/assets/models/face_detection_yunet_2023mar.onnx \
+    --calibration __REPO__/assets/models/calibration.json
+
+# Restart on any exit, including a clean one: a detection service that has
+# stopped is indistinguishable from one that is up and scoring nothing, and
+# only one of those is visible to the person who dropped a file in the inbox.
+Restart=always
+RestartSec=5
+# Give in-flight decisions a chance to finish; `Service.stop` joins the
+# worker threads with a 10s timeout of its own.
+TimeoutStopSec=30
+
+# The service reads the repo and writes only under its own root.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

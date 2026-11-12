@@ -1,0 +1,54 @@
+{
+  "fitter": "training.fit_vcip",
+  "captures": "/home/rohit/Desktop/vkyc-server/captures",
+  "preprocessing": "native ROI crop (dfd.detectors.npr._crop_to_roi_native); NO resize",
+  "n_features": 57,
+  "frames": 506,
+  "genuine": 170,
+  "swapped": 336,
+  "sessions": 106,
+  "skipped": {
+    "shape_in_one_class_only": 43,
+    "no_usable_face": 5
+  },
+  "seed": 0,
+  "C": 1.0,
+  "held_out": {
+    "measured": true,
+    "folds": "GroupKFold(5) on session",
+    "sessions": 106,
+    "genuine": 38,
+    "swapped": 68,
+    "auc": 0.9570433436532507,
+    "caught_at_fpr_0.0": 0.45588235294117646,
+    "caught_at_fpr_0.026": 0.45588235294117646,
+    "caught_at_fpr_0.05": 0.5882352941176471,
+    "caught_at_fpr_0.1": 0.9705882352941176
+  },
+  "calibration": {
+    "written": true,
+    "path": "assets/models/calibration.json",
+    "bands_fitted": [
+      "medium",
+      "reject"
+    ],
+    "bands_seen": [
+      "high",
+      "low",
+      "medium",
+      "reject"
+    ],
+    "n_per_fitted_band": {
+      "medium": 244.0,
+      "reject": 240.0
+    },
+    "corpus_prior_fake": 0.6640316205533597,
+    "WARNING": "These curves are conditioned on THIS corpus's base rate \u2014 66.4% of frames are swapped. Live v-CIP traffic is fraudulent at a rate orders of magnitude lower, so the probability this calibration reports is P(swap | score, corpus), NOT P(swap | score, production). Read it as a ranking score for triage. Re-fit the prior against measured live base rates before any number is shown to a reviewer as a probability."
+  },
+  "limits": [
+    "ONE SWAPPER: every fake is inswapper_128. Transfer to SimSwap, FaceFusion or any diffusion pipeline is unmeasured.",
+    "~12-20 DISTINCT PEOPLE: the same faces sit on both sides of every session-grouped fold. An identity-disjoint number is not computable on this corpus (attempted; permutation p=0.636).",
+    "ENCODER SHORTCUT IN THE CORPUS: the JPEG quantisation tables alone label 99.2% of frames, no pixels read, at frame AUC 0.985 \u2014 above this head's own 0.957. The head survives the control that removes it (genuine half re-encoded onto the swapped half's table: session AUC 0.949, 30.9% caught at a zero false-alarm budget, against 0.957 and 45.6% here). QUOTE THE CONTROLLED PAIR, and see bench/vcip_controls.json. Any other model fitted on this corpus needs the same control.",
+    "NOT CALIBRATED: these scores are not probabilities. Use for triage and internal evaluation, never for an automatic reject."
+  ]
+}

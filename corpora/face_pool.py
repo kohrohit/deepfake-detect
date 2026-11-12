@@ -11,6 +11,7 @@ no weight file. The YuNet weights are gitignored and absent in CI.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from dfd.faces import FaceBox, align, detect_faces
+from dfd.faces import FaceBox, align, clamp_roi, detect_faces
 from dfd.quality import measure_quality
 from dfd.types import Quality
 
@@ -34,6 +35,15 @@ DetectFn = Callable[[npt.NDArray[np.uint8]], list[FaceBox]]
 NO_FRAMES = "no_frames"
 NO_FACE = "no_face"
 UNREADABLE = "unreadable"
+#: A crop byte-identical to one already in the pool. Counted, never silent:
+#: on the real corpus this is the single largest skip reason by an order of
+#: magnitude (see `build_face_pool`), and a reader who cannot see it would
+#: read a pool of 58 distinct images as a pool of 1088.
+DUPLICATE = "duplicate"
+#: A detection that does not overlap the frame by at least 2x2 px after
+#: clamping. Mirrors `dfd.pipeline.DEGENERATE_BOX`, deliberately: the same
+#: condition should not have two names across the codebase.
+DEGENERATE_BOX = "degenerate_box"
 
 #: Aligned crop edge length, in pixels. 224 matches `dfd.faces.align`'s default
 #: and the resolution the seam features in `dfd.detectors.blend` assume.
@@ -78,6 +88,22 @@ def build_face_pool(
         a frame that cannot be decoded is counted, not propagated, because
         one corrupt JPEG must not cost the other 441 sessions.
 
+    Crops are DEDUPLICATED by content across the whole pool, and every drop
+    is counted under `DUPLICATE`. This is not an optimisation. Measured on
+    the real capture corpus, 2026-09-22: its 1088 frame files hold only 58
+    distinct images, and 979 of those files — spread over 368 of the 442
+    sessions — are byte-identical to `assets/attack/victim_id.jpg`, a demo
+    asset replayed as the captured frame. Without this, one image would
+    enter the pool hundreds of times under hundreds of session ids, and
+    `training.fit_blend.split_by_subject` — which splits on session id —
+    would place that same image on both sides of the holdout. The held-out
+    AUC would then measure memorisation of a single picture and report it
+    as generalisation. Deduplication is what makes that split mean anything.
+
+    The hash is taken over the ALIGNED CROP, not the source frame, because
+    the crop is what reaches training: two frames that differ only outside
+    the face box align to the same pixels and are the same observation.
+
     There is deliberately no `root` parameter. `CaptureSession.folder`, as
     produced by `load_capture_sessions`, is already a complete path (it is
     built there as `str(path.parent)` from a glob rooted at the caller's
@@ -93,6 +119,7 @@ def build_face_pool(
     """
     crops: list[FaceCrop] = []
     skipped: dict[str, int] = {}
+    seen: set[str] = set()
 
     def drop(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
@@ -120,13 +147,24 @@ def build_face_pool(
                 continue
 
             box = max(boxes, key=lambda b: b.score)
-            quality = measure_quality(
-                frame, (box.x, box.y, box.w, box.h), box.landmarks)
+            roi = clamp_roi(frame.shape, box)
+            if roi is None:
+                logger.debug("box misses the frame in %s", frame_path)
+                drop(DEGENERATE_BOX)
+                continue
+            quality = measure_quality(frame, roi, box.landmarks)
             index = int(frame_path.stem.split("_")[-1])
+            aligned = align(frame, box, size=size)
+            digest = hashlib.sha256(aligned.tobytes()).hexdigest()
+            if digest in seen:
+                logger.debug("duplicate crop from %s", frame_path)
+                drop(DUPLICATE)
+                continue
+            seen.add(digest)
             crops.append(FaceCrop(
                 session_id=session.session_id,
                 frame_index=index,
-                image=align(frame, box, size=size),
+                image=aligned,
                 box=box,
                 quality=quality,
                 swapped=session.swapped,

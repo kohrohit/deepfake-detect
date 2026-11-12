@@ -5,13 +5,66 @@ number that always looks good and never means anything.
 """
 from __future__ import annotations
 
-from .runner import RunRecord, worst_logo_auc
+from .runner import REAL_CLASS, RunRecord, worst_logo_auc
 
 ADVERSARIAL_FLOOR = 0.10
 
 
 def _f(x) -> str:
     return "n/a" if x is None or x != x else f"{x:.3f}"
+
+
+
+def _rate(pair: tuple[int, int]) -> str:
+    done, total = pair
+    return f"{100.0 * done / total:.1f}% ({done}/{total})" if total else "n/a"
+
+
+def _abstention_block(record, detectors, generators) -> list[str]:
+    """Per-fold abstention, split into the genuine half and the held-out fakes.
+
+    Every AUC in the table above is computed over the records that did NOT
+    abstain. When abstention is correlated with the label, that AUC describes
+    the survivors rather than the technique — and the survivors of a quality
+    floor are the least degraded fakes, which is the direction that flatters
+    a detector. Measured on the swap corpus 2026-09-24: `blend_seam` abstains
+    on 74.3% of `swap_lowres_paste` fakes against 56.9% of reals, and
+    `swap_lowres_paste` is the fold with the best AUC in that report.
+
+    Rendered only when something was measured. An empty `abstention_by_class`
+    means "not measured", and printing it as 0% would read as "nothing
+    abstained" — the opposite claim.
+    """
+    measured = any(record.logo_results[g][name].abstention_by_class
+                   for g in generators for name in detectors
+                   if name in record.logo_results[g])
+    if not measured:
+        return []
+
+    lines = ["### Abstention by class, per fold\n",
+             "Every AUC above is computed over the records that did NOT "
+             "abstain. Where these two columns differ, the fold's AUC "
+             "describes the survivors rather than the technique — and the "
+             "survivors of a quality floor are the least degraded fakes, "
+             "which flatters the detector.\n",
+             "| held out | detector | genuine | held-out fakes |",
+             "|---|---|---|---|"]
+    for g in generators:
+        for name in detectors:
+            if name not in record.logo_results[g]:
+                continue
+            by_class = record.logo_results[g][name].abstention_by_class
+            if not by_class:
+                continue
+            # The held-out generator's own key, never an aggregate over the
+            # fold's fakes: a fold's test side is that generator alone, and
+            # naming the column after it is what lets a reader compare the
+            # two numbers on the same row.
+            lines.append(f"| {g} | {name} | "
+                         f"{_rate(by_class.get(REAL_CLASS, (0, 0)))} | "
+                         f"{_rate(by_class.get(g, (0, 0)))} |")
+    lines.append("")
+    return lines
 
 
 def render_markdown(record: RunRecord) -> str:
@@ -23,10 +76,51 @@ def render_markdown(record: RunRecord) -> str:
     lines.append(f"- guards enforced: `{record.guards_enforced}`")
     versions = ", ".join(f"{k}={v}" for k, v in sorted(record.model_versions.items()))
     lines.append(f"- model versions: `{versions}`")
+    lines.append(f"- identity disjointness (criterion 2): `{record.identity_status}`")
+    if record.identity_status == "violation":
+        lines.append("  - **FAILED, and the run continued because guards are "
+                     "waived.** The numbers below are the measurement, not a "
+                     "pass.")
     if record.identity_report is not None:
         r = record.identity_report
-        lines.append(f"- identity disjointness: max cosine `{r.max_similarity:.4f}` "
-                     f"at threshold `{r.threshold}`, {r.violations} violations")
+        # The rate, never a recomputed denominator. `n_train * n_test` is the
+        # pair count for a train/test check and NOT for the corpus-level
+        # subject check, which compares n*(n-1)/2 pairs of subjects — the
+        # same report type carries both, and multiplying the two sides
+        # printed 15,625 for a comparison that made 7,750.
+        lines.append(
+            f"  - worst check: max cosine `{r.max_similarity:.4f}` at threshold "
+            f"`{r.threshold}`, {r.violations} crossings "
+            f"(`{r.violation_rate:.4%}` of compared pairs), tolerated "
+            f"`{r.tolerated_rate:.4%}`, over {r.n_train} vs {r.n_test} ids")
+        for gen, fold in sorted(record.identity_by_fold.items()):
+            lines.append(
+                f"  - held out {gen}: max cosine `{fold.max_similarity:.4f}`, "
+                f"{fold.violations} crossings (`{fold.violation_rate:.4%}`)")
+    elif record.identity_status == "not_measured":
+        # An unmeasured criterion must never read like a passed one. Before
+        # 2026-09-23 this line was absent entirely and `identity_report` was
+        # hardcoded None, so a clean run and an unchecked one rendered alike.
+        lines.append(
+            "  - **No embeddings were supplied, so nothing was checked.** The "
+            "splits are identity-disjoint by DECLARATION (`subject_id`) only; "
+            "one person enrolled under two subject ids would sit on both "
+            "sides and nothing here would see it.")
+    if record.adversarial_status:
+        states = sorted(set(record.adversarial_status.values()))
+        lines.append(f"- adversarial robustness (criterion 8): `{', '.join(states)}`")
+        for name, state in sorted(record.adversarial_status.items()):
+            if state != "ok":
+                lines.append(f"  - {name}: not attacked — `{state}`")
+    lines.append(f"- demographic parity (criterion 11): `{record.parity_status}`")
+    for name, pr in sorted(record.parity_by_detector.items()):
+        rates = ", ".join(f"{k} {v:.4f}" for k, v in sorted(pr.fpr_by_stratum.items()))
+        lines.append(f"  - {name}: FPR ratio `{pr.max_fpr_ratio:.2f}x` "
+                     f"(ceiling `{pr.ceiling:.2f}x`) — {rates}")
+    if record.parity_excluded_strata:
+        excluded = ", ".join(f"{k} (n={v})"
+                             for k, v in sorted(record.parity_excluded_strata.items()))
+        lines.append(f"  - excluded as too small to compare: {excluded}")
     lines.append("")
 
     lines.append("## Leave-one-generator-out (spec §8.1)\n")
@@ -67,6 +161,7 @@ def render_markdown(record: RunRecord) -> str:
             lines.append(f"| {name} | **{_f(worst_logo_auc(record, name))}** | "
                          + " | ".join(cells) + " |")
         lines.append("")
+        lines.extend(_abstention_block(record, detectors, generators))
 
     lines.append("## In-dataset results — memorisation, not field performance\n")
     lines.append("These are computed over the whole corpus, with every "

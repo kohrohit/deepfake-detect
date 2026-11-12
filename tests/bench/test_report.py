@@ -173,3 +173,68 @@ def test_report_omits_the_robustness_table_when_nothing_was_measured():
     md = render_markdown(_record())
     assert "Robustness" not in md
     assert "screenshot_recapture" not in md
+
+
+def test_identity_line_does_not_fabricate_a_pair_count():
+    """`n_train * n_test` is the denominator for a train/test check and not
+    for the corpus-level subject check, which compares n*(n-1)/2 subject
+    pairs. The same report type carries both, so the renderer must print the
+    RATE the guard computed rather than multiply the two sides itself."""
+    from bench.guards import IdentityReport
+    from bench.report import render_markdown
+    from bench.runner import RunRecord
+
+    rec = RunRecord(
+        seed=0, dataset_hash="h", guards_enforced=False, model_versions={},
+        identity_report=IdentityReport(
+            n_train=125, n_test=125, max_similarity=0.99, violations=419,
+            threshold=0.363, violation_rate=419 / 7750, tolerated_rate=1.0),
+        identity_status="violation")
+
+    md = render_markdown(rec)
+
+    assert "419 crossings" in md
+    assert "5.4065%" in md
+    assert "15625" not in md, "printed a pair count nobody computed"
+
+
+# --- Abstention by class ------------------------------------------------
+
+def _skewed_logo_record():
+    """A fold whose held-out fakes abstain far more often than reals do.
+
+    The shape measured on the swap corpus 2026-09-24: `blend_seam` abstains
+    on 74.3% of `swap_lowres_paste` fakes against 56.9% of reals, and that
+    fold carries the best AUC in the report. Every metric beside it is
+    computed over the survivors, so the AUC describes the quarter of that
+    technique's fakes the quality floor let through.
+    """
+    base = _record()
+
+    def _dr(auc, by_class):
+        return DetectorResult(
+            detector="synth_a", auc=auc, auc_ci=(auc - 0.1, auc + 0.1),
+            tpr_at_1pct=0.2, tpr_at_0p1pct=0.1, ece=0.05,
+            adversarial_tpr_at_1pct=0.03, abstention_rate=0.6,
+            p95_latency_ms=1.0, n_samples=100,
+            abstention_by_class=by_class)
+
+    return replace(base, logo_results={
+        "lowres": {"synth_a": _dr(0.93, {"real": (57, 100), "lowres": (76, 100)})},
+        "poisson": {"synth_a": _dr(0.64, {"real": (57, 100), "poisson": (56, 100)})},
+    })
+
+
+def test_report_shows_abstention_per_class_beside_the_logo_folds():
+    """An AUC computed over survivors means less when survival is
+    label-correlated. The rate that produced it must render beside it."""
+    md = render_markdown(_skewed_logo_record())
+    assert "76.0%" in md          # the held-out fakes
+    assert "57.0%" in md          # the reals they are compared against
+
+
+def test_report_does_not_invent_an_abstention_breakdown_when_none_was_measured():
+    """An empty `abstention_by_class` means "not measured". Rendering it as
+    0% would read as "nothing abstained", which is the opposite claim."""
+    md = render_markdown(_logo_record())
+    assert "abstention by class" not in md.lower()
