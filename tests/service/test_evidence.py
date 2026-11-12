@@ -194,3 +194,44 @@ def test_the_committed_card_names_only_registered_assets() -> None:
             assert value in known, (
                 f"{name}.{field} is {value!r}, which is not an id in "
                 "assets/manifest.yaml")
+
+
+def test_slot_ds_card_entry_matches_the_artefact_it_was_read_from() -> None:
+    """The card's number and interval must still be the measurement's.
+
+    A card is hand-maintained, so its numbers drift from the run that
+    produced them in exactly one way: somebody re-runs the evaluation and
+    updates the report without touching the card, or edits the card without
+    re-running anything. Either leaves the gate deciding on a figure no
+    artefact supports. `bench/gend_vcip.json` is the authority named in the
+    entry's own `evidence` field, so this asserts the two agree rather than
+    leaving two numbers to drift — the same reason
+    `tests/bench/test_phase2_verdict.py` pins `AUC_FLOOR` to the gate's.
+
+    Deliberately the FROZEN pair's artefact. `gend_vcip_lntuned.json` holds
+    0.7594, which would clear the floor; the card records 0.663 because the
+    paired gain over frozen is not established, and that choice is the thing
+    worth protecting.
+    """
+    entry = load_card(EVIDENCE_CARD_PATH)["detectors"]["gend_clip"]
+    measured = json.loads(
+        (EVIDENCE_CARD_PATH.parent / "gend_vcip.json").read_text(),
+    )["encoder_matched"]
+
+    assert entry["auc"] == pytest.approx(measured["session_auc"], abs=5e-4)
+    assert entry["auc_ci95"] == pytest.approx(
+        measured["session_auc_ci95"], abs=5e-4)
+
+
+def test_slot_ds_interval_contains_the_floor_it_sits_under() -> None:
+    """Asserted so the card cannot quietly stop saying it.
+
+    0.663 is under the floor and the 95% interval reaches 0.763, which is
+    over it: this corpus resolves neither direction. The entry's note says
+    so, and a note is prose nobody re-checks. If a future measurement moves
+    the interval clear of the floor, this test fails and whoever moved it
+    has to come here and rewrite the claim deliberately.
+    """
+    entry = load_card(EVIDENCE_CARD_PATH)["detectors"]["gend_clip"]
+    lo, hi = entry["auc_ci95"]
+    assert lo < entry["auc"] < DEFAULT_AUC_FLOOR < hi
