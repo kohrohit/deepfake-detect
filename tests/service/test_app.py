@@ -214,3 +214,29 @@ def test_every_loopback_spelling_is_recognised_as_local() -> None:
         assert _is_loopback(host), host
     for host in ("0.0.0.0", "192.168.1.10", "example.com", ""):  # noqa: S104
         assert not _is_loopback(host), host
+
+
+def test_the_service_lets_the_registry_resolve_slot_ds_pair(tmp_path,
+                                                            monkeypatch):
+    """The bug that made shipping Phase 2 change nothing.
+
+    `ServiceConfig` defaulted `gend_weights`/`clip_weights` to the FROZEN
+    constants and passed them to `default_registry` explicitly, so
+    `slot_d_pair()` -- which prefers the tuned pair when both halves are
+    installed -- was overridden by the caller every time. The registry
+    preferred the tuned pair and the service asked for the frozen one over
+    the top of it.
+    """
+    from dfd.detectors import registry as reg
+    from dfd.service.app import ServiceConfig
+
+    cfg = ServiceConfig()
+    assert cfg.gend_weights is None and cfg.clip_weights is None, (
+        "hardcoding the frozen pair here overrides slot_d_pair()")
+
+    head, enc = tmp_path / "h.pt", tmp_path / "e.pt"
+    head.write_bytes(b"h")
+    enc.write_bytes(b"e")
+    monkeypatch.setattr(reg, "DEFAULT_GEND_LNTUNED_WEIGHTS", head)
+    monkeypatch.setattr(reg, "DEFAULT_CLIP_LNTUNED_WEIGHTS", enc)
+    assert reg.slot_d_pair() == (head, enc)
