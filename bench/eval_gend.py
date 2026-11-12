@@ -408,7 +408,11 @@ def main(argv: Sequence[str] | None = None, *, detect: Any = detect_faces) -> in
     # deployment instance is tens of minutes thrown away.
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     scorefile.write_text(json.dumps({
-        "encoder": str(args.encoder),
+        # The encoder's NAME, not its path. Same rule as corpus_label and
+        # the same reason: this repo is public and its reports are
+        # committed. Which encoder produced a number is provenance; where
+        # it sat on the operator's disk is not.
+        "encoder": args.encoder.name,
         "root": corpus_label(args.root), "offset": args.offset,
         "limit": args.limit,
         "seed": args.seed,

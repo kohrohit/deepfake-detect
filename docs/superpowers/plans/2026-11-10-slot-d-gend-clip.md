@@ -3063,6 +3063,29 @@ fold — five runs at ~9 hours each on the deployment box — which is why this 
 than fixed**, and recorded here while the run was still in epoch 4 so it cannot be mistaken for an
 excuse invented after an unwelcome result.
 
+**THE NULL CONFIRMED IT, 2026-11-12 03:24.** The contamination above was predicted from the
+training recipe before any Phase 2 number existed. The permutation null then measured it:
+
+| run | worst fold | permutation null | colour control |
+|---|---|---|---|
+| frozen (re-run, 12 shuffles) | `sbi` **0.738** | **0.449–0.554** | 0.5302 |
+| tuned (12 shuffles) | `swap_mouth_patch` **0.995** | **0.293–0.720** | 0.5302 |
+
+The null is what a head fitted on SHUFFLED labels reaches. For a frozen encoder, shuffling
+destroys the signal and the null sits tight around chance. For the tuned encoder a head fitted on
+RANDOM LABELS reaches **0.720** — because the encoder already separates the two classes, so any
+labelling recovers much of it. A null that wide is the contamination, measured. It also means the
+tuned worst fold of 0.995 is being compared against a null that a learnt-nothing model can push to
+0.72, which is not the comparison the frozen 0.738-against-0.449–0.554 was.
+
+Two things that did NOT go wrong, worth saying because they were the other candidates: the colour
+control is **0.5302 on both runs**, identical to four decimal places, so the tuning bought no
+colour shortcut; and the frozen re-run reproduced **0.7380** exactly, so the `logo_refit`
+refactor changed nothing.
+
+Both chain runs used the DEFAULT 12 shuffles where the published frozen run used 48, so
+`p = 0.0769` is the smallest p reachable in both and is a floor, not a measurement.
+
 **Question 5, added at the same time, is the unbiased comparison.** The capture corpus is the one
 evaluation the tuned encoder cannot have contaminated: it never saw a capture frame, and that
 corpus's fakes are `inswapper_128` output — a generator family absent from training entirely,
